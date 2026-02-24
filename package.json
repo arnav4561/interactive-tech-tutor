@@ -10,6 +10,8 @@
     "dev:api": "npm --workspace apps/api run dev",
     "dev:web": "npm --workspace apps/web run dev",
     "build": "npm --workspace apps/api run build && npm --workspace apps/web run build",
-    "start:api": "npm --workspace apps/api run start"
+    "start:api": "npm --workspace apps/api run start",
+    "backup:export": "npm --workspace apps/api run backup:export",
+    "backup:import": "npm --workspace apps/api run backup:import --"
   }
 }

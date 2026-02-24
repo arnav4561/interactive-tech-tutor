@@ -110,6 +110,32 @@ Yes, you can keep changing the app after deployment:
 2. Commit and push to GitHub.
 3. Vercel and Render auto-redeploy from the new commit.
 
+## Backup And Restore
+
+Use these commands from the repo root:
+
+1. Export a full snapshot:
+
+```bash
+npm run backup:export
+```
+
+Default output is `apps/api/backups/store-<timestamp>.json`. You can also set a custom path:
+
+```bash
+npm run backup:export -- ./my-backup.json
+```
+
+2. Restore a snapshot:
+
+```bash
+npm run backup:import -- ./my-backup.json
+```
+
+The same command works for both local JSON mode and PostgreSQL mode (when `DATABASE_URL` is set).
+
 ## Production Caveat
 
 If `DATABASE_URL` is not set, the API falls back to local JSON storage (`apps/api/data/store.json`). On cloud runtimes, that fallback is ephemeral and may reset on restart/redeploy. For production, keep `DATABASE_URL` configured.
+
+For Render free PostgreSQL plans, confirm DB retention/expiry in Render dashboard and either upgrade plan or export backups on a schedule.
