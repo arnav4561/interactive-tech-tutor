@@ -17,7 +17,9 @@ This repository contains an implementation starter for the Interactive Tech Tuto
   - Interaction history retrieval and topic-specific deletion
   - AI chat/feedback stub endpoints
   - User voice preference persistence
-- Local JSON persistence (`apps/api/data/store.json`) so progress and preferences survive restarts.
+- Dual persistence mode:
+  - PostgreSQL when `DATABASE_URL` is set (recommended for production)
+  - Local JSON (`apps/api/data/store.json`) for local/dev fallback
 
 ## Project Structure
 
@@ -70,8 +72,9 @@ Production setup:
 1. Push this project to GitHub.
 2. In Render, create a new Blueprint service and select this repo.
 3. Render will read `render.yaml` and create `interactive-tech-tutor-api`.
-4. After deploy, copy the API URL (for example: `https://interactive-tech-tutor-api.onrender.com`).
-5. Set `FRONTEND_ORIGINS` in Render to include your Vercel URL.
+4. Render also provisions `interactive-tech-tutor-db` and injects `DATABASE_URL` into the API.
+5. After deploy, copy the API URL (for example: `https://interactive-tech-tutor-api.onrender.com`).
+6. Set `FRONTEND_ORIGINS` in Render to include your Vercel URL.
 
 Example:
 
@@ -109,4 +112,4 @@ Yes, you can keep changing the app after deployment:
 
 ## Production Caveat
 
-The API currently stores data in `apps/api/data/store.json`. On many cloud runtimes this storage is ephemeral, so data may reset on restart/redeploy. For durable production data, switch to a real database (for example Firestore, Postgres, or Redis-backed persistence as needed).
+If `DATABASE_URL` is not set, the API falls back to local JSON storage (`apps/api/data/store.json`). On cloud runtimes, that fallback is ephemeral and may reset on restart/redeploy. For production, keep `DATABASE_URL` configured.

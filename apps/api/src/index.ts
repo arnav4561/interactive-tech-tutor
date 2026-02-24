@@ -34,6 +34,18 @@ app.use(
 );
 app.use(express.json({ limit: "4mb" }));
 
+function asyncHandler(
+  handler: (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ) => Promise<void>
+): express.RequestHandler {
+  return (req, res, next) => {
+    void handler(req, res, next).catch(next);
+  };
+}
+
 const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8)
@@ -90,7 +102,9 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "interactive-tech-tutor-api" });
 });
 
-app.post("/api/auth/register", (req, res) => {
+app.post(
+  "/api/auth/register",
+  asyncHandler(async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid registration payload." });
@@ -101,7 +115,7 @@ app.post("/api/auth/register", (req, res) => {
   const normalizedEmail = email.toLowerCase().trim();
   const now = new Date().toISOString();
 
-  const result = updateStore((store) => {
+  const result = await updateStore((store) => {
     const existing = store.users.find((user) => user.email === normalizedEmail);
     if (existing) {
       return { error: "User already exists." as const };
@@ -136,9 +150,12 @@ app.post("/api/auth/register", (req, res) => {
 
   const token = createToken({ userId: result.user.id, email: result.user.email });
   res.status(201).json({ token, user: result.user });
-});
+  })
+);
 
-app.post("/api/auth/login", (req, res) => {
+app.post(
+  "/api/auth/login",
+  asyncHandler(async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid login payload." });
@@ -150,7 +167,7 @@ app.post("/api/auth/login", (req, res) => {
   const passwordHash = hashPassword(password);
   const now = new Date().toISOString();
 
-  const result = updateStore((store) => {
+  const result = await updateStore((store) => {
     const user = store.users.find((candidate) => candidate.email === normalizedEmail);
     if (!user || user.passwordHash !== passwordHash) {
       return { error: "Invalid email or password." as const };
@@ -168,7 +185,8 @@ app.post("/api/auth/login", (req, res) => {
 
   const token = createToken({ userId: result.user.id, email: result.user.email });
   res.json({ token, user: result.user });
-});
+  })
+);
 
 app.get("/api/topics", authMiddleware, (_req, res) => {
   res.json({ topics: TOPICS });
@@ -184,14 +202,21 @@ app.get("/api/topics/:topicId/problem-sets", authMiddleware, (req, res) => {
   res.json({ problemSets: sets });
 });
 
-app.get("/api/progress", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.get(
+  "/api/progress",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const userId = req.auth!.userId;
-  const store = readStore();
+  const store = await readStore();
   const progress = store.progress.filter((record) => record.userId === userId);
   res.json({ progress });
-});
+  })
+);
 
-app.post("/api/progress/update", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.post(
+  "/api/progress/update",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const parsed = progressUpdateSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid progress payload." });
@@ -202,7 +227,7 @@ app.post("/api/progress/update", authMiddleware, (req: AuthenticatedRequest, res
   const payload = parsed.data;
   const now = new Date().toISOString();
 
-  const result = updateStore((store) => {
+  const result = await updateStore((store) => {
     const existing = store.progress.find(
       (record) =>
         record.userId === userId && record.topicId === payload.topicId && record.level === payload.level
@@ -256,20 +281,28 @@ app.post("/api/progress/update", authMiddleware, (req: AuthenticatedRequest, res
   });
 
   res.json(result);
-});
+  })
+);
 
-app.get("/api/preferences", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.get(
+  "/api/preferences",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const userId = req.auth!.userId;
-  const store = readStore();
+  const store = await readStore();
   const preferences = store.preferences.find((item) => item.userId === userId);
   if (!preferences) {
     res.status(404).json({ error: "Preferences not found." });
     return;
   }
   res.json({ preferences });
-});
+  })
+);
 
-app.put("/api/preferences", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.put(
+  "/api/preferences",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const parsed = preferenceSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid preference payload." });
@@ -279,7 +312,7 @@ app.put("/api/preferences", authMiddleware, (req: AuthenticatedRequest, res) => 
   const userId = req.auth!.userId;
   const body = parsed.data;
 
-  const updated = updateStore((store) => {
+  const updated = await updateStore((store) => {
     const current = store.preferences.find((item) => item.userId === userId);
     if (!current) {
       const created: UserPreferences = {
@@ -296,33 +329,45 @@ app.put("/api/preferences", authMiddleware, (req: AuthenticatedRequest, res) => 
   });
 
   res.json({ preferences: updated });
-});
+  })
+);
 
-app.get("/api/history", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.get(
+  "/api/history",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const userId = req.auth!.userId;
   const topicId = typeof req.query.topicId === "string" ? req.query.topicId : undefined;
-  const store = readStore();
+  const store = await readStore();
   const history = store.history
     .filter((item) => item.userId === userId && (!topicId || item.topicId === topicId))
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
   res.json({ history });
-});
+  })
+);
 
-app.delete("/api/history/topic/:topicId", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.delete(
+  "/api/history/topic/:topicId",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const userId = req.auth!.userId;
   const topicId = req.params.topicId;
 
-  const removedCount = updateStore((store) => {
+  const removedCount = await updateStore((store) => {
     const before = store.history.length;
     store.history = store.history.filter((item) => !(item.userId === userId && item.topicId === topicId));
     return before - store.history.length;
   });
 
   res.json({ removedCount, topicId });
-});
+  })
+);
 
-app.post("/api/interactions", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.post(
+  "/api/interactions",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const parsed = interactionSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid interaction payload." });
@@ -342,14 +387,18 @@ app.post("/api/interactions", authMiddleware, (req: AuthenticatedRequest, res) =
     meta: payload.meta
   };
 
-  updateStore((store) => {
+  await updateStore((store) => {
     store.history.push(interaction);
   });
 
   res.status(201).json({ interaction });
-});
+  })
+);
 
-app.post("/api/ai/chat", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.post(
+  "/api/ai/chat",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const schema = z.object({
     topicId: z.string().min(1),
     message: z.string().min(1),
@@ -378,14 +427,18 @@ app.post("/api/ai/chat", authMiddleware, (req: AuthenticatedRequest, res) => {
     meta: { source: "chat" }
   };
 
-  updateStore((store) => {
+  await updateStore((store) => {
     store.history.push(interaction);
   });
 
   res.json({ response: responseText });
-});
+  })
+);
 
-app.post("/api/ai/feedback/action", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.post(
+  "/api/ai/feedback/action",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const schema = z.object({
     topicId: z.string().min(1),
     actionType: z.enum(["drag", "scroll", "back"]),
@@ -417,14 +470,18 @@ app.post("/api/ai/feedback/action", authMiddleware, (req: AuthenticatedRequest, 
     meta: { source: "feedback" }
   };
 
-  updateStore((store) => {
+  await updateStore((store) => {
     store.history.push(interaction);
   });
 
   res.json({ response: responseText });
-});
+  })
+);
 
-app.post("/api/ai/visual", authMiddleware, (req: AuthenticatedRequest, res) => {
+app.post(
+  "/api/ai/visual",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
   const schema = z.object({
     topicId: z.string().min(1),
     fileName: z.string().min(1),
@@ -451,11 +508,25 @@ app.post("/api/ai/visual", authMiddleware, (req: AuthenticatedRequest, res) => {
     meta: { fileType, size }
   };
 
-  updateStore((store) => {
+  await updateStore((store) => {
     store.history.push(interaction);
   });
 
   res.json({ response: summary });
+  })
+);
+
+app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (res.headersSent) {
+    return;
+  }
+
+  const message = error instanceof Error ? error.message : "Internal server error.";
+  const status = message.includes("not allowed by CORS") ? 403 : 500;
+  if (status >= 500) {
+    console.error(error);
+  }
+  res.status(status).json({ error: message });
 });
 
 app.listen(port, () => {

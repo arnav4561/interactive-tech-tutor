@@ -1,3 +1,9 @@
+databases:
+  - name: interactive-tech-tutor-db
+    plan: free
+    databaseName: interactive_tech_tutor
+    user: interactive_tech_tutor_user
+
 services:
   - type: web
     name: interactive-tech-tutor-api
@@ -14,3 +20,7 @@ services:
         generateValue: true
       - key: FRONTEND_ORIGINS
         sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: interactive-tech-tutor-db
+          property: connectionString
