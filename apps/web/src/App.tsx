@@ -6,6 +6,7 @@ import {
   HistoryItem,
   ProblemSet,
   ProgressRecord,
+  SimulationGenerationResponse,
   Topic,
   UserPreferences
 } from "./types";
@@ -36,6 +37,13 @@ function defaultPreferences(): UserPreferences {
   };
 }
 
+function loadVoiceCapturePreference(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return localStorage.getItem("itt_voice_capture") === "true";
+}
+
 export default function App(): JSX.Element {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -57,11 +65,18 @@ export default function App(): JSX.Element {
   const [statusMessage, setStatusMessage] = useState("Ready.");
   const [loading, setLoading] = useState(false);
   const [listening, setListening] = useState(false);
+  const [voiceCaptureEnabled, setVoiceCaptureEnabled] = useState<boolean>(() => loadVoiceCapturePreference());
   const [preferences, setPreferences] = useState<UserPreferences>(() => defaultPreferences());
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [customTopicInput, setCustomTopicInput] = useState("");
+  const [generatingTopic, setGeneratingTopic] = useState(false);
+  const [generatedProblemSets, setGeneratedProblemSets] = useState<Record<string, ProblemSet[]>>({});
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const recognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const narrationTimersRef = useRef<number[]>([]);
+  const subtitleTimerRef = useRef<number | null>(null);
+  const voiceCaptureDesiredRef = useRef(false);
 
   const selectedTopic = useMemo(
     () => topics.find((topic) => topic.id === selectedTopicId) ?? null,
@@ -122,31 +137,51 @@ export default function App(): JSX.Element {
       }
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = preferences.voiceSettings.rate;
-      if (preferences.voiceSettings.voiceName) {
-        const voice = synth
-          .getVoices()
-          .find((item) => item.name.toLowerCase() === preferences.voiceSettings.voiceName.toLowerCase());
-        if (voice) {
-          utterance.voice = voice;
-        }
+      const byName = availableVoices.find(
+        (item) => item.name.toLowerCase() === preferences.voiceSettings.voiceName.toLowerCase()
+      );
+      const voiceBox = availableVoices.find((item) => item.name.toLowerCase().includes("voice box"));
+      const fallbackEnglish = availableVoices.find((item) => item.lang.toLowerCase().startsWith("en"));
+      const preferredVoice = byName ?? voiceBox ?? fallbackEnglish;
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
       }
       synth.speak(utterance);
     },
-    [preferences.voiceSettings.rate, preferences.voiceSettings.voiceName]
+    [availableVoices, preferences.voiceSettings.rate, preferences.voiceSettings.voiceName]
   );
 
   const clearNarrationTimers = useCallback(() => {
     narrationTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
     narrationTimersRef.current = [];
+    if (subtitleTimerRef.current !== null) {
+      window.clearTimeout(subtitleTimerRef.current);
+      subtitleTimerRef.current = null;
+    }
     setSubtitle("");
     if ("speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
   }, []);
 
+  const pushSubtitle = useCallback((text: string, durationMs = 2600) => {
+    setSubtitle(text);
+    if (subtitleTimerRef.current !== null) {
+      window.clearTimeout(subtitleTimerRef.current);
+    }
+    subtitleTimerRef.current = window.setTimeout(() => {
+      setSubtitle("");
+      subtitleTimerRef.current = null;
+    }, durationMs);
+  }, []);
+
   const playNarration = useCallback(
     (topic: Topic) => {
       clearNarrationTimers();
+      if (subtitleTimerRef.current !== null) {
+        window.clearTimeout(subtitleTimerRef.current);
+        subtitleTimerRef.current = null;
+      }
       if (!preferences.voiceSettings.narrationEnabled && !topic.narration.length) {
         return;
       }
@@ -185,7 +220,7 @@ export default function App(): JSX.Element {
   }, [selectedTopicId, token]);
 
   const runActionFeedback = useCallback(
-    async (actionType: "drag" | "scroll" | "back", detail: string) => {
+    async (actionType: "drag" | "scroll" | "back" | "voice-command" | "navigation", detail: string) => {
       if (!token || !selectedTopicId) {
         return;
       }
@@ -200,6 +235,7 @@ export default function App(): JSX.Element {
           token
         );
         setFeedbackText(response.response);
+        pushSubtitle(response.response, 3200);
         if (preferences.voiceSettings.interactionEnabled) {
           speak(response.response, true);
         }
@@ -208,7 +244,7 @@ export default function App(): JSX.Element {
         setStatusMessage((error as Error).message);
       }
     },
-    [loadHistory, preferences.voiceSettings.interactionEnabled, selectedTopicId, speak, token]
+    [loadHistory, preferences.voiceSettings.interactionEnabled, pushSubtitle, selectedTopicId, speak, token]
   );
 
   const bootstrap = useCallback(
@@ -258,6 +294,11 @@ export default function App(): JSX.Element {
   }, [email, password, registerMode]);
 
   const handleLogout = useCallback(() => {
+    voiceCaptureDesiredRef.current = false;
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    setVoiceCaptureEnabled(false);
     setToken("");
     setUserEmail("");
     setTopics([]);
@@ -265,11 +306,47 @@ export default function App(): JSX.Element {
     setProblemSets([]);
     setHistory([]);
     setMessages([]);
+    setGeneratedProblemSets({});
+    setCustomTopicInput("");
     clearNarrationTimers();
     localStorage.removeItem("itt_token");
     localStorage.removeItem("itt_email");
+    localStorage.removeItem("itt_voice_capture");
     setStatusMessage("Logged out.");
   }, [clearNarrationTimers]);
+
+  const generateCustomSimulation = useCallback(async () => {
+    const requestedTopic = customTopicInput.trim();
+    if (!token || !requestedTopic) {
+      return;
+    }
+
+    setGeneratingTopic(true);
+    try {
+      const response = await apiPost<SimulationGenerationResponse>(
+        "/ai/simulation",
+        {
+          topic: requestedTopic,
+          level: selectedLevel
+        },
+        token
+      );
+      setTopics((current) => [response.topic, ...current.filter((topic) => topic.id !== response.topic.id)]);
+      setGeneratedProblemSets((current) => ({
+        ...current,
+        [response.topic.id]: response.problemSets
+      }));
+      setSelectedTopicId(response.topic.id);
+      setMessages((current) => [...current, { role: "assistant", text: response.openingMessage }]);
+      const source = response.generationSource === "gemini" ? "Gemini" : "template";
+      setStatusMessage(`Generated simulation for ${response.topic.title} (${source}).`);
+      setCustomTopicInput("");
+    } catch (error) {
+      setStatusMessage((error as Error).message);
+    } finally {
+      setGeneratingTopic(false);
+    }
+  }, [customTopicInput, selectedLevel, token]);
 
   const sendChat = useCallback(
     async (mode: "voice" | "text", rawMessage?: string) => {
@@ -292,7 +369,8 @@ export default function App(): JSX.Element {
           token
         );
         setMessages((current) => [...current, { role: "assistant", text: response.response }]);
-        if (preferences.voiceSettings.interactionEnabled && mode === "voice") {
+        pushSubtitle(response.response, 3200);
+        if (preferences.voiceSettings.interactionEnabled) {
           speak(response.response, true);
         }
         await loadHistory();
@@ -300,7 +378,7 @@ export default function App(): JSX.Element {
         setStatusMessage((error as Error).message);
       }
     },
-    [chatInput, loadHistory, preferences.voiceSettings.interactionEnabled, selectedTopicId, speak, token]
+    [chatInput, loadHistory, preferences.voiceSettings.interactionEnabled, pushSubtitle, selectedTopicId, speak, token]
   );
 
   const processVoiceCommand = useCallback(
@@ -312,6 +390,7 @@ export default function App(): JSX.Element {
         if (nextTopic) {
           setSelectedTopicId(nextTopic.id);
           setStatusMessage(`Switched to topic: ${nextTopic.title}`);
+          void runActionFeedback("voice-command", `next-topic:${nextTopic.title}`);
         }
         return true;
       }
@@ -323,6 +402,7 @@ export default function App(): JSX.Element {
         if (prevTopic) {
           setSelectedTopicId(prevTopic.id);
           setStatusMessage(`Switched to topic: ${prevTopic.title}`);
+          void runActionFeedback("voice-command", `previous-topic:${prevTopic.title}`);
         }
         return true;
       }
@@ -335,6 +415,7 @@ export default function App(): JSX.Element {
           }
           setSelectedLevel(level);
           setStatusMessage(`Difficulty changed to ${level}.`);
+          void runActionFeedback("voice-command", `difficulty:${level}`);
           return true;
         }
       }
@@ -345,6 +426,7 @@ export default function App(): JSX.Element {
           voiceSettings: { ...preferences.voiceSettings, narrationEnabled: false }
         };
         setAndPersistPreferences(next);
+        void runActionFeedback("voice-command", "mute-narration");
         return true;
       }
 
@@ -354,6 +436,21 @@ export default function App(): JSX.Element {
           voiceSettings: { ...preferences.voiceSettings, narrationEnabled: true }
         };
         setAndPersistPreferences(next);
+        void runActionFeedback("voice-command", "unmute-narration");
+        return true;
+      }
+
+      if (command.includes("stop voice capture") || command.includes("stop listening")) {
+        setVoiceCaptureEnabled(false);
+        setStatusMessage("Voice capture disabled by voice command.");
+        void runActionFeedback("voice-command", "stop-capture");
+        return true;
+      }
+
+      if (command.includes("start voice capture") || command.includes("resume listening")) {
+        setVoiceCaptureEnabled(true);
+        setStatusMessage("Voice capture enabled by voice command.");
+        void runActionFeedback("voice-command", "start-capture");
         return true;
       }
 
@@ -368,7 +465,11 @@ export default function App(): JSX.Element {
   );
 
   const startListening = useCallback(() => {
+    if (listening) {
+      return;
+    }
     if (!preferences.voiceSettings.interactionEnabled && !preferences.voiceSettings.navigationEnabled) {
+      setStatusMessage("Enable Voice Interaction or Voice Navigation before capturing voice.");
       return;
     }
 
@@ -382,45 +483,70 @@ export default function App(): JSX.Element {
       return;
     }
 
+    voiceCaptureDesiredRef.current = true;
+
     if (!recognitionRef.current) {
       const recognition = new RecognitionCtor();
       recognition.continuous = true;
       recognition.interimResults = false;
       recognition.lang = "en-US";
-      recognition.onresult = (event) => {
-        const lastResult = event.results[event.results.length - 1];
-        const transcript = lastResult[0]?.transcript?.trim();
-        if (!transcript) {
-          return;
-        }
-
-        const handled =
-          preferences.voiceSettings.navigationEnabled && preferences.interactionMode !== "click"
-            ? processVoiceCommand(transcript)
-            : false;
-
-        if (!handled && preferences.interactionMode !== "click" && preferences.voiceSettings.interactionEnabled) {
-          void sendChat("voice", transcript);
-        }
-      };
-      recognition.onerror = (event) => {
-        setStatusMessage(`Voice input error: ${event.error}`);
-      };
-      recognition.onend = () => {
-        setListening(false);
-      };
       recognitionRef.current = recognition;
     }
 
-    recognitionRef.current.start();
-    setListening(true);
-  }, [preferences, processVoiceCommand, sendChat]);
+    recognitionRef.current.onresult = (event) => {
+      const lastResult = event.results[event.results.length - 1];
+      const transcript = lastResult[0]?.transcript?.trim();
+      if (!transcript) {
+        return;
+      }
+
+      const handled = preferences.voiceSettings.navigationEnabled ? processVoiceCommand(transcript) : false;
+
+      if (!handled && preferences.voiceSettings.interactionEnabled) {
+        void sendChat("voice", transcript);
+      }
+    };
+    recognitionRef.current.onerror = (event) => {
+      setStatusMessage(`Voice input error: ${event.error}`);
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        voiceCaptureDesiredRef.current = false;
+        setVoiceCaptureEnabled(false);
+      }
+    };
+    recognitionRef.current.onend = () => {
+      setListening(false);
+      if (!voiceCaptureDesiredRef.current) {
+        return;
+      }
+      window.setTimeout(() => {
+        if (!voiceCaptureDesiredRef.current || !recognitionRef.current) {
+          return;
+        }
+        try {
+          recognitionRef.current.start();
+          setListening(true);
+        } catch (_error) {
+          // Browser may reject rapid restart; next recognition cycle will retry.
+        }
+      }, 280);
+    };
+
+    try {
+      recognitionRef.current.start();
+      setListening(true);
+      setStatusMessage("Voice capture active.");
+    } catch (error) {
+      setStatusMessage(`Unable to start voice capture: ${(error as Error).message}`);
+    }
+  }, [listening, preferences, processVoiceCommand, sendChat]);
 
   const stopListening = useCallback(() => {
+    voiceCaptureDesiredRef.current = false;
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       setListening(false);
     }
+    setStatusMessage("Voice capture paused.");
   }, []);
 
   const submitCurrentProblemSet = useCallback(async () => {
@@ -514,11 +640,84 @@ export default function App(): JSX.Element {
   }, [bootstrap, token]);
 
   useEffect(() => {
+    localStorage.setItem("itt_voice_capture", String(voiceCaptureEnabled));
+  }, [voiceCaptureEnabled]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    const captureAllowed =
+      voiceCaptureEnabled &&
+      (preferences.voiceSettings.interactionEnabled || preferences.voiceSettings.navigationEnabled);
+
+    if (captureAllowed) {
+      startListening();
+      return;
+    }
+    stopListening();
+  }, [
+    preferences.voiceSettings.interactionEnabled,
+    preferences.voiceSettings.navigationEnabled,
+    startListening,
+    stopListening,
+    token,
+    voiceCaptureEnabled
+  ]);
+
+  useEffect(() => {
+    if (!("speechSynthesis" in window)) {
+      return;
+    }
+
+    const synth = window.speechSynthesis;
+    const refreshVoices = () => {
+      const voices = synth.getVoices();
+      setAvailableVoices(voices);
+      const matchedVoice = voices.find((voice) => voice.name.toLowerCase().includes("voice box"));
+      if (
+        matchedVoice &&
+        !preferences.voiceSettings.voiceName &&
+        preferences.voiceSettings.interactionEnabled
+      ) {
+        const next = {
+          ...preferences,
+          voiceSettings: {
+            ...preferences.voiceSettings,
+            voiceName: matchedVoice.name
+          }
+        };
+        setAndPersistPreferences(next);
+      }
+    };
+
+    refreshVoices();
+    synth.addEventListener("voiceschanged", refreshVoices);
+    return () => synth.removeEventListener("voiceschanged", refreshVoices);
+  }, [
+    preferences,
+    preferences.voiceSettings.interactionEnabled,
+    preferences.voiceSettings.voiceName,
+    setAndPersistPreferences
+  ]);
+
+  useEffect(() => {
     if (!token || !selectedTopicId) {
       return;
     }
 
     const loadTopicData = async () => {
+      const generatedSet = generatedProblemSets[selectedTopicId];
+      if (generatedSet) {
+        setProblemSets(generatedSet);
+        setSelectedAnswers({});
+        const topic = topics.find((item) => item.id === selectedTopicId);
+        if (topic) {
+          playNarration(topic);
+        }
+        return;
+      }
+
       try {
         const response = await apiGet<{ problemSets: ProblemSet[] }>(
           `/topics/${selectedTopicId}/problem-sets`,
@@ -531,13 +730,14 @@ export default function App(): JSX.Element {
           playNarration(topic);
         }
       } catch (error) {
+        setProblemSets([]);
         setStatusMessage((error as Error).message);
       }
     };
 
     void loadTopicData();
     void loadHistory();
-  }, [loadHistory, playNarration, selectedTopicId, token, topics]);
+  }, [generatedProblemSets, loadHistory, playNarration, selectedTopicId, token, topics]);
 
   useEffect(() => {
     if (!selectedTopicId) {
@@ -715,6 +915,10 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     return () => {
+      voiceCaptureDesiredRef.current = false;
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
       clearNarrationTimers();
     };
   }, [clearNarrationTimers]);
@@ -792,6 +996,16 @@ export default function App(): JSX.Element {
         <section className="topic-summary">
           <h2>{selectedTopic?.title ?? "Select a topic"}</h2>
           <p>{selectedTopic?.description ?? "No topic selected."}</p>
+          <div className="topic-generator">
+            <input
+              value={customTopicInput}
+              onChange={(event) => setCustomTopicInput(event.target.value)}
+              placeholder="Enter any topic (e.g. Kubernetes scheduling, OAuth, Binary trees...)"
+            />
+            <button disabled={generatingTopic || !customTopicInput.trim()} onClick={() => void generateCustomSimulation()}>
+              {generatingTopic ? "Generating..." : "Generate Live Simulation"}
+            </button>
+          </div>
           <div className="feedback-strip">
             <strong>Action Feedback:</strong> {feedbackText || "Perform drag/scroll/back actions to receive feedback."}
           </div>
@@ -855,6 +1069,14 @@ export default function App(): JSX.Element {
           <label className="toggle">
             <input
               type="checkbox"
+              checked={voiceCaptureEnabled}
+              onChange={(event) => setVoiceCaptureEnabled(event.target.checked)}
+            />
+            Capture User Voice ({listening ? "active" : "inactive"})
+          </label>
+          <label className="toggle">
+            <input
+              type="checkbox"
               checked={preferences.voiceSettings.narrationEnabled}
               onChange={(event) =>
                 setAndPersistPreferences({
@@ -901,6 +1123,28 @@ export default function App(): JSX.Element {
             Voice Navigation
           </label>
           <label>
+            System Voice
+            <select
+              value={preferences.voiceSettings.voiceName}
+              onChange={(event) =>
+                setAndPersistPreferences({
+                  ...preferences,
+                  voiceSettings: {
+                    ...preferences.voiceSettings,
+                    voiceName: event.target.value
+                  }
+                })
+              }
+            >
+              <option value="">Auto (prefer Voice Box)</option>
+              {availableVoices.map((voice) => (
+                <option key={`${voice.name}-${voice.lang}`} value={voice.name}>
+                  {voice.name} ({voice.lang})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
             Narration Speed: {preferences.voiceSettings.rate.toFixed(1)}x
             <input
               type="range"
@@ -919,14 +1163,9 @@ export default function App(): JSX.Element {
               }
             />
           </label>
-          <div className="button-row">
-            <button disabled={listening} onClick={startListening}>
-              Start Voice
-            </button>
-            <button className="ghost" disabled={!listening} onClick={stopListening}>
-              Stop Voice
-            </button>
-          </div>
+          <p className="voice-note">
+            Voice capture starts only after mic permission and can be turned off anytime.
+          </p>
         </section>
 
         <section className="panel-section">

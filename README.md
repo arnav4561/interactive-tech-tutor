@@ -15,6 +15,7 @@ This repository contains an implementation starter for the Interactive Tech Tuto
   - Topic and problem set APIs (beginner/intermediate/advanced)
   - Progress tracking and unlock flow
   - Interaction history retrieval and topic-specific deletion
+  - AI simulation generation endpoint (`/api/ai/simulation`) with optional Gemini output
   - AI chat/feedback stub endpoints
   - User voice preference persistence
 - Dual persistence mode:
@@ -59,6 +60,10 @@ http://localhost:5173
 
 - This is an MVP aligned to the provided specs, with local-file persistence in place of PostgreSQL/Redis.
 - External services (Whisper/ElevenLabs/OpenAI Vision) are represented as stubs behind API routes, so providers can be wired in without rewriting UI flows.
+- To enable real generated simulation explanations, set API env vars:
+  - `GEMINI_API_KEY`
+  - `GEMINI_MODEL` (for example, `gemini-2.5-flash`)
+  - Optional: `GEMINI_BASE_URL` (defaults to `https://generativelanguage.googleapis.com/v1beta`)
 
 ## Deploy (Recommended)
 

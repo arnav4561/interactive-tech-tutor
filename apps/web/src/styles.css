@@ -140,6 +140,23 @@ textarea {
   font-size: 0.92rem;
 }
 
+.topic-generator {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(220px, 1fr) auto;
+}
+
+.topic-generator button {
+  white-space: nowrap;
+}
+
+.voice-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
 .canvas-wrapper {
   border-radius: 14px;
   border: 1px solid var(--line);
@@ -302,5 +319,9 @@ button.active {
 
   .subtitle-bar {
     bottom: 42px;
+  }
+
+  .topic-generator {
+    grid-template-columns: 1fr;
   }
 }

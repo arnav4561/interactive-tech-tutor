@@ -58,3 +58,10 @@ export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
 }
+
+export interface SimulationGenerationResponse {
+  topic: Topic;
+  problemSets: ProblemSet[];
+  openingMessage: string;
+  generationSource?: "template" | "gemini";
+}
