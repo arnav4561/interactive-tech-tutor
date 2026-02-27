@@ -99,9 +99,9 @@ const simulationGenerateSchema = z.object({
 });
 
 const llmSimulationSchema = z.object({
-  description: z.string().min(20).max(600),
-  narration: z.array(z.string().min(8).max(220)).min(4).max(8),
-  openingMessage: z.string().min(20).max(280),
+  description: z.string().min(20).max(1400),
+  narration: z.array(z.string().min(8).max(700)).min(3).max(14),
+  openingMessage: z.string().min(20).max(700),
   problemSets: z
     .array(
       z.object({
@@ -110,18 +110,18 @@ const llmSimulationSchema = z.object({
         problems: z
           .array(
             z.object({
-              question: z.string().min(10).max(260),
-              choices: z.array(z.string().min(1).max(120)).min(3).max(6),
-              answer: z.string().min(1).max(120),
-              explanation: z.string().min(10).max(260)
+              question: z.string().min(10).max(700),
+              choices: z.array(z.string().min(1).max(260)).min(2).max(10),
+              answer: z.string().min(1).max(260),
+              explanation: z.string().min(10).max(700)
             })
           )
           .min(1)
-          .max(3)
+          .max(12)
       })
     )
     .min(3)
-    .max(6)
+    .max(12)
 });
 
 function slugify(value: string): string {
@@ -259,7 +259,7 @@ function extractJsonObject(raw: string): unknown {
 
 function normalizeNarration(lines: string[]): string[] {
   return lines
-    .map((line) => line.trim())
+    .map((line) => line.trim().slice(0, 260))
     .filter((line) => line.length > 0)
     .slice(0, 8);
 }
@@ -277,19 +277,21 @@ function normalizeProblemSets(topic: Topic, llmData: z.infer<typeof llmSimulatio
 
     const problems = generated.problems
       .map((problem, index) => {
-        const uniqueChoices = Array.from(new Set(problem.choices.map((choice) => choice.trim()))).filter(Boolean);
+        const uniqueChoices = Array.from(
+          new Set(problem.choices.map((choice) => choice.trim().slice(0, 140)))
+        ).filter(Boolean);
         if (!uniqueChoices.includes(problem.answer.trim())) {
-          uniqueChoices.push(problem.answer.trim());
+          uniqueChoices.push(problem.answer.trim().slice(0, 140));
         }
         if (uniqueChoices.length < 2) {
           return null;
         }
         return {
           id: `${topic.id}-${level}-${index + 1}`,
-          question: problem.question.trim(),
+          question: problem.question.trim().slice(0, 300),
           choices: uniqueChoices.slice(0, 6),
-          answer: problem.answer.trim(),
-          explanation: problem.explanation.trim()
+          answer: problem.answer.trim().slice(0, 140),
+          explanation: problem.explanation.trim().slice(0, 320)
         };
       })
       .filter((problem): problem is NonNullable<typeof problem> => Boolean(problem));
