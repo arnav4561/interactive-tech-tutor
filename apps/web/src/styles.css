@@ -50,6 +50,10 @@ textarea {
   gap: 12px;
 }
 
+.home-card {
+  width: min(560px, 100%);
+}
+
 .auth-card label {
   display: grid;
   gap: 6px;
@@ -62,6 +66,11 @@ textarea {
   background: rgba(255, 255, 255, 0.08);
   color: var(--ink);
   padding: 10px 12px;
+}
+
+.auth-progress {
+  font-size: 0.9rem;
+  color: #ffe1b8;
 }
 
 .app-shell {

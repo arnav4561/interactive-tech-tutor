@@ -44,6 +44,13 @@ function loadVoiceCapturePreference(): boolean {
   return localStorage.getItem("itt_voice_capture") === "true";
 }
 
+function loadSubtitlePreference(): boolean {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  return localStorage.getItem("itt_subtitles") !== "false";
+}
+
 export default function App(): JSX.Element {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -64,8 +71,10 @@ export default function App(): JSX.Element {
   const [uploadFeedback, setUploadFeedback] = useState("");
   const [statusMessage, setStatusMessage] = useState("Ready.");
   const [loading, setLoading] = useState(false);
+  const [appView, setAppView] = useState<"home" | "simulation">("home");
   const [listening, setListening] = useState(false);
   const [voiceCaptureEnabled, setVoiceCaptureEnabled] = useState<boolean>(() => loadVoiceCapturePreference());
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState<boolean>(() => loadSubtitlePreference());
   const [preferences, setPreferences] = useState<UserPreferences>(() => defaultPreferences());
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [customTopicInput, setCustomTopicInput] = useState("");
@@ -77,6 +86,8 @@ export default function App(): JSX.Element {
   const narrationTimersRef = useRef<number[]>([]);
   const subtitleTimerRef = useRef<number | null>(null);
   const voiceCaptureDesiredRef = useRef(false);
+  const narrationSessionRef = useRef(0);
+  const appViewRef = useRef<"home" | "simulation">("home");
 
   const selectedTopic = useMemo(
     () => topics.find((topic) => topic.id === selectedTopicId) ?? null,
@@ -126,32 +137,44 @@ export default function App(): JSX.Element {
     [persistPreferences]
   );
 
-  const speak = useCallback(
-    (text: string, interrupt = false) => {
+  const speakText = useCallback(
+    (text: string, interrupt = false): Promise<void> => {
       if (!("speechSynthesis" in window)) {
-        return;
+        return Promise.resolve();
       }
       const synth = window.speechSynthesis;
       if (interrupt) {
         synth.cancel();
       }
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = preferences.voiceSettings.rate;
-      const byName = availableVoices.find(
-        (item) => item.name.toLowerCase() === preferences.voiceSettings.voiceName.toLowerCase()
-      );
-      const voiceBox = availableVoices.find((item) => item.name.toLowerCase().includes("voice box"));
-      const fallbackEnglish = availableVoices.find((item) => item.lang.toLowerCase().startsWith("en"));
-      const preferredVoice = byName ?? voiceBox ?? fallbackEnglish;
-      if (preferredVoice) {
-        utterance.voice = preferredVoice;
-      }
-      synth.speak(utterance);
+      return new Promise((resolve) => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = preferences.voiceSettings.rate;
+        const byName = availableVoices.find(
+          (item) => item.name.toLowerCase() === preferences.voiceSettings.voiceName.toLowerCase()
+        );
+        const voiceBox = availableVoices.find((item) => item.name.toLowerCase().includes("voice box"));
+        const fallbackEnglish = availableVoices.find((item) => item.lang.toLowerCase().startsWith("en"));
+        const preferredVoice = byName ?? voiceBox ?? fallbackEnglish;
+        if (preferredVoice) {
+          utterance.voice = preferredVoice;
+        }
+        utterance.onend = () => resolve();
+        utterance.onerror = () => resolve();
+        synth.speak(utterance);
+      });
     },
     [availableVoices, preferences.voiceSettings.rate, preferences.voiceSettings.voiceName]
   );
 
+  const speak = useCallback(
+    (text: string, interrupt = false) => {
+      void speakText(text, interrupt);
+    },
+    [speakText]
+  );
+
   const clearNarrationTimers = useCallback(() => {
+    narrationSessionRef.current += 1;
     narrationTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
     narrationTimersRef.current = [];
     if (subtitleTimerRef.current !== null) {
@@ -178,32 +201,49 @@ export default function App(): JSX.Element {
   const playNarration = useCallback(
     (topic: Topic) => {
       clearNarrationTimers();
-      if (subtitleTimerRef.current !== null) {
-        window.clearTimeout(subtitleTimerRef.current);
-        subtitleTimerRef.current = null;
+      if (appViewRef.current !== "simulation") {
+        return;
       }
-      if (!preferences.voiceSettings.narrationEnabled && !topic.narration.length) {
+      const sessionId = narrationSessionRef.current;
+      const narrationLines = topic.narration.filter((line) => line.trim().length > 0);
+      if (narrationLines.length === 0) {
         return;
       }
 
-      let offset = 0;
-      topic.narration.forEach((line, index) => {
-        const duration = Math.max(1800, Math.round((line.length * 45) / preferences.voiceSettings.rate));
-        const timer = window.setTimeout(() => {
-          setSubtitle(line);
+      const run = async () => {
+        for (const line of narrationLines) {
+          if (narrationSessionRef.current !== sessionId || appViewRef.current !== "simulation") {
+            return;
+          }
+          if (subtitlesEnabled) {
+            setSubtitle(line);
+          } else {
+            setSubtitle("");
+          }
+
           if (preferences.voiceSettings.narrationEnabled) {
-            speak(line);
+            await speakText(line, false);
+          } else {
+            const waitMs = Math.max(1300, Math.round((line.length * 35) / preferences.voiceSettings.rate));
+            await new Promise<void>((resolve) => {
+              const timer = window.setTimeout(() => resolve(), waitMs);
+              narrationTimersRef.current.push(timer);
+            });
           }
-          if (index === topic.narration.length - 1) {
-            const clearTimer = window.setTimeout(() => setSubtitle(""), duration - 300);
-            narrationTimersRef.current.push(clearTimer);
+
+          if (narrationSessionRef.current !== sessionId || appViewRef.current !== "simulation") {
+            return;
           }
-        }, offset);
-        narrationTimersRef.current.push(timer);
-        offset += duration;
-      });
+        }
+
+        if (narrationSessionRef.current === sessionId && subtitlesEnabled) {
+          setSubtitle("");
+        }
+      };
+
+      void run();
     },
-    [clearNarrationTimers, preferences.voiceSettings.narrationEnabled, preferences.voiceSettings.rate, speak]
+    [clearNarrationTimers, preferences.voiceSettings.narrationEnabled, preferences.voiceSettings.rate, speakText, subtitlesEnabled]
   );
 
   const loadHistory = useCallback(async () => {
@@ -235,16 +275,20 @@ export default function App(): JSX.Element {
           token
         );
         setFeedbackText(response.response);
-        pushSubtitle(response.response, 3200);
-        if (preferences.voiceSettings.interactionEnabled) {
-          speak(response.response, true);
+        if (appViewRef.current === "simulation") {
+          if (subtitlesEnabled) {
+            pushSubtitle(response.response, 3200);
+          }
+          if (preferences.voiceSettings.interactionEnabled) {
+            speak(response.response, true);
+          }
         }
         await loadHistory();
       } catch (error) {
         setStatusMessage((error as Error).message);
       }
     },
-    [loadHistory, preferences.voiceSettings.interactionEnabled, pushSubtitle, selectedTopicId, speak, token]
+    [loadHistory, preferences.voiceSettings.interactionEnabled, pushSubtitle, selectedTopicId, speak, subtitlesEnabled, token]
   );
 
   const bootstrap = useCallback(
@@ -261,6 +305,7 @@ export default function App(): JSX.Element {
         setProgress(progressResponse.progress);
         setPreferences(prefResponse.preferences);
         setSelectedTopicId((current) => current || topicsResponse.topics[0]?.id || "");
+        setAppView("home");
         setStatusMessage("Session restored.");
       } catch (error) {
         setStatusMessage((error as Error).message);
@@ -273,7 +318,11 @@ export default function App(): JSX.Element {
 
   const handleAuth = useCallback(async () => {
     setLoading(true);
-    setStatusMessage("Authenticating...");
+    setStatusMessage(
+      registerMode
+        ? "Creating account... this can take up to 20 seconds on first server wake-up."
+        : "Authenticating... this can take up to 20 seconds on first server wake-up."
+    );
     try {
       const route = registerMode ? "/auth/register" : "/auth/login";
       const response = await apiPost<{
@@ -299,6 +348,7 @@ export default function App(): JSX.Element {
       recognitionRef.current.stop();
     }
     setVoiceCaptureEnabled(false);
+    setAppView("home");
     setToken("");
     setUserEmail("");
     setTopics([]);
@@ -337,6 +387,7 @@ export default function App(): JSX.Element {
         [response.topic.id]: response.problemSets
       }));
       setSelectedTopicId(response.topic.id);
+      setAppView("simulation");
       setMessages((current) => [...current, { role: "assistant", text: response.openingMessage }]);
       const source = response.generationSource === "gemini" ? "Gemini" : "template";
       setStatusMessage(`Generated simulation for ${response.topic.title} (${source}).`);
@@ -369,16 +420,20 @@ export default function App(): JSX.Element {
           token
         );
         setMessages((current) => [...current, { role: "assistant", text: response.response }]);
-        pushSubtitle(response.response, 3200);
-        if (preferences.voiceSettings.interactionEnabled) {
-          speak(response.response, true);
+        if (appViewRef.current === "simulation") {
+          if (subtitlesEnabled) {
+            pushSubtitle(response.response, 3200);
+          }
+          if (preferences.voiceSettings.interactionEnabled) {
+            speak(response.response, true);
+          }
         }
         await loadHistory();
       } catch (error) {
         setStatusMessage((error as Error).message);
       }
     },
-    [chatInput, loadHistory, preferences.voiceSettings.interactionEnabled, pushSubtitle, selectedTopicId, speak, token]
+    [chatInput, loadHistory, preferences.voiceSettings.interactionEnabled, pushSubtitle, selectedTopicId, speak, subtitlesEnabled, token]
   );
 
   const processVoiceCommand = useCallback(
@@ -440,6 +495,18 @@ export default function App(): JSX.Element {
         return true;
       }
 
+      if (command.includes("mute subtitles")) {
+        setSubtitlesEnabled(false);
+        setStatusMessage("Subtitles muted.");
+        return true;
+      }
+
+      if (command.includes("show subtitles") || command.includes("unmute subtitles")) {
+        setSubtitlesEnabled(true);
+        setStatusMessage("Subtitles enabled.");
+        return true;
+      }
+
       if (command.includes("stop voice capture") || command.includes("stop listening")) {
         setVoiceCaptureEnabled(false);
         setStatusMessage("Voice capture disabled by voice command.");
@@ -466,6 +533,9 @@ export default function App(): JSX.Element {
 
   const startListening = useCallback(() => {
     if (listening) {
+      return;
+    }
+    if (appView !== "simulation") {
       return;
     }
     if (!preferences.voiceSettings.interactionEnabled && !preferences.voiceSettings.navigationEnabled) {
@@ -538,7 +608,7 @@ export default function App(): JSX.Element {
     } catch (error) {
       setStatusMessage(`Unable to start voice capture: ${(error as Error).message}`);
     }
-  }, [listening, preferences, processVoiceCommand, sendChat]);
+  }, [appView, listening, preferences, processVoiceCommand, sendChat]);
 
   const stopListening = useCallback(() => {
     voiceCaptureDesiredRef.current = false;
@@ -640,11 +710,23 @@ export default function App(): JSX.Element {
   }, [bootstrap, token]);
 
   useEffect(() => {
+    appViewRef.current = appView;
+  }, [appView]);
+
+  useEffect(() => {
     localStorage.setItem("itt_voice_capture", String(voiceCaptureEnabled));
   }, [voiceCaptureEnabled]);
 
   useEffect(() => {
+    localStorage.setItem("itt_subtitles", String(subtitlesEnabled));
+  }, [subtitlesEnabled]);
+
+  useEffect(() => {
     if (!token) {
+      return;
+    }
+    if (appView !== "simulation") {
+      stopListening();
       return;
     }
     const captureAllowed =
@@ -662,7 +744,8 @@ export default function App(): JSX.Element {
     startListening,
     stopListening,
     token,
-    voiceCaptureEnabled
+    voiceCaptureEnabled,
+    appView
   ]);
 
   useEffect(() => {
@@ -702,7 +785,7 @@ export default function App(): JSX.Element {
   ]);
 
   useEffect(() => {
-    if (!token || !selectedTopicId) {
+    if (!token || appView !== "simulation" || !selectedTopicId) {
       return;
     }
 
@@ -737,7 +820,7 @@ export default function App(): JSX.Element {
 
     void loadTopicData();
     void loadHistory();
-  }, [generatedProblemSets, loadHistory, playNarration, selectedTopicId, token, topics]);
+  }, [appView, generatedProblemSets, loadHistory, playNarration, selectedTopicId, token, topics]);
 
   useEffect(() => {
     if (!selectedTopicId) {
@@ -760,7 +843,7 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !selectedTopic) {
+    if (!canvas || !selectedTopic || appView !== "simulation") {
       return;
     }
 
@@ -911,7 +994,14 @@ export default function App(): JSX.Element {
       canvas.removeEventListener("mouseleave", onMouseUp);
       canvas.removeEventListener("wheel", onWheel);
     };
-  }, [runActionFeedback, selectedTopic]);
+  }, [appView, runActionFeedback, selectedTopic]);
+
+  useEffect(() => {
+    if (appView === "simulation") {
+      return;
+    }
+    clearNarrationTimers();
+  }, [appView, clearNarrationTimers]);
 
   useEffect(() => {
     return () => {
@@ -947,10 +1037,50 @@ export default function App(): JSX.Element {
             />
           </label>
           <button disabled={loading} onClick={() => void handleAuth()}>
-            {registerMode ? "Create Account" : "Login"}
+            {loading ? "Please wait..." : registerMode ? "Create Account" : "Login"}
           </button>
           <button className="ghost" onClick={() => setRegisterMode((value) => !value)}>
             {registerMode ? "Use existing account" : "Create new account"}
+          </button>
+          {loading ? <div className="auth-progress">Processing request...</div> : null}
+          <div className="status">{statusMessage}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (appView === "home") {
+    return (
+      <div className="auth-screen">
+        <div className="auth-card home-card">
+          <h1>Welcome, {userEmail}</h1>
+          <p>Enter a topic first, then start the simulation.</p>
+          <label>
+            Topic
+            <input
+              value={customTopicInput}
+              onChange={(event) => setCustomTopicInput(event.target.value)}
+              placeholder="e.g. Event sourcing, OAuth 2.0, CPU scheduling"
+            />
+          </label>
+          <label>
+            Difficulty
+            <select
+              value={selectedLevel}
+              onChange={(event) => setSelectedLevel(event.target.value as DifficultyLevel)}
+            >
+              {LEVELS.map((level) => (
+                <option key={level} value={level}>
+                  {level}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button disabled={generatingTopic || !customTopicInput.trim()} onClick={() => void generateCustomSimulation()}>
+            {generatingTopic ? "Generating Simulation..." : "Generate And Open Simulation"}
+          </button>
+          <button className="ghost" onClick={handleLogout}>
+            Logout
           </button>
           <div className="status">{statusMessage}</div>
         </div>
@@ -986,6 +1116,15 @@ export default function App(): JSX.Element {
             </select>
             <button className="ghost" onClick={() => void runActionFeedback("back", "manual-back-navigation")}>
               Back Feedback
+            </button>
+            <button
+              className="ghost"
+              onClick={() => {
+                setAppView("home");
+                setStatusMessage("Returned to home.");
+              }}
+            >
+              Home
             </button>
             <button className="ghost" onClick={handleLogout}>
               Logout
@@ -1088,7 +1227,15 @@ export default function App(): JSX.Element {
                 })
               }
             />
-            Narration
+            Narration Voice
+          </label>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={subtitlesEnabled}
+              onChange={(event) => setSubtitlesEnabled(event.target.checked)}
+            />
+            Subtitles
           </label>
           <label className="toggle">
             <input
@@ -1216,7 +1363,9 @@ export default function App(): JSX.Element {
         </section>
       </aside>
 
-      <div className="subtitle-bar">{subtitle || "Subtitles will appear here during narration."}</div>
+      <div className="subtitle-bar">
+        {subtitlesEnabled ? subtitle || "Subtitles will appear here during narration." : "Subtitles are muted."}
+      </div>
       <div className="status-bar">{loading ? "Loading..." : statusMessage}</div>
     </div>
   );
