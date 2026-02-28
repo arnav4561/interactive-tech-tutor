@@ -52,11 +52,13 @@ function loadSubtitlePreference(): boolean {
 }
 
 export default function App(): JSX.Element {
+  const [displayName, setDisplayName] = useState<string>(() => localStorage.getItem("itt_name") ?? "");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [registerMode, setRegisterMode] = useState(false);
   const [token, setToken] = useState<string>(() => localStorage.getItem("itt_token") ?? "");
   const [userEmail, setUserEmail] = useState<string>(() => localStorage.getItem("itt_email") ?? "");
+  const [userName, setUserName] = useState<string>(() => localStorage.getItem("itt_name") ?? "");
   const [topics, setTopics] = useState<Topic[]>([]);
   const [selectedTopicId, setSelectedTopicId] = useState<string>("");
   const [selectedLevel, setSelectedLevel] = useState<DifficultyLevel>("beginner");
@@ -72,6 +74,7 @@ export default function App(): JSX.Element {
   const [statusMessage, setStatusMessage] = useState("Ready.");
   const [loading, setLoading] = useState(false);
   const [appView, setAppView] = useState<"home" | "simulation">("home");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceCaptureEnabled, setVoiceCaptureEnabled] = useState<boolean>(() => loadVoiceCapturePreference());
   const [subtitlesEnabled, setSubtitlesEnabled] = useState<boolean>(() => loadSubtitlePreference());
@@ -93,6 +96,14 @@ export default function App(): JSX.Element {
     () => topics.find((topic) => topic.id === selectedTopicId) ?? null,
     [topics, selectedTopicId]
   );
+
+  const topicTitleById = useMemo(() => {
+    const map = new Map<string, string>();
+    topics.forEach((topic) => {
+      map.set(topic.id, topic.title);
+    });
+    return map;
+  }, [topics]);
 
   const currentProblemSet = useMemo(
     () => problemSets.find((set) => set.level === selectedLevel),
@@ -305,6 +316,11 @@ export default function App(): JSX.Element {
         setProgress(progressResponse.progress);
         setPreferences(prefResponse.preferences);
         setSelectedTopicId((current) => current || topicsResponse.topics[0]?.id || "");
+        if (!userName.trim()) {
+          const localEmail = localStorage.getItem("itt_email") ?? "";
+          const localName = localStorage.getItem("itt_name") ?? "";
+          setUserName(localName.trim() || localEmail.split("@")[0] || "Learner");
+        }
         setAppView("home");
         setStatusMessage("Session restored.");
       } catch (error) {
@@ -313,7 +329,7 @@ export default function App(): JSX.Element {
         setLoading(false);
       }
     },
-    []
+    [userName]
   );
 
   const handleAuth = useCallback(async () => {
@@ -330,17 +346,20 @@ export default function App(): JSX.Element {
         user: { email: string };
       }>(route, { email, password });
 
+      const normalizedName = displayName.trim() || response.user.email.split("@")[0] || "Learner";
       setToken(response.token);
       setUserEmail(response.user.email);
+      setUserName(normalizedName);
       localStorage.setItem("itt_token", response.token);
       localStorage.setItem("itt_email", response.user.email);
+      localStorage.setItem("itt_name", normalizedName);
       setStatusMessage(registerMode ? "Account created." : "Login successful.");
     } catch (error) {
       setStatusMessage((error as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [email, password, registerMode]);
+  }, [displayName, email, password, registerMode]);
 
   const handleLogout = useCallback(() => {
     voiceCaptureDesiredRef.current = false;
@@ -349,8 +368,10 @@ export default function App(): JSX.Element {
     }
     setVoiceCaptureEnabled(false);
     setAppView("home");
+    setMenuOpen(false);
     setToken("");
     setUserEmail("");
+    setUserName("");
     setTopics([]);
     setProgress([]);
     setProblemSets([]);
@@ -361,7 +382,9 @@ export default function App(): JSX.Element {
     clearNarrationTimers();
     localStorage.removeItem("itt_token");
     localStorage.removeItem("itt_email");
+    localStorage.removeItem("itt_name");
     localStorage.removeItem("itt_voice_capture");
+    localStorage.removeItem("itt_subtitles");
     setStatusMessage("Logged out.");
   }, [clearNarrationTimers]);
 
@@ -388,6 +411,7 @@ export default function App(): JSX.Element {
       }));
       setSelectedTopicId(response.topic.id);
       setAppView("simulation");
+      setMenuOpen(false);
       setMessages((current) => [...current, { role: "assistant", text: response.openingMessage }]);
       const source = response.generationSource === "gemini" ? "Gemini" : "template";
       setStatusMessage(`Generated simulation for ${response.topic.title} (${source}).`);
@@ -785,6 +809,13 @@ export default function App(): JSX.Element {
   ]);
 
   useEffect(() => {
+    if (!token || !selectedTopicId) {
+      return;
+    }
+    void loadHistory();
+  }, [loadHistory, selectedTopicId, token]);
+
+  useEffect(() => {
     if (!token || appView !== "simulation" || !selectedTopicId) {
       return;
     }
@@ -819,8 +850,7 @@ export default function App(): JSX.Element {
     };
 
     void loadTopicData();
-    void loadHistory();
-  }, [appView, generatedProblemSets, loadHistory, playNarration, selectedTopicId, token, topics]);
+  }, [appView, generatedProblemSets, playNarration, selectedTopicId, token, topics]);
 
   useEffect(() => {
     if (!selectedTopicId) {
@@ -1013,12 +1043,87 @@ export default function App(): JSX.Element {
     };
   }, [clearNarrationTimers]);
 
+  const userMenu = (
+    <>
+      <button
+        className="menu-toggle"
+        onClick={() => setMenuOpen((value) => !value)}
+        aria-label="Open menu"
+      >
+        ☰
+      </button>
+      {menuOpen ? <button className="menu-backdrop" onClick={() => setMenuOpen(false)} aria-label="Close menu" /> : null}
+      <aside className={menuOpen ? "side-menu open" : "side-menu"}>
+        <div className="side-menu-header">
+          <strong>{userName || "Learner"}</strong>
+          <span>{userEmail}</span>
+        </div>
+        <section className="side-menu-section">
+          <h3>Topic Progress</h3>
+          {progress.length === 0 ? (
+            <p>No progress yet.</p>
+          ) : (
+            <div className="side-scroll">
+              {progress
+                .slice()
+                .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+                .map((item, index) => (
+                  <p key={`${item.topicId}-${item.level}-${index}`}>
+                    <strong>{topicTitleById.get(item.topicId) ?? item.topicId}</strong> [{item.level}] {item.status} ({item.score}%)
+                  </p>
+                ))}
+            </div>
+          )}
+        </section>
+        <section className="side-menu-section">
+          <h3>Interaction History</h3>
+          {history.length === 0 ? (
+            <p>No interactions yet for current topic.</p>
+          ) : (
+            <div className="side-scroll">
+              {history
+                .slice()
+                .reverse()
+                .slice(0, 30)
+                .map((item) => (
+                  <p key={item.id}>
+                    <strong>{new Date(item.timestamp).toLocaleTimeString()}</strong> [{item.type}] {item.input}
+                  </p>
+                ))}
+            </div>
+          )}
+          {selectedTopicId ? (
+            <button className="ghost" onClick={() => void deleteTopicHistory()}>
+              Delete Current Topic History
+            </button>
+          ) : null}
+        </section>
+        <section className="side-menu-section">
+          <button
+            className="ghost"
+            onClick={handleLogout}
+          >
+            Logout
+          </button>
+        </section>
+      </aside>
+    </>
+  );
+
   if (!token) {
     return (
       <div className="auth-screen">
         <div className="auth-card">
           <h1>Interactive Tech Tutor</h1>
           <p>Sign in to continue your multi-modal learning session.</p>
+          <label>
+            Name
+            <input
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value)}
+              placeholder="Your name"
+            />
+          </label>
           <label>
             Email
             <input
@@ -1051,37 +1156,40 @@ export default function App(): JSX.Element {
 
   if (appView === "home") {
     return (
-      <div className="auth-screen">
-        <div className="auth-card home-card">
-          <h1>Welcome, {userEmail}</h1>
-          <p>Enter a topic first, then start the simulation.</p>
-          <label>
-            Topic
-            <input
-              value={customTopicInput}
-              onChange={(event) => setCustomTopicInput(event.target.value)}
-              placeholder="e.g. Event sourcing, OAuth 2.0, CPU scheduling"
-            />
-          </label>
-          <label>
-            Difficulty
-            <select
-              value={selectedLevel}
-              onChange={(event) => setSelectedLevel(event.target.value as DifficultyLevel)}
+      <div className="home-shell">
+        {userMenu}
+        <div className="home-content">
+          <h1>Welcome, {userName || "Learner"}</h1>
+          <p>Choose your topic and launch a fresh simulation.</p>
+          <div className="home-controls">
+            <label>
+              Topic
+              <input
+                value={customTopicInput}
+                onChange={(event) => setCustomTopicInput(event.target.value)}
+                placeholder="e.g. Event sourcing, OAuth 2.0, CPU scheduling"
+              />
+            </label>
+            <label>
+              Difficulty
+              <select
+                value={selectedLevel}
+                onChange={(event) => setSelectedLevel(event.target.value as DifficultyLevel)}
+              >
+                {LEVELS.map((level) => (
+                  <option key={level} value={level}>
+                    {level}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              disabled={generatingTopic || !customTopicInput.trim()}
+              onClick={() => void generateCustomSimulation()}
             >
-              {LEVELS.map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button disabled={generatingTopic || !customTopicInput.trim()} onClick={() => void generateCustomSimulation()}>
-            {generatingTopic ? "Generating Simulation..." : "Generate And Open Simulation"}
-          </button>
-          <button className="ghost" onClick={handleLogout}>
-            Logout
-          </button>
+              {generatingTopic ? "Generating Simulation..." : "Generate And Open Simulation"}
+            </button>
+          </div>
           <div className="status">{statusMessage}</div>
         </div>
       </div>
@@ -1090,11 +1198,12 @@ export default function App(): JSX.Element {
 
   return (
     <div className="app-shell">
+      {userMenu}
       <main className="simulation-area">
         <header className="top-bar">
           <div>
             <h1>Interactive Tech Tutor</h1>
-            <p>{userEmail}</p>
+            <p>{userName || userEmail}</p>
           </div>
           <div className="top-actions">
             <select value={selectedTopicId} onChange={(event) => setSelectedTopicId(event.target.value)}>
@@ -1126,25 +1235,12 @@ export default function App(): JSX.Element {
             >
               Home
             </button>
-            <button className="ghost" onClick={handleLogout}>
-              Logout
-            </button>
           </div>
         </header>
 
         <section className="topic-summary">
           <h2>{selectedTopic?.title ?? "Select a topic"}</h2>
           <p>{selectedTopic?.description ?? "No topic selected."}</p>
-          <div className="topic-generator">
-            <input
-              value={customTopicInput}
-              onChange={(event) => setCustomTopicInput(event.target.value)}
-              placeholder="Enter any topic (e.g. Kubernetes scheduling, OAuth, Binary trees...)"
-            />
-            <button disabled={generatingTopic || !customTopicInput.trim()} onClick={() => void generateCustomSimulation()}>
-              {generatingTopic ? "Generating..." : "Generate Live Simulation"}
-            </button>
-          </div>
           <div className="feedback-strip">
             <strong>Action Feedback:</strong> {feedbackText || "Perform drag/scroll/back actions to receive feedback."}
           </div>
@@ -1348,19 +1444,6 @@ export default function App(): JSX.Element {
           <p>{uploadFeedback || "Upload a file or capture an image for analysis."}</p>
         </section>
 
-        <section className="panel-section">
-          <h3>History</h3>
-          <button className="ghost" onClick={() => void deleteTopicHistory()}>
-            Delete Current Topic History
-          </button>
-          <div className="history-window">
-            {history.slice(-20).map((item) => (
-              <p key={item.id}>
-                <strong>{new Date(item.timestamp).toLocaleTimeString()}</strong> [{item.type}] {item.input}
-              </p>
-            ))}
-          </div>
-        </section>
       </aside>
 
       <div className="subtitle-bar">
