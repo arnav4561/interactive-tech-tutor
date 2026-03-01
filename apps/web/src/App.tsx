@@ -24,7 +24,7 @@ type RecognitionConstructor = new () => {
   stop: () => void;
 };
 
-type AppView = "home" | "simulation" | "history-list" | "history-detail";
+type AppView = "home" | "simulation" | "history-list" | "history-detail" | "progress-list";
 
 type VisualKind = "service" | "store" | "queue" | "decision" | "client" | "processor";
 
@@ -68,24 +68,99 @@ function toNodeKind(token: string): VisualKind {
 }
 
 function buildVisualPlanFromTopic(topic: Topic): VisualPlan {
-  const mergedText = `${topic.title} ${topic.description} ${topic.narration.join(" ")}`.replace(/[^a-zA-Z0-9 ]/g, " ");
-  const baseTokens = Array.from(
+  const mergedText = `${topic.title} ${topic.description} ${topic.narration.join(" ")}`
+    .replace(/[^a-zA-Z0-9 ]/g, " ")
+    .toLowerCase();
+
+  const domainCatalog = [
+    {
+      key: "database",
+      keywords: ["sql", "database", "query", "table", "index", "transaction", "postgres", "mongodb"],
+      nodes: [
+        { label: "CLIENT", kind: "client" as const },
+        { label: "QUERY", kind: "service" as const },
+        { label: "PLANNER", kind: "processor" as const },
+        { label: "INDEX", kind: "store" as const },
+        { label: "TABLE", kind: "store" as const },
+        { label: "RESULT", kind: "service" as const }
+      ]
+    },
+    {
+      key: "network",
+      keywords: ["http", "api", "network", "packet", "request", "response", "gateway", "route"],
+      nodes: [
+        { label: "CLIENT", kind: "client" as const },
+        { label: "DNS", kind: "processor" as const },
+        { label: "GATEWAY", kind: "service" as const },
+        { label: "ROUTER", kind: "queue" as const },
+        { label: "SERVICE", kind: "service" as const },
+        { label: "RESPONSE", kind: "service" as const }
+      ]
+    },
+    {
+      key: "ai",
+      keywords: ["model", "ai", "ml", "neural", "embedding", "inference", "training", "llm"],
+      nodes: [
+        { label: "INPUT", kind: "client" as const },
+        { label: "TOKENIZER", kind: "processor" as const },
+        { label: "EMBEDDING", kind: "store" as const },
+        { label: "MODEL", kind: "processor" as const },
+        { label: "DECODER", kind: "decision" as const },
+        { label: "OUTPUT", kind: "service" as const }
+      ]
+    },
+    {
+      key: "frontend",
+      keywords: ["react", "ui", "frontend", "component", "state", "render", "hook", "dom"],
+      nodes: [
+        { label: "EVENT", kind: "client" as const },
+        { label: "STATE", kind: "store" as const },
+        { label: "HOOK", kind: "processor" as const },
+        { label: "RENDER", kind: "service" as const },
+        { label: "DOM", kind: "service" as const },
+        { label: "USER", kind: "client" as const }
+      ]
+    },
+    {
+      key: "security",
+      keywords: ["auth", "token", "jwt", "encryption", "permission", "policy", "secure", "oauth"],
+      nodes: [
+        { label: "USER", kind: "client" as const },
+        { label: "AUTH", kind: "decision" as const },
+        { label: "TOKEN", kind: "store" as const },
+        { label: "POLICY", kind: "decision" as const },
+        { label: "RESOURCE", kind: "service" as const },
+        { label: "AUDIT", kind: "store" as const }
+      ]
+    }
+  ] as const;
+
+  const domain = domainCatalog
+    .map((entry) => ({
+      entry,
+      score: entry.keywords.reduce((sum, keyword) => sum + (mergedText.includes(keyword) ? 1 : 0), 0)
+    }))
+    .sort((a, b) => b.score - a.score)[0]?.entry;
+
+  const tokens = Array.from(
     new Set(
       mergedText
         .split(/\s+/)
         .map((token) => token.trim())
         .filter((token) => token.length >= 4)
-        .map((token) => token.toLowerCase())
     )
-  ).slice(0, 10);
+  ).slice(0, 12);
 
-  const fallbackTokens = ["input", "transform", "validate", "store", "feedback", "output"];
-  const tokens = baseTokens.length >= 6 ? baseTokens : [...baseTokens, ...fallbackTokens].slice(0, 6);
-
-  const nodes: VisualNode[] = tokens.slice(0, 8).map((token, index) => ({
-    id: `node-${index + 1}`,
+  const fallbackNodes = ["input", "transform", "validate", "route", "store", "output"].map((token) => ({
     label: token.toUpperCase(),
     kind: toNodeKind(token)
+  }));
+
+  const baseNodes = domain?.nodes ?? fallbackNodes;
+  const nodes: VisualNode[] = baseNodes.slice(0, 8).map((node, index) => ({
+    id: `node-${index + 1}`,
+    label: node.label,
+    kind: node.kind
   }));
 
   const narrationLines = topic.narration.filter((line) => line.trim().length > 0);
@@ -93,21 +168,43 @@ function buildVisualPlanFromTopic(topic: Topic): VisualPlan {
     narrationLines.length > 0
       ? narrationLines
       : [
-          `Initialize ${topic.title}`,
-          `Route input through key processing stages`,
-          `Validate and refine intermediate output`,
-          `Return final result and feedback`
+          `Initialize ${topic.title} context and identify input.`,
+          "Process through core transformation stages.",
+          "Validate intermediate output and handle edge cases.",
+          "Deliver final output and close feedback loop."
         ];
 
   const steps: VisualStep[] = stepSource.slice(0, 8).map((line, index) => {
-    const first = nodes[index % nodes.length]?.id;
-    const second = nodes[(index + 1) % nodes.length]?.id;
-    const third = nodes[(index + 2) % nodes.length]?.id;
+    const focusTerms = line
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]/g, " ")
+      .split(/\s+/)
+      .filter((term) => term.length >= 4);
+
+    const matched = nodes
+      .filter((node) => {
+        const label = node.label.toLowerCase();
+        return focusTerms.some((term) => label.includes(term) || term.includes(label.slice(0, 4)));
+      })
+      .map((node) => node.id);
+
+    const fallback = [
+      nodes[index % nodes.length]?.id,
+      nodes[(index + 1) % nodes.length]?.id
+    ].filter((value): value is string => Boolean(value));
+
+    const highlightNodeIds = matched.length > 0 ? matched.slice(0, 3) : fallback;
+    const conciseAction = line.trim().replace(/\s+/g, " ").slice(0, 150);
+    const termHint = tokens[index % Math.max(tokens.length, 1)] ?? "";
+    const action = termHint && !conciseAction.toLowerCase().includes(termHint)
+      ? `${conciseAction} [focus: ${termHint.toUpperCase()}]`
+      : conciseAction;
+
     return {
       id: `step-${index + 1}`,
-      title: `Step ${index + 1}`,
-      action: line,
-      highlightNodeIds: [first, second, third].filter((value): value is string => Boolean(value))
+      title: `Stage ${index + 1}`,
+      action,
+      highlightNodeIds
     };
   });
 
@@ -183,6 +280,7 @@ export default function App(): JSX.Element {
   const [generatedVisualPlans, setGeneratedVisualPlans] = useState<Record<string, VisualPlan>>({});
   const [selectedHistoryId, setSelectedHistoryId] = useState("");
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [currentStepText, setCurrentStepText] = useState("");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const recognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
@@ -709,7 +807,7 @@ export default function App(): JSX.Element {
           if (current === "history-detail") {
             return "history-list";
           }
-          if (current === "simulation" || current === "history-list") {
+          if (current === "simulation" || current === "history-list" || current === "progress-list") {
             return "home";
           }
           return current;
@@ -808,7 +906,6 @@ export default function App(): JSX.Element {
       recognitionRef.current.stop();
       setListening(false);
     }
-    setStatusMessage("Voice capture paused.");
   }, []);
 
   const submitCurrentProblemSet = useCallback(async () => {
@@ -908,12 +1005,23 @@ export default function App(): JSX.Element {
     setAppView("history-detail");
   }, []);
 
+  const openProgressPage = useCallback(() => {
+    setMenuOpen(false);
+    setAppView("progress-list");
+    setStatusMessage("Viewing topic progress.");
+  }, []);
+
   const navigateBack = useCallback(() => {
     if (appView === "history-detail") {
       setAppView("history-list");
       return;
     }
     if (appView === "history-list") {
+      setAppView("home");
+      setStatusMessage("Returned to home.");
+      return;
+    }
+    if (appView === "progress-list") {
       setAppView("home");
       setStatusMessage("Returned to home.");
       return;
@@ -1078,6 +1186,7 @@ export default function App(): JSX.Element {
     let animationFrame = 0;
     let lastRenderTime = performance.now();
     let elapsedStepMs = 0;
+    let simClock = 0;
     const dpr = window.devicePixelRatio || 1;
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
@@ -1248,11 +1357,12 @@ export default function App(): JSX.Element {
     };
 
     const syncSubtitleWithStep = () => {
+      const currentStep = steps[simulationStepRef.current];
+      setCurrentStepText(currentStep ? `${currentStep.title}: ${currentStep.action}` : "");
       if (!subtitlesEnabled) {
         setSubtitle("");
         return;
       }
-      const currentStep = steps[simulationStepRef.current];
       setSubtitle(currentStep ? currentStep.action : "");
     };
 
@@ -1263,6 +1373,7 @@ export default function App(): JSX.Element {
       lastRenderTime = time;
 
       if (!simulationPaused && !document.hidden) {
+        simClock += deltaMs;
         elapsedStepMs += deltaMs;
         if (elapsedStepMs >= stepDurationMs) {
           elapsedStepMs = 0;
@@ -1280,6 +1391,18 @@ export default function App(): JSX.Element {
         .map((id) => nodeMap.get(id))
         .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
+      drawRoundedRect(16, 58, Math.min(width - 32, 560), 50, 10);
+      context.fillStyle = palette.card;
+      context.fill();
+      context.strokeStyle = palette.line;
+      context.lineWidth = 1;
+      context.stroke();
+      context.fillStyle = palette.text;
+      context.font = "700 12px 'Trebuchet MS', sans-serif";
+      context.fillText(`Now Explaining: ${currentStep?.title ?? "Stage"}`, 28, 79);
+      context.font = "11px 'Trebuchet MS', sans-serif";
+      context.fillText((currentStep?.action ?? "").slice(0, 84), 28, 98);
+
       for (let index = 0; index < highlightedLayouts.length - 1; index += 1) {
         const from = highlightedLayouts[index];
         const to = highlightedLayouts[index + 1];
@@ -1292,7 +1415,7 @@ export default function App(): JSX.Element {
       }
 
       nodeLayouts.forEach((item, index) => {
-        const pulse = highlighted.has(item.node.id) ? 1 + 0.08 * Math.sin(time / 180 + index) : 1;
+        const pulse = highlighted.has(item.node.id) ? 1 + 0.08 * Math.sin(simClock / 180 + index) : 1;
         const size = 24 * pulse;
         drawNodeByKind(item.x, item.y, size, item.node.kind);
         context.fillStyle = highlighted.has(item.node.id)
@@ -1363,6 +1486,9 @@ export default function App(): JSX.Element {
     };
 
     const onPointerDown = (event: PointerEvent) => {
+      if (simulationPaused) {
+        return;
+      }
       const point = pointerToCanvas(event);
       if (pointInDraggable(point.x, point.y)) {
         dragging = true;
@@ -1418,6 +1544,7 @@ export default function App(): JSX.Element {
       return;
     }
     lastNarratedTopicRef.current = "";
+    setCurrentStepText("");
     clearNarrationTimers();
   }, [appView, clearNarrationTimers]);
 
@@ -1442,23 +1569,10 @@ export default function App(): JSX.Element {
       </button>
       {menuOpen ? <button className="menu-backdrop" onClick={() => setMenuOpen(false)} aria-label="Close menu" /> : null}
       <aside className={menuOpen ? "side-menu open" : "side-menu"}>
-        <div className="side-menu-header">
-          <strong>{userName || "Learner"}</strong>
-          <span>{userEmail}</span>
-        </div>
         <section className="side-menu-section">
-          <h3>Topic Progress</h3>
-          {progress.length === 0 ? (
-            <p>No progress yet.</p>
-          ) : (
-            <div className="side-scroll">
-              {sortedProgress.map((item, index) => (
-                <p key={`${item.topicId}-${item.level}-${index}`}>
-                  <strong>{topicTitleById.get(item.topicId) ?? item.topicId}</strong> [{item.level}] {item.status} ({item.score}%)
-                </p>
-              ))}
-            </div>
-          )}
+          <button className="ghost menu-option" onClick={openProgressPage}>
+            Topic Progress
+          </button>
         </section>
         <section className="side-menu-section">
           <button className="ghost menu-option" onClick={() => void openHistoryPage()}>
@@ -1671,42 +1785,73 @@ export default function App(): JSX.Element {
     );
   }
 
-  return (
-    <div className={chatPanelOpen ? "app-shell chat-open" : "app-shell chat-closed"}>
-      {userMenu}
-      <main className="simulation-area">
-        <header className="top-bar">
-          <div className="top-title-wrap">
+  if (appView === "progress-list") {
+    return (
+      <div className="history-shell">
+        {userMenu}
+        <div className="history-content">
+          <header className="page-header">
             <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
               ←
             </button>
-            <div>
-              <h1>Interactive Tech Tutor</h1>
-              <p>{userName || userEmail}</p>
+            <h1>Topic Progress</h1>
+          </header>
+          {sortedProgress.length === 0 ? (
+            <div className="history-empty">No progress yet. Complete a simulation to track progress.</div>
+          ) : (
+            <div className="history-list">
+              {sortedProgress.map((item, index) => (
+                <article key={`${item.topicId}-${item.level}-${index}`} className="history-item">
+                  <strong>{topicTitleById.get(item.topicId) ?? item.topicId}</strong>
+                  <span>{new Date(item.updatedAt).toLocaleString()}</span>
+                  <p>
+                    Level: {item.level} | Status: {item.status} | Score: {item.score}%
+                  </p>
+                </article>
+              ))}
             </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={chatPanelOpen ? "app-shell chat-open" : "app-shell chat-closed"}>
+      {userMenu}
+      <button className="sim-back-floating" onClick={navigateBack} aria-label="Go back">
+        ←
+      </button>
+      <main className="simulation-area">
+        <header className="top-bar">
+          <div className="top-title-wrap compact">
+            <h1>Interactive Tech Tutor</h1>
           </div>
-          <div className="top-actions stacked">
+          <div className="top-actions icon-stack">
             <button
-              className={chatPanelOpen ? "active" : ""}
+              className={chatPanelOpen ? "active icon-button" : "icon-button"}
               onClick={() => setChatPanelOpen((value) => !value)}
+              aria-label={chatPanelOpen ? "Hide chat panel" : "Show chat panel"}
+              title={chatPanelOpen ? "Hide chat panel" : "Show chat panel"}
             >
-              {chatPanelOpen ? "Hide Chat Panel" : "Show Chat Panel"}
+              ▤
             </button>
             <button
-              className={toolsPanelOpen ? "active" : ""}
+              className={toolsPanelOpen ? "active icon-button" : "icon-button"}
               onClick={() => setToolsPanelOpen((value) => !value)}
+              aria-label={toolsPanelOpen ? "Hide controls" : "Show controls"}
+              title={toolsPanelOpen ? "Hide controls" : "Show controls"}
             >
-              {toolsPanelOpen ? "Hide Controls" : "Show Controls"}
+              ...
             </button>
           </div>
         </header>
 
-        <section className="topic-summary">
+        <section className="topic-summary compact">
           <h2>{selectedTopic?.title ?? "Simulation Topic"}</h2>
-          <p>{selectedTopic?.description ?? "Generate a topic from home to start the simulation."}</p>
-          <div className="feedback-strip">
-            <strong>Action Feedback:</strong> {feedbackText || "Drag elements in the simulation to get feedback."}
-          </div>
+          <p className="now-explaining">
+            Now Explaining: {currentStepText || "Preparing simulation sequence..."}
+          </p>
         </section>
 
         <section className="canvas-wrapper">
@@ -1714,21 +1859,8 @@ export default function App(): JSX.Element {
         </section>
 
         {toolsPanelOpen ? (
-          <section className="panel-section tools-panel">
+          <section className="panel-section tools-panel floating">
             <h3>Simulation Controls</h3>
-            <label>
-              Difficulty Level
-              <select
-                value={selectedLevel}
-                onChange={(event) => setSelectedLevel(event.target.value as DifficultyLevel)}
-              >
-                {LEVELS.map((level) => (
-                  <option key={level} value={level} disabled={!unlockedLevels.has(level)}>
-                    {unlockedLevels.has(level) ? level : `${level} [locked]`}
-                  </option>
-                ))}
-              </select>
-            </label>
             <label className="toggle">
               <input
                 type="checkbox"
@@ -1764,9 +1896,7 @@ export default function App(): JSX.Element {
               />
               Voice Navigation (coming soon)
             </label>
-            <div className="voice-note">
-              Voice narration and voice capture are disabled in simulation for now.
-            </div>
+            <div className="voice-note">Voice narration is intentionally disabled in simulation for now.</div>
           </section>
         ) : null}
       </main>
@@ -1810,10 +1940,12 @@ export default function App(): JSX.Element {
 
       <div className="sim-controls-bottom">
         <button
-          className="sim-play-toggle"
+          className="sim-play-toggle icon-button"
           onClick={() => setSimulationPaused((value) => !value)}
+          aria-label={simulationPaused ? "Play simulation" : "Pause simulation"}
+          title={simulationPaused ? "Play simulation" : "Pause simulation"}
         >
-          {simulationPaused ? "Play Simulation" : "Pause Simulation"}
+          {simulationPaused ? "▶" : "❚❚"}
         </button>
       </div>
       <div className="subtitle-bar">
