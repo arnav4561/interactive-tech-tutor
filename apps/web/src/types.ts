@@ -59,9 +59,65 @@ export interface ChatMessage {
   text: string;
 }
 
+export interface SimulationVector3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface SimulationObject {
+  id: string;
+  type: "box" | "sphere" | "cylinder" | "cone" | "torus" | "plane" | "line" | "arrow" | "text";
+  color: string;
+  size: SimulationVector3;
+  position: SimulationVector3;
+  rotation?: SimulationVector3;
+  label?: string;
+}
+
+export interface SimulationMovement {
+  objectId: string;
+  type: "translate" | "rotate" | "scale" | "pulse";
+  to?: SimulationVector3;
+  axis?: SimulationVector3;
+  durationMs: number;
+  repeat?: number;
+}
+
+export interface SimulationLabel {
+  text: string;
+  objectId?: string;
+  position?: SimulationVector3;
+  color?: string;
+}
+
+export interface SimulationMathExpression {
+  expression: string;
+  variables?: Record<string, number>;
+}
+
+export interface SimulationGraph {
+  type: "line" | "scatter" | "bar";
+  title: string;
+  x: number[];
+  y: number[];
+}
+
+export interface SimulationStep {
+  step: number;
+  objects: SimulationObject[];
+  movements: SimulationMovement[];
+  labels: SimulationLabel[];
+  annotation: string;
+  mathExpressions?: SimulationMathExpression[];
+  graph?: SimulationGraph;
+}
+
 export interface SimulationGenerationResponse {
   topic: Topic;
   problemSets: ProblemSet[];
   openingMessage: string;
   generationSource?: "template" | "gemini";
+  explanation_script: string;
+  simulation_steps: SimulationStep[];
 }

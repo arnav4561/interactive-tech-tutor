@@ -98,10 +98,66 @@ const simulationGenerateSchema = z.object({
   level: z.enum(["beginner", "intermediate", "advanced"]).default("beginner")
 });
 
+const vec3Schema = z.object({
+  x: z.number().min(-30).max(30),
+  y: z.number().min(-30).max(30),
+  z: z.number().min(-30).max(30)
+});
+
+const simObjectSchema = z.object({
+  id: z.string().min(1).max(40),
+  type: z.enum(["box", "sphere", "cylinder", "cone", "torus", "plane", "line", "arrow", "text"]),
+  color: z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/),
+  size: vec3Schema,
+  position: vec3Schema,
+  rotation: vec3Schema.optional(),
+  label: z.string().max(80).optional()
+});
+
+const simMovementSchema = z.object({
+  objectId: z.string().min(1).max(40),
+  type: z.enum(["translate", "rotate", "scale", "pulse"]),
+  to: vec3Schema.optional(),
+  axis: vec3Schema.optional(),
+  durationMs: z.number().min(300).max(10000).default(2200),
+  repeat: z.number().int().min(0).max(8).default(0)
+});
+
+const simLabelSchema = z.object({
+  text: z.string().min(1).max(180),
+  objectId: z.string().min(1).max(40).optional(),
+  position: vec3Schema.optional(),
+  color: z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).optional()
+});
+
+const simMathExpressionSchema = z.object({
+  expression: z.string().min(1).max(180),
+  variables: z.record(z.number()).default({})
+});
+
+const simGraphSchema = z.object({
+  type: z.enum(["line", "scatter", "bar"]),
+  title: z.string().min(1).max(120),
+  x: z.array(z.number()).min(2).max(120),
+  y: z.array(z.number()).min(2).max(120)
+});
+
+const simStepSchema = z.object({
+  step: z.number().int().min(1).max(20),
+  objects: z.array(simObjectSchema).min(1).max(24),
+  movements: z.array(simMovementSchema).max(40).default([]),
+  labels: z.array(simLabelSchema).max(24).default([]),
+  annotation: z.string().min(8).max(300),
+  mathExpressions: z.array(simMathExpressionSchema).max(10).optional(),
+  graph: simGraphSchema.optional()
+});
+
 const llmSimulationSchema = z.object({
   description: z.string().min(20).max(1400),
   narration: z.array(z.string().min(8).max(700)).min(3).max(14),
   openingMessage: z.string().min(20).max(700),
+  explanation_script: z.string().min(40).max(2800),
+  simulation_steps: z.array(simStepSchema).min(3).max(12),
   problemSets: z
     .array(
       z.object({
@@ -122,6 +178,7 @@ const llmSimulationSchema = z.object({
     )
     .min(3)
     .max(12)
+    .optional()
 });
 
 function slugify(value: string): string {
@@ -264,9 +321,217 @@ function normalizeNarration(lines: string[]): string[] {
     .slice(0, 8);
 }
 
+function textHash(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function topicKeywords(topic: Topic): string[] {
+  const stopWords = new Set([
+    "about",
+    "after",
+    "again",
+    "along",
+    "among",
+    "because",
+    "between",
+    "build",
+    "from",
+    "into",
+    "that",
+    "this",
+    "with",
+    "using",
+    "what",
+    "where",
+    "when",
+    "which",
+    "while",
+    "would",
+    "could",
+    "should"
+  ]);
+
+  const raw = `${topic.title} ${topic.description}`
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 && !stopWords.has(token));
+
+  const unique = Array.from(new Set(raw)).slice(0, 10);
+  if (unique.length >= 4) {
+    return unique;
+  }
+  return [...unique, "input", "process", "validate", "output"].slice(0, 6);
+}
+
+function buildTemplateSimulationSteps(topic: Topic): z.infer<typeof simStepSchema>[] {
+  const palette = ["#3b82f6", "#f97316", "#10b981", "#ec4899", "#eab308", "#6366f1", "#14b8a6", "#ef4444"];
+  const objectKinds: Array<z.infer<typeof simObjectSchema>["type"]> = [
+    "box",
+    "sphere",
+    "cylinder",
+    "cone",
+    "torus",
+    "plane",
+    "arrow"
+  ];
+  const keywords = topicKeywords(topic);
+  const seed = textHash(topic.title.toLowerCase());
+  const objectCount = Math.min(10, Math.max(5, keywords.length + 1));
+  const radius = 4 + (seed % 3);
+
+  const baseObjects = Array.from({ length: objectCount }).map((_, index) => {
+    const angle = (index / objectCount) * Math.PI * 2;
+    const keyword = keywords[index % keywords.length] ?? `stage-${index + 1}`;
+    return {
+      id: `obj-${index + 1}`,
+      type: objectKinds[(seed + index) % objectKinds.length],
+      color: palette[(seed + index * 3) % palette.length],
+      size: {
+        x: 0.9 + ((seed + index) % 4) * 0.22,
+        y: 0.9 + ((seed + index * 2) % 3) * 0.28,
+        z: 0.9 + ((seed + index * 5) % 4) * 0.2
+      },
+      position: {
+        x: Number((Math.cos(angle) * radius).toFixed(2)),
+        y: Number((Math.sin(angle) * (radius * 0.42)).toFixed(2)),
+        z: Number((((index % 3) - 1) * 0.7).toFixed(2))
+      },
+      rotation: { x: 0, y: 0, z: 0 },
+      label: keyword.toUpperCase().slice(0, 14)
+    };
+  }) satisfies z.infer<typeof simObjectSchema>[];
+
+  const titleLower = topic.title.toLowerCase();
+  const mathTopic = /(math|calculus|matrix|equation|algebra|physics|signal|probability|statistics)/.test(
+    titleLower
+  );
+  const graphTopic = /(graph|plot|chart|signal|trend|statistics|regression|probability|distribution)/.test(
+    titleLower
+  );
+
+  const stepOneMovements = baseObjects.slice(0, Math.max(2, Math.ceil(baseObjects.length / 3))).map((obj, index) => ({
+    objectId: obj.id,
+    type: "translate" as const,
+    to: { x: obj.position.x + 1.2 + index * 0.4, y: obj.position.y - 0.5, z: obj.position.z },
+    durationMs: 1900 + index * 180,
+    repeat: 0
+  }));
+
+  const stepTwoMovements = baseObjects
+    .slice(Math.max(1, Math.floor(baseObjects.length / 3)), Math.max(3, Math.floor((baseObjects.length * 2) / 3)))
+    .map((obj, index) => ({
+      objectId: obj.id,
+      type: index % 2 === 0 ? ("rotate" as const) : ("scale" as const),
+      axis: { x: 0.35 + index * 0.06, y: 1, z: 0.2 },
+      durationMs: 1700 + index * 200,
+      repeat: 0
+    }));
+
+  const stepThreeMovements = baseObjects.slice(-Math.max(2, Math.ceil(baseObjects.length / 3))).map((obj, index) => ({
+    objectId: obj.id,
+    type: index % 2 === 0 ? ("pulse" as const) : ("translate" as const),
+    to: { x: obj.position.x + 1.6, y: obj.position.y + 0.4, z: obj.position.z },
+    durationMs: 1800 + index * 210,
+    repeat: index % 2 === 0 ? 1 : 0
+  }));
+
+  return [
+    {
+      step: 1,
+      objects: baseObjects,
+      movements: stepOneMovements,
+      labels: [
+        {
+          text: `${topic.title}: input and setup phase`,
+          position: { x: 0, y: 4.8, z: 0 },
+          color: "#1f2937"
+        }
+      ],
+      annotation: `Step 1 sets the input context for ${topic.title} and positions core components.`,
+      mathExpressions: mathTopic
+        ? [
+            { expression: "v = d / t", variables: { d: 24, t: 6 } },
+            { expression: "E = m * c^2", variables: { m: 0.002, c: 300000000 } }
+          ]
+        : undefined
+    },
+    {
+      step: 2,
+      objects: baseObjects,
+      movements: stepTwoMovements,
+      labels: [
+        {
+          text: `${topic.title}: transformation and internal processing`,
+          position: { x: 0, y: 4.6, z: 0 },
+          color: "#1f2937"
+        }
+      ],
+      annotation: `Step 2 executes internal transformations and state changes for ${topic.title}.`,
+      graph: graphTopic
+        ? {
+            type: "line",
+            title: `${topic.title} trend`,
+            x: [0, 1, 2, 3, 4, 5],
+            y: [1, 1.5, 2.7, 3.4, 4.1, 4.8]
+          }
+        : undefined
+    },
+    {
+      step: 3,
+      objects: baseObjects,
+      movements: stepThreeMovements,
+      labels: [
+        {
+          text: `${topic.title}: validation and output`,
+          position: { x: 0, y: 4.4, z: 0 },
+          color: "#1f2937"
+        }
+      ],
+      annotation: `Step 3 validates results and explains final output behavior for ${topic.title}.`
+    }
+  ];
+}
+
+function normalizeSimulationSteps(
+  rawSteps: z.infer<typeof simStepSchema>[],
+  fallback: z.infer<typeof simStepSchema>[]
+): z.infer<typeof simStepSchema>[] {
+  if (!rawSteps.length) {
+    return fallback;
+  }
+
+  return rawSteps.slice(0, 12).map((step, index) => {
+    const fallbackStep = fallback[index % fallback.length];
+    const objectIds = new Set(step.objects.map((item) => item.id));
+    const movements = step.movements
+      .filter((move) => objectIds.has(move.objectId))
+      .slice(0, 40);
+    const labels = step.labels.slice(0, 24);
+    const graph =
+      step.graph && step.graph.x.length === step.graph.y.length && step.graph.x.length > 1
+        ? step.graph
+        : undefined;
+    return {
+      step: step.step,
+      objects: step.objects.slice(0, 24),
+      movements,
+      labels,
+      annotation: step.annotation.trim().slice(0, 300) || fallbackStep.annotation,
+      mathExpressions: step.mathExpressions?.slice(0, 10),
+      graph
+    };
+  });
+}
+
 function normalizeProblemSets(topic: Topic, llmData: z.infer<typeof llmSimulationSchema>): ProblemSet[] {
   const fallbackByLevel = new Map(buildGeneratedProblemSets(topic).map((set) => [set.level, set]));
-  const generatedByLevel = new Map(llmData.problemSets.map((set) => [set.level, set]));
+  const generatedByLevel = new Map((llmData.problemSets ?? []).map((set) => [set.level, set]));
 
   return LEVELS.map((level) => {
     const fallback = fallbackByLevel.get(level)!;
@@ -314,7 +579,7 @@ async function generateSimulationFromGemini(
   }
 
   const systemPrompt =
-    "You are an expert technical tutor. Return only JSON with dynamic simulation narration and exercises.";
+    "You are an expert technical tutor and simulation planner. Return only valid JSON.";
   const userPrompt = `
 Generate teaching content for topic "${topic}" at ${level} depth.
 
@@ -322,7 +587,52 @@ Output strict JSON with this shape:
 {
   "description": "string",
   "openingMessage": "string",
+  "explanation_script": "full step-by-step script for narration",
   "narration": ["line1", "line2", "... 4-8 lines"],
+  "simulation_steps": [
+    {
+      "step": 1,
+      "objects": [
+        {
+          "id": "obj-1",
+          "type": "box|sphere|cylinder|cone|torus|plane|line|arrow|text",
+          "color": "#RRGGBB",
+          "size": { "x": 1, "y": 1, "z": 1 },
+          "position": { "x": 0, "y": 0, "z": 0 },
+          "rotation": { "x": 0, "y": 0, "z": 0 },
+          "label": "optional label"
+        }
+      ],
+      "movements": [
+        {
+          "objectId": "obj-1",
+          "type": "translate|rotate|scale|pulse",
+          "to": { "x": 2, "y": 1, "z": 0 },
+          "axis": { "x": 0, "y": 1, "z": 0 },
+          "durationMs": 2200,
+          "repeat": 0
+        }
+      ],
+      "labels": [
+        {
+          "text": "annotation label",
+          "objectId": "obj-1",
+          "position": { "x": 0, "y": 2, "z": 0 },
+          "color": "#RRGGBB"
+        }
+      ],
+      "annotation": "what this step shows",
+      "mathExpressions": [
+        { "expression": "v = d / t", "variables": { "d": 10, "t": 2 } }
+      ],
+      "graph": {
+        "type": "line|scatter|bar",
+        "title": "graph title",
+        "x": [0, 1, 2],
+        "y": [0, 1, 4]
+      }
+    }
+  ],
   "problemSets": [
     {
       "level": "beginner",
@@ -350,6 +660,12 @@ Output strict JSON with this shape:
 }
 
 Rules:
+- simulation_steps must be topic-specific and visually meaningful.
+- Do not reuse generic object labels across unrelated topics.
+- Keep object count per step between 4 and 12.
+- Use labels and annotations so a learner can understand what each step means.
+- Include mathExpressions only when topic needs math rigor.
+- Include graph only when topic needs graph/data representation.
 - Keep narration natural and simulation-oriented.
 - Problems must match level difficulty.
 - Keep content concise and practical.
@@ -411,6 +727,67 @@ Rules:
   }
 
   return validated.data;
+}
+
+async function generateChatReplyFromGemini(
+  topicTitle: string,
+  message: string,
+  mode: "voice" | "text"
+): Promise<string | null> {
+  if (!GEMINI_API_KEY || !GEMINI_MODEL) {
+    return null;
+  }
+
+  const prompt = `
+You are a precise technical tutor helping with topic "${topicTitle}".
+User mode: ${mode}.
+User message: "${message}".
+
+Reply with:
+- 2 to 4 short sentences
+- practical, accurate explanation
+- one immediate next action the learner should take
+- no markdown
+`.trim();
+
+  const response = await fetch(
+    `${GEMINI_BASE_URL}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: prompt }]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.5
+        }
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Gemini chat failed (${response.status}): ${body.slice(0, 200)}`);
+  }
+
+  const payload = (await response.json()) as {
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{ text?: string }>;
+      };
+    }>;
+  };
+  const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join(" ").trim();
+  if (!text) {
+    return null;
+  }
+  return text.slice(0, 900);
 }
 
 function defaultVoiceSettings(): VoiceSettings {
@@ -740,25 +1117,26 @@ app.post(
 
   const { topic: requestedTopic, level } = parsed.data;
   const topic = buildGeneratedTopic(requestedTopic, level);
-  let problemSets = buildGeneratedProblemSets(topic);
-  let openingMessage = `Generated a live simulation plan for ${topic.title}. You can ask questions, drag objects, scroll, and use voice for continuous guidance.`;
-  let generationSource: "template" | "gemini" = "template";
-
-  try {
-    const llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
-    if (llmGenerated) {
-      topic.description = llmGenerated.description.trim();
-      const narration = normalizeNarration(llmGenerated.narration);
-      if (narration.length >= 3) {
-        topic.narration = narration;
-      }
-      problemSets = normalizeProblemSets(topic, llmGenerated);
-      openingMessage = llmGenerated.openingMessage.trim();
-      generationSource = "gemini";
-    }
-  } catch (error) {
-    console.error("Simulation generation fallback to template:", error);
+  const fallbackSimulationSteps = buildTemplateSimulationSteps(topic);
+  const llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
+  if (!llmGenerated) {
+    res.status(503).json({
+      error:
+        "Gemini simulation generation is unavailable. Configure GEMINI_API_KEY and GEMINI_MODEL on the API service."
+    });
+    return;
   }
+
+  topic.description = llmGenerated.description.trim();
+  const narration = normalizeNarration(llmGenerated.narration);
+  if (narration.length >= 3) {
+    topic.narration = narration;
+  }
+  const explanationScript = llmGenerated.explanation_script.trim();
+  const simulationSteps = normalizeSimulationSteps(llmGenerated.simulation_steps, fallbackSimulationSteps);
+  const problemSets = normalizeProblemSets(topic, llmGenerated);
+  const openingMessage = llmGenerated.openingMessage.trim();
+  const generationSource: "gemini" = "gemini";
 
   const interaction: InteractionRecord = {
     id: randomUUID(),
@@ -775,7 +1153,14 @@ app.post(
     store.history.push(interaction);
   });
 
-  res.json({ topic, problemSets, openingMessage, generationSource });
+  res.json({
+    topic,
+    problemSets,
+    openingMessage,
+    generationSource,
+    explanation_script: explanationScript,
+    simulation_steps: simulationSteps
+  });
   })
 );
 
@@ -796,9 +1181,19 @@ app.post(
 
   const { topicId, message, mode } = parsed.data;
   const topic = TOPICS.find((item) => item.id === topicId);
-  const responseText = topic
+  const topicTitle = topic?.title ?? topicId;
+  let responseText = topic
     ? `In ${topic.title}, focus on this next: ${message.slice(0, 120)}. Try the current ${mode} prompt, then validate with the active problem set.`
     : `I can help with that question. Start by clarifying the current topic and desired difficulty level.`;
+
+  try {
+    const geminiReply = await generateChatReplyFromGemini(topicTitle, message, mode);
+    if (geminiReply) {
+      responseText = geminiReply;
+    }
+  } catch (error) {
+    console.error("Gemini chat fallback to template:", error);
+  }
 
   const interaction: InteractionRecord = {
     id: randomUUID(),

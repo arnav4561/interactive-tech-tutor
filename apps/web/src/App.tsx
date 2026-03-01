@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut, prewarmApi } from "./api";
 import {
   ChatMessage,
@@ -6,12 +6,39 @@ import {
   HistoryItem,
   ProblemSet,
   ProgressRecord,
+  SimulationGraph,
   SimulationGenerationResponse,
+  SimulationStep,
   Topic,
   UserPreferences
 } from "./types";
 
 const LEVELS: DifficultyLevel[] = ["beginner", "intermediate", "advanced"];
+
+let threeLibPromise: Promise<any> | null = null;
+let plotlyLibPromise: Promise<any> | null = null;
+let mathjsLibPromise: Promise<any> | null = null;
+
+function loadThreeLib(): Promise<any> {
+  if (!threeLibPromise) {
+    threeLibPromise = import("three");
+  }
+  return threeLibPromise;
+}
+
+function loadPlotlyLib(): Promise<any> {
+  if (!plotlyLibPromise) {
+    plotlyLibPromise = import("plotly.js-dist-min");
+  }
+  return plotlyLibPromise;
+}
+
+function loadMathjsLib(): Promise<any> {
+  if (!mathjsLibPromise) {
+    mathjsLibPromise = import("mathjs");
+  }
+  return mathjsLibPromise;
+}
 
 type RecognitionConstructor = new () => {
   continuous: boolean;
@@ -26,193 +53,10 @@ type RecognitionConstructor = new () => {
 
 type AppView = "home" | "simulation" | "history-list" | "history-detail" | "progress-list";
 
-type VisualKind = "service" | "store" | "queue" | "decision" | "client" | "processor";
-
-interface VisualNode {
-  id: string;
-  label: string;
-  kind: VisualKind;
-}
-
-interface VisualStep {
-  id: string;
-  title: string;
-  action: string;
-  highlightNodeIds: string[];
-}
-
-interface VisualPlan {
-  sceneTitle: string;
-  nodes: VisualNode[];
-  steps: VisualStep[];
-}
-
-function toNodeKind(token: string): VisualKind {
-  const value = token.toLowerCase();
-  if (value.includes("queue") || value.includes("stream") || value.includes("event")) {
-    return "queue";
-  }
-  if (value.includes("db") || value.includes("data") || value.includes("table") || value.includes("store")) {
-    return "store";
-  }
-  if (value.includes("auth") || value.includes("rule") || value.includes("policy")) {
-    return "decision";
-  }
-  if (value.includes("api") || value.includes("service") || value.includes("endpoint")) {
-    return "service";
-  }
-  if (value.includes("user") || value.includes("client") || value.includes("browser")) {
-    return "client";
-  }
-  return "processor";
-}
-
-function buildVisualPlanFromTopic(topic: Topic): VisualPlan {
-  const mergedText = `${topic.title} ${topic.description} ${topic.narration.join(" ")}`
-    .replace(/[^a-zA-Z0-9 ]/g, " ")
-    .toLowerCase();
-
-  const domainCatalog = [
-    {
-      key: "database",
-      keywords: ["sql", "database", "query", "table", "index", "transaction", "postgres", "mongodb"],
-      nodes: [
-        { label: "CLIENT", kind: "client" as const },
-        { label: "QUERY", kind: "service" as const },
-        { label: "PLANNER", kind: "processor" as const },
-        { label: "INDEX", kind: "store" as const },
-        { label: "TABLE", kind: "store" as const },
-        { label: "RESULT", kind: "service" as const }
-      ]
-    },
-    {
-      key: "network",
-      keywords: ["http", "api", "network", "packet", "request", "response", "gateway", "route"],
-      nodes: [
-        { label: "CLIENT", kind: "client" as const },
-        { label: "DNS", kind: "processor" as const },
-        { label: "GATEWAY", kind: "service" as const },
-        { label: "ROUTER", kind: "queue" as const },
-        { label: "SERVICE", kind: "service" as const },
-        { label: "RESPONSE", kind: "service" as const }
-      ]
-    },
-    {
-      key: "ai",
-      keywords: ["model", "ai", "ml", "neural", "embedding", "inference", "training", "llm"],
-      nodes: [
-        { label: "INPUT", kind: "client" as const },
-        { label: "TOKENIZER", kind: "processor" as const },
-        { label: "EMBEDDING", kind: "store" as const },
-        { label: "MODEL", kind: "processor" as const },
-        { label: "DECODER", kind: "decision" as const },
-        { label: "OUTPUT", kind: "service" as const }
-      ]
-    },
-    {
-      key: "frontend",
-      keywords: ["react", "ui", "frontend", "component", "state", "render", "hook", "dom"],
-      nodes: [
-        { label: "EVENT", kind: "client" as const },
-        { label: "STATE", kind: "store" as const },
-        { label: "HOOK", kind: "processor" as const },
-        { label: "RENDER", kind: "service" as const },
-        { label: "DOM", kind: "service" as const },
-        { label: "USER", kind: "client" as const }
-      ]
-    },
-    {
-      key: "security",
-      keywords: ["auth", "token", "jwt", "encryption", "permission", "policy", "secure", "oauth"],
-      nodes: [
-        { label: "USER", kind: "client" as const },
-        { label: "AUTH", kind: "decision" as const },
-        { label: "TOKEN", kind: "store" as const },
-        { label: "POLICY", kind: "decision" as const },
-        { label: "RESOURCE", kind: "service" as const },
-        { label: "AUDIT", kind: "store" as const }
-      ]
-    }
-  ] as const;
-
-  const domain = domainCatalog
-    .map((entry) => ({
-      entry,
-      score: entry.keywords.reduce((sum, keyword) => sum + (mergedText.includes(keyword) ? 1 : 0), 0)
-    }))
-    .sort((a, b) => b.score - a.score)[0]?.entry;
-
-  const tokens = Array.from(
-    new Set(
-      mergedText
-        .split(/\s+/)
-        .map((token) => token.trim())
-        .filter((token) => token.length >= 4)
-    )
-  ).slice(0, 12);
-
-  const fallbackNodes = ["input", "transform", "validate", "route", "store", "output"].map((token) => ({
-    label: token.toUpperCase(),
-    kind: toNodeKind(token)
-  }));
-
-  const baseNodes = domain?.nodes ?? fallbackNodes;
-  const nodes: VisualNode[] = baseNodes.slice(0, 8).map((node, index) => ({
-    id: `node-${index + 1}`,
-    label: node.label,
-    kind: node.kind
-  }));
-
-  const narrationLines = topic.narration.filter((line) => line.trim().length > 0);
-  const stepSource =
-    narrationLines.length > 0
-      ? narrationLines
-      : [
-          `Initialize ${topic.title} context and identify input.`,
-          "Process through core transformation stages.",
-          "Validate intermediate output and handle edge cases.",
-          "Deliver final output and close feedback loop."
-        ];
-
-  const steps: VisualStep[] = stepSource.slice(0, 8).map((line, index) => {
-    const focusTerms = line
-      .toLowerCase()
-      .replace(/[^a-z0-9 ]/g, " ")
-      .split(/\s+/)
-      .filter((term) => term.length >= 4);
-
-    const matched = nodes
-      .filter((node) => {
-        const label = node.label.toLowerCase();
-        return focusTerms.some((term) => label.includes(term) || term.includes(label.slice(0, 4)));
-      })
-      .map((node) => node.id);
-
-    const fallback = [
-      nodes[index % nodes.length]?.id,
-      nodes[(index + 1) % nodes.length]?.id
-    ].filter((value): value is string => Boolean(value));
-
-    const highlightNodeIds = matched.length > 0 ? matched.slice(0, 3) : fallback;
-    const conciseAction = line.trim().replace(/\s+/g, " ").slice(0, 150);
-    const termHint = tokens[index % Math.max(tokens.length, 1)] ?? "";
-    const action = termHint && !conciseAction.toLowerCase().includes(termHint)
-      ? `${conciseAction} [focus: ${termHint.toUpperCase()}]`
-      : conciseAction;
-
-    return {
-      id: `step-${index + 1}`,
-      title: `Stage ${index + 1}`,
-      action,
-      highlightNodeIds
-    };
-  });
-
-  return {
-    sceneTitle: topic.title,
-    nodes,
-    steps
-  };
+interface GeneratedSimulation {
+  explanationScript: string;
+  steps: SimulationStep[];
+  generationSource: "template" | "gemini";
 }
 
 function defaultPreferences(): UserPreferences {
@@ -277,13 +121,19 @@ export default function App(): JSX.Element {
   const [customTopicInput, setCustomTopicInput] = useState("");
   const [generatingTopic, setGeneratingTopic] = useState(false);
   const [generatedProblemSets, setGeneratedProblemSets] = useState<Record<string, ProblemSet[]>>({});
-  const [generatedVisualPlans, setGeneratedVisualPlans] = useState<Record<string, VisualPlan>>({});
+  const [generatedSimulations, setGeneratedSimulations] = useState<Record<string, GeneratedSimulation>>({});
   const [selectedHistoryId, setSelectedHistoryId] = useState("");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [currentStepText, setCurrentStepText] = useState("");
+  const [activeGraph, setActiveGraph] = useState<SimulationGraph | null>(null);
+  const [mathOverlayLines, setMathOverlayLines] = useState<string[]>([]);
+  const [voiceNarrationEnabled, setVoiceNarrationEnabled] = useState(false);
+  const [topicListening, setTopicListening] = useState(false);
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const simulationHostRef = useRef<HTMLDivElement | null>(null);
+  const graphOverlayRef = useRef<HTMLDivElement | null>(null);
   const recognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
+  const topicRecognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const narrationTimersRef = useRef<number[]>([]);
   const subtitleTimerRef = useRef<number | null>(null);
   const voiceCaptureDesiredRef = useRef(false);
@@ -292,6 +142,7 @@ export default function App(): JSX.Element {
   const lastNarratedTopicRef = useRef("");
   const isNarratingRef = useRef(false);
   const simulationStepRef = useRef(0);
+  const spokenStepRef = useRef(-1);
 
   const selectedTopic = useMemo(
     () => topics.find((topic) => topic.id === selectedTopicId) ?? null,
@@ -316,12 +167,12 @@ export default function App(): JSX.Element {
     [chatHistory, selectedHistoryId]
   );
 
-  const selectedVisualPlan = useMemo(() => {
+  const selectedSimulation = useMemo(() => {
     if (!selectedTopic) {
       return null;
     }
-    return generatedVisualPlans[selectedTopic.id] ?? buildVisualPlanFromTopic(selectedTopic);
-  }, [generatedVisualPlans, selectedTopic]);
+    return generatedSimulations[selectedTopic.id] ?? null;
+  }, [generatedSimulations, selectedTopic]);
 
   const sortedProgress = useMemo(
     () =>
@@ -550,17 +401,7 @@ export default function App(): JSX.Element {
 
         setTopics(topicsResponse.topics);
         setProgress(progressResponse.progress);
-        setPreferences({
-          ...prefResponse.preferences,
-          interactionMode: "click",
-          voiceSettings: {
-            ...prefResponse.preferences.voiceSettings,
-            narrationEnabled: false,
-            interactionEnabled: false,
-            navigationEnabled: false,
-            rate: 1
-          }
-        });
+        setPreferences(prefResponse.preferences);
         setSelectedTopicId((current) => current || topicsResponse.topics[0]?.id || "");
         if (!userName.trim()) {
           const localEmail = localStorage.getItem("itt_email") ?? "";
@@ -624,7 +465,7 @@ export default function App(): JSX.Element {
     setHistory([]);
     setMessages([]);
     setGeneratedProblemSets({});
-    setGeneratedVisualPlans({});
+    setGeneratedSimulations({});
     setCustomTopicInput("");
     setSelectedHistoryId("");
     setChatPanelOpen(true);
@@ -660,9 +501,13 @@ export default function App(): JSX.Element {
         ...current,
         [response.topic.id]: response.problemSets
       }));
-      setGeneratedVisualPlans((current) => ({
+      setGeneratedSimulations((current) => ({
         ...current,
-        [response.topic.id]: buildVisualPlanFromTopic(response.topic)
+        [response.topic.id]: {
+          explanationScript: response.explanation_script,
+          steps: response.simulation_steps,
+          generationSource: response.generationSource === "gemini" ? "gemini" : "template"
+        }
       }));
       setSelectedTopicId(response.topic.id);
       setAppView("simulation");
@@ -682,6 +527,51 @@ export default function App(): JSX.Element {
       setGeneratingTopic(false);
     }
   }, [customTopicInput, selectedLevel, subtitlesEnabled, token]);
+
+  const captureTopicFromVoice = useCallback(() => {
+    const win = window as Window & {
+      SpeechRecognition?: RecognitionConstructor;
+      webkitSpeechRecognition?: RecognitionConstructor;
+    };
+    const RecognitionCtor = win.SpeechRecognition ?? win.webkitSpeechRecognition;
+    if (!RecognitionCtor) {
+      setStatusMessage("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    if (!topicRecognitionRef.current) {
+      const recognition = new RecognitionCtor();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
+      topicRecognitionRef.current = recognition;
+    }
+
+    const recognition = topicRecognitionRef.current;
+    recognition.onresult = (event) => {
+      const spoken = event.results[0]?.[0]?.transcript?.trim();
+      if (spoken) {
+        setCustomTopicInput(spoken);
+        setStatusMessage("Voice topic captured.");
+      }
+      setTopicListening(false);
+    };
+    recognition.onerror = (event) => {
+      setTopicListening(false);
+      setStatusMessage(`Voice input error: ${event.error}`);
+    };
+    recognition.onend = () => {
+      setTopicListening(false);
+    };
+
+    try {
+      setTopicListening(true);
+      recognition.start();
+    } catch (error) {
+      setTopicListening(false);
+      setStatusMessage(`Unable to start topic voice input: ${(error as Error).message}`);
+    }
+  }, []);
 
   const sendChat = useCallback(
     async (mode: "voice" | "text", rawMessage?: string) => {
@@ -1074,12 +964,22 @@ export default function App(): JSX.Element {
   }, [subtitlesEnabled]);
 
   useEffect(() => {
+    setVoiceNarrationEnabled(preferences.voiceSettings.narrationEnabled);
+  }, [preferences.voiceSettings.narrationEnabled]);
+
+  useEffect(() => {
     if (!token) {
       return;
     }
-    // Voice capture is intentionally disabled in the current simulation build.
-    stopListening();
-  }, [appView, stopListening, token, voiceCaptureEnabled]);
+    if (appView !== "simulation" || !voiceCaptureEnabled) {
+      stopListening();
+      return;
+    }
+    startListening();
+    return () => {
+      stopListening();
+    };
+  }, [appView, startListening, stopListening, token, voiceCaptureEnabled]);
 
   useEffect(() => {
     if (!("speechSynthesis" in window)) {
@@ -1173,371 +1073,336 @@ export default function App(): JSX.Element {
   }, [selectedLevel, unlockedLevels]);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !selectedTopic || !selectedVisualPlan || appView !== "simulation") {
+    const host = simulationHostRef.current;
+    if (!host || !selectedTopic || appView !== "simulation") {
       return;
     }
 
-    const context = canvas.getContext("2d");
-    if (!context) {
+    const steps = selectedSimulation?.steps?.length ? selectedSimulation.steps : [];
+    if (!steps.length) {
+      setCurrentStepText("No simulation data found for this topic.");
+      setMathOverlayLines([]);
+      setActiveGraph(null);
       return;
     }
+    let disposed = false;
+    let cleanup = () => undefined;
+    let mathEvaluate: ((expression: string, scope?: Record<string, number>) => unknown) | null = null;
+    let mathTicket = 0;
 
-    let animationFrame = 0;
-    let lastRenderTime = performance.now();
-    let elapsedStepMs = 0;
-    let simClock = 0;
-    const dpr = window.devicePixelRatio || 1;
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.scale(dpr, dpr);
-
-    const stepDurationMs = 2600;
-    const seed = selectedVisualPlan.sceneTitle
-      .split("")
-      .reduce((sum, char) => sum + char.charCodeAt(0), 0);
-    const paletteOptions = [
-      {
-        bgA: "#f5f7fb",
-        bgB: "#edf2f9",
-        bgC: "#fff3c4",
-        line: "rgba(43, 53, 69, 0.22)",
-        text: "#1f2937",
-        accent: "#f7c948",
-        card: "rgba(255, 255, 255, 0.84)"
-      },
-      {
-        bgA: "#f4f7f8",
-        bgB: "#e7edf1",
-        bgC: "#ffe8af",
-        line: "rgba(39, 45, 56, 0.22)",
-        text: "#20262f",
-        accent: "#efb940",
-        card: "rgba(255, 255, 255, 0.82)"
-      },
-      {
-        bgA: "#f8f9fa",
-        bgB: "#edf1f4",
-        bgC: "#fff0bf",
-        line: "rgba(49, 55, 66, 0.2)",
-        text: "#1f252f",
-        accent: "#e7ad2f",
-        card: "rgba(255, 255, 255, 0.85)"
-      }
-    ] as const;
-    const palette = paletteOptions[seed % paletteOptions.length];
-
-    const nodes = selectedVisualPlan.nodes.slice(0, 12);
-    const steps = selectedVisualPlan.steps.length > 0 ? selectedVisualPlan.steps : [
-      {
-        id: "step-1",
-        title: "Step 1",
-        action: `Exploring ${selectedTopic.title} flow.`,
-        highlightNodeIds: nodes.slice(0, 3).map((item) => item.id)
-      }
-    ];
-
-    if (simulationStepRef.current >= steps.length) {
-      simulationStepRef.current = 0;
-    }
-
-    const nodeLayouts = nodes.map((node, index) => {
-      const count = Math.max(nodes.length, 1);
-      const angle = (Math.PI * 2 * index) / count - Math.PI / 2;
-      const radiusX = Math.max(140, width * 0.33);
-      const radiusY = Math.max(110, height * 0.27);
-      return {
-        node,
-        x: width * 0.5 + Math.cos(angle) * radiusX,
-        y: height * 0.52 + Math.sin(angle) * radiusY
-      };
-    });
-
-    const nodeMap = new Map(nodeLayouts.map((item) => [item.node.id, item]));
-
-    const draggable = {
-      x: width * 0.08,
-      y: height * 0.82,
-      size: 38,
-      label: "CTRL"
-    };
-
-    let dragging = false;
-    let dragOffsetX = 0;
-    let dragOffsetY = 0;
-
-    const drawRoundedRect = (x: number, y: number, w: number, h: number, radius: number) => {
-      context.beginPath();
-      context.moveTo(x + radius, y);
-      context.lineTo(x + w - radius, y);
-      context.quadraticCurveTo(x + w, y, x + w, y + radius);
-      context.lineTo(x + w, y + h - radius);
-      context.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
-      context.lineTo(x + radius, y + h);
-      context.quadraticCurveTo(x, y + h, x, y + h - radius);
-      context.lineTo(x, y + radius);
-      context.quadraticCurveTo(x, y, x + radius, y);
-      context.closePath();
-    };
-
-    const drawNodeByKind = (x: number, y: number, size: number, kind: VisualKind) => {
-      if (kind === "store") {
-        drawRoundedRect(x - size * 1.1, y - size * 0.8, size * 2.2, size * 1.6, 8);
+    const run = async () => {
+      const THREE = await loadThreeLib();
+      if (disposed) {
         return;
       }
-      if (kind === "queue") {
-        context.beginPath();
-        context.moveTo(x - size, y);
-        context.lineTo(x, y - size);
-        context.lineTo(x + size, y);
-        context.lineTo(x, y + size);
-        context.closePath();
-        return;
-      }
-      if (kind === "decision") {
-        context.beginPath();
-        context.moveTo(x, y - size * 1.2);
-        context.lineTo(x + size, y);
-        context.lineTo(x, y + size * 1.2);
-        context.lineTo(x - size, y);
-        context.closePath();
-        return;
-      }
-      if (kind === "client") {
-        context.beginPath();
-        context.arc(x, y, size, 0, Math.PI * 2);
-        context.closePath();
-        return;
-      }
-      if (kind === "service") {
-        context.beginPath();
-        context.rect(x - size, y - size, size * 2, size * 2);
-        context.closePath();
-        return;
-      }
-      context.beginPath();
-      context.moveTo(x, y - size * 1.2);
-      context.lineTo(x + size, y + size * 0.9);
-      context.lineTo(x - size, y + size * 0.9);
-      context.closePath();
-    };
 
-    const drawBackground = () => {
-      const bg = context.createLinearGradient(0, 0, width, height);
-      bg.addColorStop(0, palette.bgA);
-      bg.addColorStop(0.62, palette.bgB);
-      bg.addColorStop(1, palette.bgC);
-      context.fillStyle = bg;
-      context.fillRect(0, 0, width, height);
+      host.innerHTML = "";
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color("#f4f7fb");
 
-      for (let x = 0; x < width; x += 56) {
-        context.strokeStyle = "rgba(24, 34, 45, 0.04)";
-        context.beginPath();
-        context.moveTo(x, 0);
-        context.lineTo(x, height);
-        context.stroke();
-      }
-      for (let y = 0; y < height; y += 52) {
-        context.strokeStyle = "rgba(24, 34, 45, 0.04)";
-        context.beginPath();
-        context.moveTo(0, y);
-        context.lineTo(width, y);
-        context.stroke();
-      }
+      const camera = new THREE.PerspectiveCamera(52, 1, 0.1, 200);
+      camera.position.set(0, 0, 18);
+      camera.lookAt(0, 0, 0);
 
-      context.fillStyle = palette.text;
-      context.font = "700 15px 'Trebuchet MS', sans-serif";
-      context.fillText(selectedVisualPlan.sceneTitle, 20, 28);
-      context.font = "12px 'Trebuchet MS', sans-serif";
-      context.fillStyle = "rgba(30, 37, 46, 0.72)";
-      context.fillText("Topic-driven motion sequence generated from model context", 20, 48);
-    };
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      renderer.setPixelRatio(window.devicePixelRatio || 1);
+      host.appendChild(renderer.domElement);
 
-    const syncSubtitleWithStep = () => {
-      const currentStep = steps[simulationStepRef.current];
-      setCurrentStepText(currentStep ? `${currentStep.title}: ${currentStep.action}` : "");
-      if (!subtitlesEnabled) {
-        setSubtitle("");
-        return;
-      }
-      setSubtitle(currentStep ? currentStep.action : "");
-    };
+      const ambient = new THREE.AmbientLight(0xffffff, 0.72);
+      const directional = new THREE.DirectionalLight(0xffffff, 0.75);
+      directional.position.set(9, 10, 12);
+      scene.add(ambient);
+      scene.add(directional);
 
-    syncSubtitleWithStep();
+      const rootGroup = new THREE.Group();
+      scene.add(rootGroup);
 
-    const render = (time: number) => {
-      const deltaMs = Math.min(50, time - lastRenderTime);
-      lastRenderTime = time;
-
-      if (!simulationPaused && !document.hidden) {
-        simClock += deltaMs;
-        elapsedStepMs += deltaMs;
-        if (elapsedStepMs >= stepDurationMs) {
-          elapsedStepMs = 0;
-          simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
-          syncSubtitleWithStep();
+      const createTextSprite = (text: string, color = "#1f2937") => {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          return null;
         }
+        canvas.width = 512;
+        canvas.height = 128;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "rgba(255,255,255,0.94)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.font = "700 34px Trebuchet MS";
+        ctx.fillStyle = color;
+        ctx.fillText(text.slice(0, 44), 14, 72);
+        const texture = new THREE.CanvasTexture(canvas);
+        const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+        const sprite = new THREE.Sprite(material);
+        sprite.scale.set(5.4, 1.4, 1);
+        return sprite;
+      };
+
+      const createObjectMesh = (obj: SimulationStep["objects"][number]) => {
+        const color = new THREE.Color(obj.color);
+        const material = new THREE.MeshStandardMaterial({
+          color,
+          metalness: 0.22,
+          roughness: 0.54
+        });
+
+        let mesh: any;
+        if (obj.type === "sphere") {
+          mesh = new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.2, obj.size.x / 1.4), 32, 24), material);
+        } else if (obj.type === "cylinder") {
+          mesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(Math.max(0.2, obj.size.x / 2), Math.max(0.2, obj.size.z / 2), Math.max(0.2, obj.size.y), 24),
+            material
+          );
+        } else if (obj.type === "cone") {
+          mesh = new THREE.Mesh(new THREE.ConeGeometry(Math.max(0.2, obj.size.x / 2), Math.max(0.2, obj.size.y), 24), material);
+        } else if (obj.type === "torus") {
+          mesh = new THREE.Mesh(new THREE.TorusGeometry(Math.max(0.3, obj.size.x / 2), 0.22, 20, 80), material);
+        } else if (obj.type === "plane") {
+          mesh = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(0.3, obj.size.x), Math.max(0.3, obj.size.y)), material);
+        } else if (obj.type === "line" || obj.type === "arrow") {
+          const geometry = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, 0, 0),
+            new THREE.Vector3(Math.max(0.6, obj.size.x), 0, 0)
+          ]);
+          mesh = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color }));
+        } else if (obj.type === "text") {
+          const sprite = createTextSprite(obj.label ?? obj.id, obj.color);
+          mesh = sprite ?? new THREE.Group();
+        } else {
+          mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(Math.max(0.2, obj.size.x), Math.max(0.2, obj.size.y), Math.max(0.2, obj.size.z)),
+            material
+          );
+        }
+
+        mesh.position.set(obj.position.x, obj.position.y, obj.position.z);
+        if (obj.rotation) {
+          mesh.rotation.set(obj.rotation.x, obj.rotation.y, obj.rotation.z);
+        }
+        return mesh;
+      };
+
+      type MovementRuntime = {
+        object: any;
+        type: "translate" | "rotate" | "scale" | "pulse";
+        fromPosition: any;
+        fromRotation: any;
+        fromScale: any;
+        toPosition?: any;
+        axis?: any;
+        durationMs: number;
+        repeat: number;
+      };
+
+      let objectMap = new Map<string, any>();
+      let movementRuntimes: MovementRuntime[] = [];
+      let frameId = 0;
+      let lastTime = performance.now();
+      let stepElapsedMs = 0;
+      const stepDurationMs = 3000;
+
+      const ensureMathEvaluate = async () => {
+        if (mathEvaluate) {
+          return mathEvaluate;
+        }
+        const mathjs = await loadMathjsLib();
+        mathEvaluate = mathjs.evaluate as (expression: string, scope?: Record<string, number>) => unknown;
+        return mathEvaluate;
+      };
+
+      const setStepNarration = (step: SimulationStep, index: number) => {
+        setCurrentStepText(`Step ${step.step}: ${step.annotation}`);
+        if (subtitlesEnabled) {
+          setSubtitle(step.annotation);
+        } else {
+          setSubtitle("");
+        }
+
+        const expressions = step.mathExpressions ?? [];
+        if (expressions.length === 0) {
+          setMathOverlayLines([]);
+        } else {
+          const currentTicket = ++mathTicket;
+          void ensureMathEvaluate().then((evaluateExpression) => {
+            if (disposed || currentTicket !== mathTicket) {
+              return;
+            }
+            const mathLines = expressions.map((item) => {
+              try {
+                const result = evaluateExpression(item.expression, item.variables ?? {});
+                return `${item.expression} = ${String(result)}`;
+              } catch (_error) {
+                return `${item.expression} = [invalid expression]`;
+              }
+            });
+            setMathOverlayLines(mathLines);
+          });
+        }
+
+        setActiveGraph(step.graph ?? null);
+
+        if (voiceNarrationEnabled && appViewRef.current === "simulation") {
+          if ("speechSynthesis" in window) {
+            if (spokenStepRef.current !== index) {
+              spokenStepRef.current = index;
+              window.speechSynthesis.cancel();
+              const utterance = new SpeechSynthesisUtterance(step.annotation);
+              utterance.rate = 1;
+              window.speechSynthesis.speak(utterance);
+            }
+          }
+        } else if ("speechSynthesis" in window) {
+          window.speechSynthesis.cancel();
+        }
+      };
+
+      const applyStep = (index: number) => {
+        const step = steps[index];
+        rootGroup.clear();
+        objectMap = new Map<string, any>();
+        movementRuntimes = [];
+
+        step.objects.forEach((obj) => {
+          const mesh = createObjectMesh(obj);
+          rootGroup.add(mesh);
+          objectMap.set(obj.id, mesh);
+
+          const labelText = obj.label ?? "";
+          if (labelText) {
+            const label = createTextSprite(labelText, "#202a37");
+            if (label) {
+              label.position.set(obj.position.x, obj.position.y + Math.max(0.8, obj.size.y / 1.8 + 0.8), obj.position.z);
+              rootGroup.add(label);
+            }
+          }
+        });
+
+        step.labels.forEach((label) => {
+          const sprite = createTextSprite(label.text, label.color ?? "#1f2937");
+          if (!sprite) {
+            return;
+          }
+          if (label.objectId && objectMap.has(label.objectId)) {
+            const target = objectMap.get(label.objectId)!;
+            sprite.position.copy(target.position.clone().add(new THREE.Vector3(0, 1.8, 0)));
+          } else if (label.position) {
+            sprite.position.set(label.position.x, label.position.y, label.position.z);
+          } else {
+            sprite.position.set(0, 4.4, 0);
+          }
+          rootGroup.add(sprite);
+        });
+
+        step.movements.forEach((movement) => {
+          const object = objectMap.get(movement.objectId);
+          if (!object) {
+            return;
+          }
+          movementRuntimes.push({
+            object,
+            type: movement.type,
+            fromPosition: object.position.clone(),
+            fromRotation: object.rotation.clone(),
+            fromScale: object.scale.clone(),
+            toPosition: movement.to ? new THREE.Vector3(movement.to.x, movement.to.y, movement.to.z) : undefined,
+            axis: movement.axis ? new THREE.Vector3(movement.axis.x, movement.axis.y, movement.axis.z) : undefined,
+            durationMs: movement.durationMs,
+            repeat: movement.repeat ?? 0
+          });
+        });
+
+        setStepNarration(step, index);
+      };
+
+      const updateMovements = (elapsed: number) => {
+        movementRuntimes.forEach((item) => {
+          const cycleDuration = Math.max(300, item.durationMs);
+          const totalCycles = Math.max(1, item.repeat + 1);
+          const cappedElapsed = Math.min(elapsed, cycleDuration * totalCycles);
+          const currentCycleProgress = Math.min(1, (cappedElapsed % cycleDuration) / cycleDuration);
+          const progress = cappedElapsed >= cycleDuration * totalCycles ? 1 : currentCycleProgress;
+
+          if (item.type === "translate" && item.toPosition) {
+            item.object.position.lerpVectors(item.fromPosition, item.toPosition, progress);
+          } else if (item.type === "rotate") {
+            const axis = item.axis ?? new THREE.Vector3(0, 1, 0);
+            item.object.rotation.set(
+              item.fromRotation.x + axis.x * progress * Math.PI * 2,
+              item.fromRotation.y + axis.y * progress * Math.PI * 2,
+              item.fromRotation.z + axis.z * progress * Math.PI * 2
+            );
+          } else if (item.type === "scale") {
+            const axis = item.axis ?? new THREE.Vector3(0.45, 0.45, 0.45);
+            const target = item.fromScale.clone().add(axis);
+            item.object.scale.lerpVectors(item.fromScale, target, progress);
+          } else if (item.type === "pulse") {
+            const pulse = 1 + 0.18 * Math.sin(progress * Math.PI * 2);
+            item.object.scale.set(item.fromScale.x * pulse, item.fromScale.y * pulse, item.fromScale.z * pulse);
+          }
+        });
+      };
+
+      const onResize = () => {
+        const width = host.clientWidth || 800;
+        const height = host.clientHeight || 450;
+        camera.aspect = width / Math.max(1, height);
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height, false);
+      };
+
+      onResize();
+      window.addEventListener("resize", onResize);
+
+      if (simulationStepRef.current >= steps.length) {
+        simulationStepRef.current = 0;
       }
+      applyStep(simulationStepRef.current);
 
-      drawBackground();
+      const animate = (now: number) => {
+        const delta = Math.min(50, now - lastTime);
+        lastTime = now;
 
-      const currentStep = steps[simulationStepRef.current];
-      const highlighted = new Set(currentStep?.highlightNodeIds ?? []);
+        if (!simulationPaused && !document.hidden) {
+          stepElapsedMs += delta;
+          updateMovements(stepElapsedMs);
+          if (stepElapsedMs >= stepDurationMs) {
+            stepElapsedMs = 0;
+            simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
+            applyStep(simulationStepRef.current);
+          }
+        }
 
-      const highlightedLayouts = (currentStep?.highlightNodeIds ?? [])
-        .map((id) => nodeMap.get(id))
-        .filter((item): item is NonNullable<typeof item> => Boolean(item));
+        renderer.render(scene, camera);
+        frameId = window.requestAnimationFrame(animate);
+      };
 
-      drawRoundedRect(16, 58, Math.min(width - 32, 560), 50, 10);
-      context.fillStyle = palette.card;
-      context.fill();
-      context.strokeStyle = palette.line;
-      context.lineWidth = 1;
-      context.stroke();
-      context.fillStyle = palette.text;
-      context.font = "700 12px 'Trebuchet MS', sans-serif";
-      context.fillText(`Now Explaining: ${currentStep?.title ?? "Stage"}`, 28, 79);
-      context.font = "11px 'Trebuchet MS', sans-serif";
-      context.fillText((currentStep?.action ?? "").slice(0, 84), 28, 98);
+      frameId = window.requestAnimationFrame(animate);
 
-      for (let index = 0; index < highlightedLayouts.length - 1; index += 1) {
-        const from = highlightedLayouts[index];
-        const to = highlightedLayouts[index + 1];
-        context.strokeStyle = "rgba(63, 74, 89, 0.72)";
-        context.lineWidth = 2.2;
-        context.beginPath();
-        context.moveTo(from.x, from.y);
-        context.lineTo(to.x, to.y);
-        context.stroke();
-      }
-
-      nodeLayouts.forEach((item, index) => {
-        const pulse = highlighted.has(item.node.id) ? 1 + 0.08 * Math.sin(simClock / 180 + index) : 1;
-        const size = 24 * pulse;
-        drawNodeByKind(item.x, item.y, size, item.node.kind);
-        context.fillStyle = highlighted.has(item.node.id)
-          ? "rgba(247, 201, 72, 0.64)"
-          : "rgba(255, 255, 255, 0.88)";
-        context.fill();
-        context.strokeStyle = palette.line;
-        context.lineWidth = highlighted.has(item.node.id) ? 2 : 1.2;
-        context.stroke();
-
-        context.fillStyle = palette.text;
-        context.font = "600 11px 'Trebuchet MS', sans-serif";
-        const label = item.node.label.length > 10 ? `${item.node.label.slice(0, 10)}.` : item.node.label;
-        context.fillText(label, item.x - 30, item.y + 4);
-      });
-
-      const target = highlightedLayouts[0] ?? nodeLayouts[0];
-      const markerRadius = 14;
-      context.beginPath();
-      context.arc(target.x, target.y, markerRadius, 0, Math.PI * 2);
-      context.strokeStyle = "rgba(37, 49, 68, 0.8)";
-      context.lineWidth = 2;
-      context.setLineDash([5, 4]);
-      context.stroke();
-      context.setLineDash([]);
-
-      drawRoundedRect(draggable.x, draggable.y, draggable.size, draggable.size, 9);
-      context.fillStyle = palette.accent;
-      context.fill();
-      context.strokeStyle = "rgba(39, 43, 49, 0.6)";
-      context.lineWidth = 1.2;
-      context.stroke();
-      context.fillStyle = palette.text;
-      context.font = "700 10px 'Trebuchet MS', sans-serif";
-      context.fillText(draggable.label, draggable.x + 6, draggable.y + draggable.size / 2 + 4);
-
-      drawRoundedRect(16, height - 68, 300, 50, 10);
-      context.fillStyle = palette.card;
-      context.fill();
-      context.strokeStyle = palette.line;
-      context.lineWidth = 1;
-      context.stroke();
-      context.fillStyle = palette.text;
-      context.font = "700 12px 'Trebuchet MS', sans-serif";
-      context.fillText(currentStep?.title ?? "Step", 28, height - 43);
-      context.font = "11px 'Trebuchet MS', sans-serif";
-      const actionText = (currentStep?.action ?? "").slice(0, 62);
-      context.fillText(actionText, 28, height - 24);
-
-      animationFrame = window.requestAnimationFrame(render);
-    };
-
-    const pointInDraggable = (x: number, y: number): boolean => {
-      return (
-        x >= draggable.x &&
-        x <= draggable.x + draggable.size &&
-        y >= draggable.y &&
-        y <= draggable.y + draggable.size
-      );
-    };
-
-    const pointerToCanvas = (event: PointerEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: event.clientX - rect.left,
-        y: event.clientY - rect.top
+      cleanup = () => {
+        window.cancelAnimationFrame(frameId);
+        window.removeEventListener("resize", onResize);
+        if ("speechSynthesis" in window) {
+          window.speechSynthesis.cancel();
+        }
+        renderer.dispose();
+        host.innerHTML = "";
       };
     };
 
-    const onPointerDown = (event: PointerEvent) => {
-      if (simulationPaused) {
-        return;
-      }
-      const point = pointerToCanvas(event);
-      if (pointInDraggable(point.x, point.y)) {
-        dragging = true;
-        dragOffsetX = point.x - draggable.x;
-        dragOffsetY = point.y - draggable.y;
-        canvas.setPointerCapture(event.pointerId);
-      }
-    };
-
-    const onPointerMove = (event: PointerEvent) => {
-      if (!dragging) {
-        return;
-      }
-      const point = pointerToCanvas(event);
-      draggable.x = point.x - dragOffsetX;
-      draggable.y = point.y - dragOffsetY;
-    };
-
-    const onPointerUp = () => {
-      if (!dragging) {
-        return;
-      }
-      dragging = false;
-      const centerX = draggable.x + draggable.size / 2;
-      const centerY = draggable.y + draggable.size / 2;
-      const currentStep = steps[simulationStepRef.current];
-      const targetNode = currentStep.highlightNodeIds
-        .map((id) => nodeMap.get(id))
-        .find((item): item is NonNullable<typeof item> => Boolean(item)) ?? nodeLayouts[0];
-      const distance = Math.hypot(centerX - targetNode.x, centerY - targetNode.y);
-      const isCorrect = distance < 46;
-      void runActionFeedback("drag", isCorrect ? "correct placement" : "missed placement");
-    };
-
-    canvas.style.touchAction = "none";
-    canvas.addEventListener("pointerdown", onPointerDown);
-    canvas.addEventListener("pointermove", onPointerMove);
-    canvas.addEventListener("pointerup", onPointerUp);
-    canvas.addEventListener("pointerleave", onPointerUp);
-    animationFrame = window.requestAnimationFrame(render);
-
+    void run();
     return () => {
-      window.cancelAnimationFrame(animationFrame);
-      canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointermove", onPointerMove);
-      canvas.removeEventListener("pointerup", onPointerUp);
-      canvas.removeEventListener("pointerleave", onPointerUp);
+      disposed = true;
+      cleanup();
     };
-  }, [appView, runActionFeedback, selectedTopic, selectedVisualPlan, simulationPaused, subtitlesEnabled]);
+  }, [
+    appView,
+    selectedSimulation,
+    selectedTopic,
+    simulationPaused,
+    subtitlesEnabled,
+    voiceNarrationEnabled
+  ]);
 
   useEffect(() => {
     if (appView === "simulation") {
@@ -1547,6 +1412,66 @@ export default function App(): JSX.Element {
     setCurrentStepText("");
     clearNarrationTimers();
   }, [appView, clearNarrationTimers]);
+
+  useEffect(() => {
+    const host = graphOverlayRef.current;
+    if (!host || appView !== "simulation") {
+      return;
+    }
+    if (!activeGraph) {
+      host.innerHTML = "";
+      return;
+    }
+
+    let disposed = false;
+    let plotlyApi: {
+      react: (el: HTMLElement, data: unknown[], layout: Record<string, unknown>, config: Record<string, unknown>) => Promise<void>;
+      purge: (el: HTMLElement) => void;
+    } | null = null;
+
+    const run = async () => {
+      const module = await loadPlotlyLib();
+      if (disposed) {
+        return;
+      }
+      plotlyApi = (module.default ?? module) as {
+        react: (el: HTMLElement, data: unknown[], layout: Record<string, unknown>, config: Record<string, unknown>) => Promise<void>;
+        purge: (el: HTMLElement) => void;
+      };
+
+      const traceType = activeGraph.type === "line" ? "scatter" : activeGraph.type;
+      await plotlyApi.react(
+        host,
+        [
+          {
+            x: activeGraph.x,
+            y: activeGraph.y,
+            type: traceType,
+            mode: activeGraph.type === "line" ? "lines+markers" : "markers",
+            marker: { color: "#3a7afe" },
+            line: { color: "#1f5fd6" }
+          }
+        ],
+        {
+          title: activeGraph.title,
+          margin: { l: 36, r: 16, t: 36, b: 32 },
+          paper_bgcolor: "rgba(255,255,255,0.94)",
+          plot_bgcolor: "rgba(245,248,255,0.95)"
+        },
+        { displayModeBar: false, responsive: true }
+      );
+    };
+
+    void run();
+    return () => {
+      disposed = true;
+      if (plotlyApi) {
+        plotlyApi.purge(host);
+      } else {
+        host.innerHTML = "";
+      }
+    };
+  }, [activeGraph, appView]);
 
   useEffect(() => {
     return () => {
@@ -1565,7 +1490,7 @@ export default function App(): JSX.Element {
         onClick={() => setMenuOpen((value) => !value)}
         aria-label="Open menu"
       >
-        ☰
+        [=]
       </button>
       {menuOpen ? <button className="menu-backdrop" onClick={() => setMenuOpen(false)} aria-label="Close menu" /> : null}
       <aside className={menuOpen ? "side-menu open" : "side-menu"}>
@@ -1648,7 +1573,7 @@ export default function App(): JSX.Element {
           <span className="ambient-icon i4">NN</span>
           <span className="ambient-icon i5">SQL</span>
           <span className="ambient-icon i6">TS</span>
-          <span className="ambient-icon i7">λ</span>
+          <span className="ambient-icon i7">GPU</span>
           <span className="ambient-icon i8">ML</span>
         </div>
         <div className="home-content">
@@ -1691,12 +1616,17 @@ export default function App(): JSX.Element {
                 placeholder="e.g. Event sourcing, OAuth 2.0, CPU scheduling"
               />
             </label>
-            <button
-              disabled={generatingTopic || !customTopicInput.trim()}
-              onClick={() => void generateCustomSimulation()}
-            >
-              {generatingTopic ? "Generating Simulation..." : "Generate And Open Simulation"}
-            </button>
+            <div className="home-controls-actions">
+              <button disabled={topicListening || generatingTopic} onClick={captureTopicFromVoice}>
+                {topicListening ? "Listening..." : "Use Voice Topic"}
+              </button>
+              <button
+                disabled={generatingTopic || !customTopicInput.trim()}
+                onClick={() => void generateCustomSimulation()}
+              >
+                {generatingTopic ? "Generating Simulation..." : "Generate And Open Simulation"}
+              </button>
+            </div>
           </div>
           <div className="status">{statusMessage}</div>
         </div>
@@ -1711,7 +1641,7 @@ export default function App(): JSX.Element {
         <div className="history-content">
           <header className="page-header">
             <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
-              ←
+              {"<"}
             </button>
             <h1>Interaction History</h1>
           </header>
@@ -1756,7 +1686,7 @@ export default function App(): JSX.Element {
         <div className="history-content">
           <header className="page-header">
             <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
-              ←
+              {"<"}
             </button>
             <h1>Chat Detail</h1>
           </header>
@@ -1792,7 +1722,7 @@ export default function App(): JSX.Element {
         <div className="history-content">
           <header className="page-header">
             <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
-              ←
+              {"<"}
             </button>
             <h1>Topic Progress</h1>
           </header>
@@ -1820,7 +1750,7 @@ export default function App(): JSX.Element {
     <div className={chatPanelOpen ? "app-shell chat-open" : "app-shell chat-closed"}>
       {userMenu}
       <button className="sim-back-floating" onClick={navigateBack} aria-label="Go back">
-        ←
+        {"<"}
       </button>
       <main className="simulation-area">
         <header className="top-bar">
@@ -1834,7 +1764,7 @@ export default function App(): JSX.Element {
               aria-label={chatPanelOpen ? "Hide chat panel" : "Show chat panel"}
               title={chatPanelOpen ? "Hide chat panel" : "Show chat panel"}
             >
-              ▤
+              []
             </button>
             <button
               className={toolsPanelOpen ? "active icon-button" : "icon-button"}
@@ -1850,12 +1780,18 @@ export default function App(): JSX.Element {
         <section className="topic-summary compact">
           <h2>{selectedTopic?.title ?? "Simulation Topic"}</h2>
           <p className="now-explaining">
-            Now Explaining: {currentStepText || "Preparing simulation sequence..."}
+            Now Explaining: {currentStepText || selectedSimulation?.explanationScript || "Preparing simulation sequence..."}
           </p>
         </section>
 
         <section className="canvas-wrapper">
-          <canvas ref={canvasRef} className="sim-canvas" />
+          <div ref={simulationHostRef} className="sim-canvas" />
+          <div ref={graphOverlayRef} className={activeGraph ? "graph-overlay visible" : "graph-overlay"} />
+          <div className={mathOverlayLines.length > 0 ? "math-overlay visible" : "math-overlay"}>
+            {mathOverlayLines.map((line, index) => (
+              <p key={`math-line-${index}`}>{line}</p>
+            ))}
+          </div>
         </section>
 
         {toolsPanelOpen ? (
@@ -1872,31 +1808,67 @@ export default function App(): JSX.Element {
             <label className="toggle">
               <input
                 type="checkbox"
+                checked={voiceNarrationEnabled}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setVoiceNarrationEnabled(checked);
+                  const next = {
+                    ...preferences,
+                    voiceSettings: {
+                      ...preferences.voiceSettings,
+                      narrationEnabled: checked
+                    }
+                  };
+                  setAndPersistPreferences(next);
+                }}
+              />
+              Voice Narration
+            </label>
+            <label className="toggle">
+              <input
+                type="checkbox"
                 checked={voiceCaptureEnabled}
-                disabled
                 onChange={(event) => setVoiceCaptureEnabled(event.target.checked)}
               />
-              Voice Capture (coming soon)
+              Voice Capture
             </label>
             <label className="toggle">
               <input
                 type="checkbox"
                 checked={preferences.voiceSettings.interactionEnabled}
-                disabled
-                onChange={() => undefined}
+                onChange={(event) => {
+                  const next = {
+                    ...preferences,
+                    voiceSettings: {
+                      ...preferences.voiceSettings,
+                      interactionEnabled: event.target.checked
+                    }
+                  };
+                  setAndPersistPreferences(next);
+                }}
               />
-              Voice Interaction (coming soon)
+              Voice Interaction
             </label>
             <label className="toggle">
               <input
                 type="checkbox"
                 checked={preferences.voiceSettings.navigationEnabled}
-                disabled
-                onChange={() => undefined}
+                onChange={(event) => {
+                  const next = {
+                    ...preferences,
+                    voiceSettings: {
+                      ...preferences.voiceSettings,
+                      navigationEnabled: event.target.checked
+                    }
+                  };
+                  setAndPersistPreferences(next);
+                }}
               />
-              Voice Navigation (coming soon)
+              Voice Navigation
             </label>
-            <div className="voice-note">Voice narration is intentionally disabled in simulation for now.</div>
+            <div className="voice-note">
+              Voice capture state: {listening ? "Listening..." : "Idle"}.
+            </div>
           </section>
         ) : null}
       </main>
@@ -1945,7 +1917,7 @@ export default function App(): JSX.Element {
           aria-label={simulationPaused ? "Play simulation" : "Pause simulation"}
           title={simulationPaused ? "Play simulation" : "Pause simulation"}
         >
-          {simulationPaused ? "▶" : "❚❚"}
+          {simulationPaused ? ">" : "||"}
         </button>
       </div>
       <div className="subtitle-bar">
@@ -1955,3 +1927,4 @@ export default function App(): JSX.Element {
     </div>
   );
 }
+

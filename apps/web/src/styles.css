@@ -360,6 +360,11 @@ button.active {
   color: var(--muted);
 }
 
+.home-controls-actions {
+  display: grid;
+  gap: 8px;
+}
+
 .menu-toggle {
   position: fixed;
   top: 16px;
@@ -631,6 +636,7 @@ button.active {
 }
 
 .canvas-wrapper {
+  position: relative;
   border-radius: 14px;
   border: 1px solid var(--line);
   overflow: hidden;
@@ -646,6 +652,55 @@ button.active {
   height: 100%;
   min-height: 360px;
   display: block;
+}
+
+.sim-canvas canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+.graph-overlay {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: min(40%, 360px);
+  height: min(40%, 240px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 8px 20px rgba(28, 35, 47, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 130ms ease;
+}
+
+.graph-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.math-overlay {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  max-width: min(50%, 460px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 8px 10px;
+  display: none;
+  gap: 4px;
+}
+
+.math-overlay.visible {
+  display: grid;
+}
+
+.math-overlay p {
+  margin: 0;
+  font-size: 0.84rem;
+  color: #2f3742;
 }
 
 .tools-panel {
