@@ -91,6 +91,14 @@ export interface SimulationLabel {
   color?: string;
 }
 
+export interface SimulationConnection {
+  fromId: string;
+  toId: string;
+  type?: "line" | "arrow" | "dashed";
+  color?: string;
+  label?: string;
+}
+
 export interface SimulationMathExpression {
   expression: string;
   variables?: Record<string, number>;
@@ -105,9 +113,11 @@ export interface SimulationGraph {
 
 export interface SimulationStep {
   step: number;
+  concept?: string;
   objects: SimulationObject[];
   movements: SimulationMovement[];
   labels: SimulationLabel[];
+  connections?: SimulationConnection[];
   annotation: string;
   mathExpressions?: SimulationMathExpression[];
   graph?: SimulationGraph;

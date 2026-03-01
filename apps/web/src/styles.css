@@ -1,13 +1,15 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+
 :root {
-  --bg-1: #f4f6fb;
-  --bg-2: #e9edf4;
-  --bg-3: #fff0bc;
-  --ink: #1d2430;
-  --muted: #5b6472;
-  --line: rgba(49, 59, 76, 0.18);
-  --panel: rgba(255, 255, 255, 0.84);
-  --accent: #f2c64b;
-  --accent-strong: #e4aa2f;
+  --bg-1: #eef2ff;
+  --bg-2: #f0f4ff;
+  --bg-3: #e7ecff;
+  --ink: #162033;
+  --muted: #52607a;
+  --line: rgba(61, 83, 125, 0.22);
+  --panel: rgba(255, 255, 255, 0.86);
+  --accent: #00d4ff;
+  --accent-strong: #8b5cf6;
 }
 
 * {
@@ -20,18 +22,18 @@ body,
   margin: 0;
   width: 100%;
   height: 100%;
-  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-family: "Inter", "Segoe UI", sans-serif;
   color: var(--ink);
   background:
-    radial-gradient(circle at 8% 12%, #ffffff 0%, var(--bg-1) 40%, var(--bg-2) 72%, #e1e6ef 100%),
+    radial-gradient(circle at 8% 12%, #ffffff 0%, var(--bg-1) 38%, var(--bg-2) 70%, #dbe4ff 100%),
     repeating-linear-gradient(
       35deg,
-      rgba(237, 179, 34, 0.07) 0 2px,
+      rgba(0, 212, 255, 0.06) 0 2px,
       rgba(255, 255, 255, 0) 2px 14px
     ),
     repeating-linear-gradient(
       -28deg,
-      rgba(35, 44, 57, 0.04) 0 3px,
+      rgba(139, 92, 246, 0.06) 0 3px,
       rgba(255, 255, 255, 0) 3px 17px
     );
   background-blend-mode: normal, multiply, soft-light;
@@ -963,8 +965,8 @@ textarea {
 }
 
 .simulation-area {
-  padding: 86px 16px 54px;
-  gap: 10px;
+  padding: 86px 0 54px;
+  gap: 0;
 }
 
 .main-navbar {
@@ -988,11 +990,13 @@ textarea {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .navbar-actions {
   display: flex;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 .nav-icon-btn {
@@ -1031,13 +1035,18 @@ textarea {
 }
 
 .topic-summary.compact {
-  margin-top: 2px;
+  margin-top: 0;
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
 }
 
 .canvas-wrapper {
   border-radius: 16px;
   width: min(100%, 1180px);
   min-height: 420px;
+  border-left: 0;
+  border-right: 0;
 }
 
 .simulation-skeleton {
@@ -1241,12 +1250,209 @@ textarea {
   height: 40px;
 }
 
-@keyframes micPulse {
+.home-controls {
+  padding: 14px;
+}
+
+.home-controls-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.topic-input {
+  height: 46px;
+  border-radius: 999px;
+  padding: 0 16px;
+}
+
+.mic-wrap {
+  position: relative;
+  display: grid;
+  justify-items: center;
+}
+
+.mic-listening-label {
+  position: absolute;
+  top: calc(100% + 4px);
+  font-size: 0.74rem;
+  color: #d21d3f;
+  font-weight: 700;
+}
+
+.generate-btn {
+  height: 46px;
+  border-radius: 999px;
+  padding: 0 18px;
+  background: linear-gradient(145deg, rgba(0, 212, 255, 0.25), rgba(139, 92, 246, 0.25));
+}
+
+.menu-inline {
+  border-radius: 12px;
+  width: 38px;
+  height: 38px;
+}
+
+.menu-inline span {
+  width: 16px;
+  height: 2px;
+  display: block;
+  background: #263344;
+  box-shadow: 0 -5px 0 #263344, 0 5px 0 #263344;
+}
+
+.top-title-wrap.compact {
+  min-width: 0;
+}
+
+.top-title-wrap.compact h1 {
+  max-width: min(48vw, 360px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.simulation-area {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.canvas-wrapper {
+  width: 100%;
+  margin: 0;
+  height: 100%;
+  min-height: 0;
+  aspect-ratio: auto;
+  background: #111a30;
+}
+
+.sim-canvas {
+  min-height: 0;
+}
+
+.sim-voice-corner {
+  position: absolute;
+  left: 8px;
+  bottom: 58px;
+  z-index: 26;
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+}
+
+.sim-mic-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid rgba(123, 150, 190, 0.48);
+  background: rgba(20, 29, 52, 0.9);
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.sim-mic-btn svg {
+  width: 19px;
+  height: 19px;
+  fill: #9bb5e2;
+}
+
+.sim-mic-btn.active {
+  border-color: rgba(0, 212, 255, 0.92);
+  animation: micPulseBlue 1.2s ease-in-out infinite;
+}
+
+.sim-mic-btn.active svg {
+  fill: #00d4ff;
+}
+
+.sim-mic-label {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #9db0d5;
+  background: rgba(14, 22, 39, 0.7);
+}
+
+.sim-mic-label.active {
+  color: #f6f9ff;
+  background: rgba(0, 212, 255, 0.23);
+}
+
+.voice-command-flash {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 27;
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: #0f223a;
+  background: linear-gradient(145deg, rgba(0, 212, 255, 0.84), rgba(139, 92, 246, 0.84));
+}
+
+.interaction-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.interaction-panel .panel-section:first-child {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.interaction-panel .panel-section:first-child textarea {
+  margin-top: 8px;
+}
+
+.chat-window {
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-send-btn {
+  margin-top: 8px;
+  min-height: 42px;
+  border-radius: 12px;
+  font-weight: 700;
+  background: linear-gradient(145deg, rgba(0, 212, 255, 0.35), rgba(139, 92, 246, 0.38));
+}
+
+.subtitle-bar {
+  color: #d9e7ff;
+  background: rgba(10, 16, 30, 0.95);
+}
+
+.sim-play-toggle svg {
+  fill: #e4f2ff;
+}
+
+@keyframes micPulseBlue {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(244, 170, 40, 0.35), 0 6px 15px rgba(79, 57, 17, 0.2);
+    box-shadow: 0 0 0 0 rgba(0, 212, 255, 0.4);
   }
   50% {
-    box-shadow: 0 0 0 14px rgba(244, 170, 40, 0), 0 6px 15px rgba(79, 57, 17, 0.2);
+    box-shadow: 0 0 0 13px rgba(0, 212, 255, 0);
+  }
+}
+
+.mic-icon-btn.listening {
+  background: linear-gradient(145deg, #ffe1e1, #ffc3c3);
+  border-color: rgba(171, 43, 43, 0.55);
+  animation: micPulseRed 1.2s ease-in-out infinite;
+}
+
+@keyframes micPulseRed {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(216, 47, 47, 0.38), 0 6px 15px rgba(130, 29, 29, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 0 14px rgba(216, 47, 47, 0), 0 6px 15px rgba(130, 29, 29, 0.15);
   }
 }
 
@@ -1268,6 +1474,14 @@ textarea {
 
   .simulation-area {
     padding-top: 84px;
+  }
+
+  .home-controls-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .generate-btn {
+    grid-column: 1 / -1;
   }
 
   .controls-drawer {

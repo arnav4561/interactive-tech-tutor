@@ -145,6 +145,14 @@ const simLabelSchema = z.object({
   color: z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).optional()
 });
 
+const simConnectionSchema = z.object({
+  fromId: z.string().min(1).max(40),
+  toId: z.string().min(1).max(40),
+  type: z.enum(["line", "arrow", "dashed"]).default("line"),
+  color: z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).optional(),
+  label: z.string().min(1).max(120).optional()
+});
+
 const simMathExpressionSchema = z.object({
   expression: z.string().min(1).max(180),
   variables: z.record(z.number()).default({})
@@ -159,9 +167,11 @@ const simGraphSchema = z.object({
 
 const simStepSchema = z.object({
   step: z.number().int().min(1).max(20),
+  concept: z.string().min(3).max(180).optional(),
   objects: z.array(simObjectSchema).min(1).max(24),
   movements: z.array(simMovementSchema).max(40).default([]),
   labels: z.array(simLabelSchema).max(24).default([]),
+  connections: z.array(simConnectionSchema).max(40).default([]),
   annotation: z.string().min(8).max(300),
   mathExpressions: z.array(simMathExpressionSchema).max(10).optional(),
   graph: simGraphSchema.optional()
@@ -187,7 +197,7 @@ const llmSimulationSchema = z.object({
   narration: z.array(z.string().min(8).max(700)).min(3).max(14),
   openingMessage: z.string().min(20).max(700),
   explanation_script: z.string().min(40).max(2800),
-  simulation_steps: z.array(simStepSchema).min(3).max(12),
+  simulation_steps: z.array(simStepSchema).min(6).max(12),
   problemSets: generatedProblemSetsSchema.optional()
 });
 
@@ -199,6 +209,22 @@ type GeminiSimulationPayload = {
   simulation_steps?: z.infer<typeof simStepSchema>[];
   problemSets?: z.infer<typeof generatedProblemSetsSchema>;
 };
+
+type SimStep = z.infer<typeof simStepSchema>;
+type SimObject = z.infer<typeof simObjectSchema>;
+type SimConnection = z.infer<typeof simConnectionSchema>;
+type SceneLayout = "pipeline" | "tree" | "layered" | "hub" | "timeline";
+type TechDomain =
+  | "web"
+  | "data"
+  | "ml"
+  | "network"
+  | "systems"
+  | "security"
+  | "cloud"
+  | "algorithms"
+  | "hardware"
+  | "general";
 
 function slugify(value: string): string {
   return value
@@ -348,7 +374,52 @@ function textHash(value: string): number {
   return hash;
 }
 
-function topicKeywords(topic: Topic): string[] {
+const DOMAIN_TERMS: Record<TechDomain, string[]> = {
+  web: ["browser", "request", "router", "api", "state", "render", "component", "response"],
+  data: ["dataset", "table", "query", "index", "join", "transaction", "schema", "warehouse"],
+  ml: ["feature", "model", "loss", "gradient", "training", "inference", "evaluation", "prediction"],
+  network: ["packet", "latency", "protocol", "tcp", "dns", "gateway", "routing", "bandwidth"],
+  systems: ["process", "thread", "memory", "queue", "scheduler", "throughput", "state", "resource"],
+  security: ["encryption", "auth", "token", "key", "certificate", "integrity", "threat", "policy"],
+  cloud: ["container", "cluster", "deployment", "scaling", "pipeline", "observability", "service", "node"],
+  algorithms: ["input", "loop", "branch", "complexity", "optimize", "state", "output", "invariant"],
+  hardware: ["cpu", "cache", "register", "bus", "clock", "instruction", "memory", "pipeline"],
+  general: ["input", "process", "state", "decision", "feedback", "output", "validation", "result"]
+};
+
+function detectTechDomain(topicTitle: string): TechDomain {
+  const title = topicTitle.toLowerCase();
+  if (/(react|frontend|backend|api|http|javascript|typescript|html|css|web|dom)/.test(title)) {
+    return "web";
+  }
+  if (/(database|sql|nosql|etl|warehouse|analytics|regression|statistics|query|data)/.test(title)) {
+    return "data";
+  }
+  if (/(machine learning|deep learning|neural|llm|model training|classification|clustering|ai)/.test(title)) {
+    return "ml";
+  }
+  if (/(network|tcp|udp|dns|routing|switch|firewall|protocol|latency)/.test(title)) {
+    return "network";
+  }
+  if (/(operating system|os |kernel|process|thread|scheduling|concurrency|distributed)/.test(title)) {
+    return "systems";
+  }
+  if (/(security|encryption|oauth|jwt|authentication|authorization|cryptography|xss|csrf)/.test(title)) {
+    return "security";
+  }
+  if (/(cloud|kubernetes|docker|devops|cicd|deployment|autoscaling|microservice)/.test(title)) {
+    return "cloud";
+  }
+  if (/(algorithm|graph algorithm|sorting|dynamic programming|tree|hash|search|complexity)/.test(title)) {
+    return "algorithms";
+  }
+  if (/(cpu|gpu|computer architecture|cache|assembly|register|instruction|hardware)/.test(title)) {
+    return "hardware";
+  }
+  return "general";
+}
+
+function topicKeywords(topic: Topic, domain?: TechDomain): string[] {
   const stopWords = new Set([
     "about",
     "after",
@@ -382,153 +453,493 @@ function topicKeywords(topic: Topic): string[] {
     .filter((token) => token.length >= 3 && !stopWords.has(token));
 
   const unique = Array.from(new Set(raw)).slice(0, 10);
-  if (unique.length >= 4) {
-    return unique;
+  const domainHints = domain ? DOMAIN_TERMS[domain].slice(0, 4) : [];
+  const withHints = Array.from(new Set([...unique, ...domainHints]));
+  if (withHints.length >= 4) {
+    return withHints.slice(0, 10);
   }
-  return [...unique, "input", "process", "validate", "output"].slice(0, 6);
+  return [...withHints, "input", "process", "validate", "output"].slice(0, 8);
 }
 
-function buildTemplateSimulationSteps(topic: Topic): z.infer<typeof simStepSchema>[] {
-  const palette = ["#3b82f6", "#f97316", "#10b981", "#ec4899", "#eab308", "#6366f1", "#14b8a6", "#ef4444"];
-  const objectKinds: Array<z.infer<typeof simObjectSchema>["type"]> = [
-    "box",
-    "sphere",
-    "cylinder",
-    "cone",
-    "torus",
-    "plane",
-    "arrow"
+function objectIdFromLabel(label: string, index: number): string {
+  const id = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  return id || `node-${index + 1}`;
+}
+
+function layoutPositions(layout: SceneLayout, count: number): Array<{ x: number; y: number; z: number }> {
+  const safeCount = Math.max(2, count);
+  if (layout === "pipeline" || layout === "timeline") {
+    const startX = -6;
+    const endX = 6;
+    return Array.from({ length: safeCount }).map((_, index) => ({
+      x: Number((startX + ((endX - startX) * index) / Math.max(1, safeCount - 1)).toFixed(2)),
+      y: layout === "timeline" ? -0.3 : Number((Math.sin(index * 0.7) * 0.8).toFixed(2)),
+      z: Number((((index % 2) - 0.5) * 0.45).toFixed(2))
+    }));
+  }
+
+  if (layout === "layered") {
+    return Array.from({ length: safeCount }).map((_, index) => ({
+      x: Number((((index % 2 === 0 ? -1 : 1) * (1.5 + (index % 3) * 0.9))).toFixed(2)),
+      y: Number((3.5 - index * 1.2).toFixed(2)),
+      z: Number((((index % 3) - 1) * 0.4).toFixed(2))
+    }));
+  }
+
+  if (layout === "hub") {
+    return Array.from({ length: safeCount }).map((_, index) => {
+      if (index === 0) {
+        return { x: 0, y: 0, z: 0 };
+      }
+      const angle = ((index - 1) / Math.max(1, safeCount - 1)) * Math.PI * 2;
+      return {
+        x: Number((Math.cos(angle) * 4.2).toFixed(2)),
+        y: Number((Math.sin(angle) * 2.5).toFixed(2)),
+        z: Number((((index % 2) - 0.5) * 0.55).toFixed(2))
+      };
+    });
+  }
+
+  const root = [{ x: 0, y: 3.6, z: 0 }];
+  const remaining = safeCount - 1;
+  const midCount = Math.max(2, Math.ceil(remaining / 2));
+  const lastCount = Math.max(1, remaining - midCount);
+  const middle = Array.from({ length: midCount }).map((_, index) => ({
+    x: Number((-3.8 + (7.6 * index) / Math.max(1, midCount - 1)).toFixed(2)),
+    y: 1.1,
+    z: Number((((index % 2) - 0.5) * 0.35).toFixed(2))
+  }));
+  const bottom = Array.from({ length: lastCount }).map((_, index) => ({
+    x: Number((-4.8 + (9.6 * index) / Math.max(1, lastCount - 1)).toFixed(2)),
+    y: -1.7,
+    z: Number((((index % 2) - 0.5) * 0.35).toFixed(2))
+  }));
+  return [...root, ...middle, ...bottom].slice(0, safeCount);
+}
+
+function pickObjectType(label: string, index: number): SimObject["type"] {
+  const value = label.toLowerCase();
+  if (/(queue|table|cache|database|index|memory|registry|store)/.test(value)) {
+    return "box";
+  }
+  if (/(request|response|packet|token|event|message|signal|sample)/.test(value)) {
+    return "sphere";
+  }
+  if (/(service|server|model|agent|process|node|worker|controller)/.test(value)) {
+    return "cylinder";
+  }
+  if (/(decision|branch|classifier|router)/.test(value)) {
+    return "cone";
+  }
+  if (/(loop|cycle|feedback)/.test(value)) {
+    return "torus";
+  }
+  if (/(rule|policy|equation|formula|constraint)/.test(value)) {
+    return "plane";
+  }
+  const rotation = ["box", "sphere", "cylinder", "cone", "torus"] as const;
+  return rotation[index % rotation.length];
+}
+
+function buildConnectionsFromLayout(layout: SceneLayout, objects: SimObject[]): SimConnection[] {
+  if (objects.length < 2) {
+    return [];
+  }
+
+  if (layout === "hub") {
+    const center = objects[0].id;
+    return objects.slice(1).map((item) => ({
+      fromId: center,
+      toId: item.id,
+      type: "line",
+      color: "#5ca9ff"
+    }));
+  }
+
+  if (layout === "tree") {
+    const links: SimConnection[] = [];
+    for (let index = 0; index < objects.length - 1; index += 1) {
+      const parentIndex = Math.floor(index / 2);
+      if (parentIndex < index) {
+        links.push({
+          fromId: objects[parentIndex].id,
+          toId: objects[index + 1].id,
+          type: "line",
+          color: "#7cb8ff"
+        });
+      }
+    }
+    return links;
+  }
+
+  return objects.slice(0, -1).map((item, index) => ({
+    fromId: item.id,
+    toId: objects[index + 1].id,
+    type: layout === "timeline" ? "arrow" : "line",
+    color: "#6fb6ff"
+  }));
+}
+
+function stageBlueprints(
+  domain: TechDomain,
+  topicTitle: string,
+  keywords: string[],
+  mathTopic: boolean,
+  graphTopic: boolean
+): Array<{
+  concept: string;
+  annotation: string;
+  labels: string[];
+  layout: SceneLayout;
+  graph?: z.infer<typeof simGraphSchema>;
+  mathExpressions?: z.infer<typeof simMathExpressionSchema>[];
+}> {
+  const key = (index: number, fallback: string) => keywords[index] ?? fallback;
+  const topicShort = topicTitle.slice(0, 42);
+  const regressionLike = /(regression|forecast|trend|signal|statistics)/i.test(topicTitle);
+
+  if (domain === "ml") {
+    return [
+      {
+        concept: "Problem framing and dataset",
+        annotation: `Establish ${topicShort} objective, data source, and target variable.`,
+        labels: ["Use Case", "Dataset", "Features", "Target"],
+        layout: "pipeline"
+      },
+      {
+        concept: "Data preparation",
+        annotation: "Clean, normalize, and split data into training and validation subsets.",
+        labels: ["Raw Data", "Cleaning", "Normalization", "Train Split", "Validation Split"],
+        layout: "pipeline"
+      },
+      {
+        concept: "Model mapping",
+        annotation: "Map features to predictions through the model hypothesis.",
+        labels: ["Feature Vector", "Model", "Prediction", "Residual"],
+        layout: "hub",
+        graph: graphTopic || regressionLike
+          ? {
+              type: "scatter",
+              title: `${topicShort} data fit`,
+              x: [1, 2, 3, 4, 5, 6],
+              y: [1.2, 2.1, 2.9, 4.2, 5.1, 5.8]
+            }
+          : undefined
+      },
+      {
+        concept: "Optimization loop",
+        annotation: "Reduce loss by updating parameters over iterative optimization steps.",
+        labels: ["Prediction", "Loss", "Gradient", "Optimizer", "Updated Weights"],
+        layout: "timeline",
+        mathExpressions: mathTopic
+          ? [
+              {
+                expression: "y_hat = b0 + b1 * x",
+                variables: { b0: 0.8, b1: 1.05, x: 4 } as Record<string, number>
+              },
+              {
+                expression: "loss = (y - y_hat)^2",
+                variables: { y: 5.1, y_hat: 5.0 } as Record<string, number>
+              }
+            ]
+          : undefined
+      },
+      {
+        concept: "Evaluation",
+        annotation: "Measure quality using validation metrics and error diagnostics.",
+        labels: ["Validation Data", "Metric Engine", "Error Analysis", "Model Report"],
+        layout: "layered",
+        graph: graphTopic
+          ? {
+              type: "line",
+              title: `${topicShort} metric trend`,
+              x: [1, 2, 3, 4, 5, 6],
+              y: [0.92, 0.89, 0.84, 0.79, 0.75, 0.72]
+            }
+          : undefined
+      },
+      {
+        concept: "Inference and deployment",
+        annotation: "Serve predictions in production with monitoring and feedback loops.",
+        labels: ["New Input", "Inference API", "Prediction Output", "Monitoring", "Feedback Store"],
+        layout: "pipeline"
+      }
+    ];
+  }
+
+  if (domain === "data") {
+    return [
+      {
+        concept: "Data model and entities",
+        annotation: `Define core entities and relations required for ${topicShort}.`,
+        labels: ["Source", "Schema", "Entity", "Relation"],
+        layout: "tree"
+      },
+      {
+        concept: "Ingestion and transformation",
+        annotation: "Ingest data and transform it into analysis-ready structure.",
+        labels: ["Extractor", "Transformer", "Validator", "Warehouse"],
+        layout: "pipeline"
+      },
+      {
+        concept: "Query execution",
+        annotation: "Parse, optimize, and execute queries across data structures.",
+        labels: ["Query", "Planner", "Index", "Executor", "Result Set"],
+        layout: "timeline",
+        mathExpressions: mathTopic
+          ? [
+              {
+                expression: "latency = rows / throughput",
+                variables: { rows: 120000, throughput: 6000 } as Record<string, number>
+              }
+            ]
+          : undefined
+      },
+      {
+        concept: "Aggregation and insight",
+        annotation: "Aggregate dimensions and metrics to surface actionable signals.",
+        labels: ["Dimension", "Metric", "Aggregation", "Insight"],
+        layout: "hub",
+        graph: graphTopic
+          ? {
+              type: "bar",
+              title: `${topicShort} grouped metric`,
+              x: [1, 2, 3, 4],
+              y: [16, 22, 19, 31]
+            }
+          : undefined
+      },
+      {
+        concept: "Quality and consistency",
+        annotation: "Validate constraints, null handling, and consistency guarantees.",
+        labels: ["Rules", "Quality Checks", "Anomaly Flag", "Approved Output"],
+        layout: "layered"
+      },
+      {
+        concept: "Decision support",
+        annotation: "Deliver a final data product with interpretation-ready output.",
+        labels: ["Dashboard", "Decision Node", "Recommendation", "Action"],
+        layout: "pipeline"
+      }
+    ];
+  }
+
+  const common = [
+    {
+      concept: `Foundations of ${topicShort}`,
+      annotation: `Establish the baseline components and assumptions for ${topicShort}.`,
+      labels: [key(0, "input"), key(1, "state"), key(2, "component"), key(3, "goal")],
+      layout: "tree" as SceneLayout
+    },
+    {
+      concept: "Input and signal flow",
+      annotation: "Trace how signals move through the system and trigger transformations.",
+      labels: [key(0, "source"), key(4, "router"), key(5, "processor"), key(6, "output")],
+      layout: "pipeline" as SceneLayout
+    },
+    {
+      concept: "Core mechanism",
+      annotation: "Show the central mechanism that drives behavior in this topic.",
+      labels: [key(1, "control"), key(2, "engine"), key(6, "state"), key(7, "feedback")],
+      layout: "hub" as SceneLayout,
+      graph: graphTopic
+        ? {
+            type: "line" as const,
+            title: `${topicShort} behavior trend`,
+            x: [1, 2, 3, 4, 5, 6],
+            y: [1.1, 1.8, 2.6, 3.0, 3.9, 4.5]
+          }
+        : undefined
+    },
+    {
+      concept: "Decision logic",
+      annotation: "Represent decision points and branching outcomes explicitly.",
+      labels: [key(3, "condition"), "Decision", "Path A", "Path B", "Path C"],
+      layout: "tree" as SceneLayout
+    },
+    {
+      concept: "Validation and constraints",
+      annotation: "Check constraints, error handling, and stability boundaries.",
+      labels: ["Constraint", "Verifier", "Exception Path", "Stable Output"],
+      layout: "layered" as SceneLayout,
+      mathExpressions: mathTopic
+        ? [
+            {
+              expression: "throughput = work / time",
+              variables: { work: 320, time: 8 } as Record<string, number>
+            },
+            {
+              expression: "efficiency = output / input",
+              variables: { output: 240, input: 300 } as Record<string, number>
+            }
+          ]
+        : undefined
+    },
+    {
+      concept: "End-to-end synthesis",
+      annotation: "Combine all components into an end-to-end execution view.",
+      labels: ["User Trigger", "Execution Flow", "Result", "Feedback Loop"],
+      layout: "timeline" as SceneLayout
+    }
   ];
-  const keywords = topicKeywords(topic);
-  const seed = textHash(topic.title.toLowerCase());
-  const objectCount = Math.min(10, Math.max(5, keywords.length + 1));
-  const radius = 4 + (seed % 3);
 
-  const baseObjects = Array.from({ length: objectCount }).map((_, index) => {
-    const angle = (index / objectCount) * Math.PI * 2;
-    const keyword = keywords[index % keywords.length] ?? `stage-${index + 1}`;
-    return {
-      id: `obj-${index + 1}`,
-      type: objectKinds[(seed + index) % objectKinds.length],
-      color: palette[(seed + index * 3) % palette.length],
-      size: {
-        x: 0.9 + ((seed + index) % 4) * 0.22,
-        y: 0.9 + ((seed + index * 2) % 3) * 0.28,
-        z: 0.9 + ((seed + index * 5) % 4) * 0.2
-      },
-      position: {
-        x: Number((Math.cos(angle) * radius).toFixed(2)),
-        y: Number((Math.sin(angle) * (radius * 0.42)).toFixed(2)),
-        z: Number((((index % 3) - 1) * 0.7).toFixed(2))
-      },
-      rotation: { x: 0, y: 0, z: 0 },
-      label: keyword.toUpperCase().slice(0, 14)
-    };
-  }) satisfies z.infer<typeof simObjectSchema>[];
+  return common;
+}
 
+function buildTemplateSimulationSteps(topic: Topic): SimStep[] {
   const titleLower = topic.title.toLowerCase();
-  const mathTopic = /(math|calculus|matrix|equation|algebra|physics|signal|probability|statistics)/.test(
+  const domain = detectTechDomain(topic.title);
+  const keywords = topicKeywords(topic, domain);
+  const seed = textHash(topic.title.toLowerCase());
+  const mathTopic = /(math|calculus|matrix|equation|algebra|physics|signal|probability|statistics|regression)/.test(
     titleLower
   );
   const graphTopic = /(graph|plot|chart|signal|trend|statistics|regression|probability|distribution)/.test(
     titleLower
   );
 
-  const stepOneMovements = baseObjects.slice(0, Math.max(2, Math.ceil(baseObjects.length / 3))).map((obj, index) => ({
-    objectId: obj.id,
-    type: "translate" as const,
-    to: { x: obj.position.x + 1.2 + index * 0.4, y: obj.position.y - 0.5, z: obj.position.z },
-    durationMs: 1900 + index * 180,
-    repeat: 0
-  }));
+  const paletteByDomain: Record<TechDomain, string[]> = {
+    web: ["#4aa8ff", "#20c997", "#7d8bff", "#f4a261", "#a0c4ff", "#b8f2e6"],
+    data: ["#6b8dff", "#36cfc9", "#4dabf7", "#74c0fc", "#4ecdc4", "#91a7ff"],
+    ml: ["#58a6ff", "#8b5cf6", "#3ddc97", "#34b1eb", "#9d7dff", "#50c878"],
+    network: ["#4ea8de", "#48bfe3", "#5e60ce", "#64dfdf", "#80ffdb", "#72ddf7"],
+    systems: ["#6d9dc5", "#80ed99", "#4ea8de", "#b8c0ff", "#90dbf4", "#72efdd"],
+    security: ["#00a8e8", "#4f5d75", "#4361ee", "#4cc9f0", "#3a86ff", "#4895ef"],
+    cloud: ["#3a86ff", "#4cc9f0", "#4895ef", "#4ea8de", "#56cfe1", "#72efdd"],
+    algorithms: ["#4f46e5", "#06b6d4", "#22c55e", "#0ea5e9", "#84cc16", "#38bdf8"],
+    hardware: ["#5c7cfa", "#15aabf", "#4dabf7", "#748ffc", "#66d9e8", "#91a7ff"],
+    general: ["#4ea8de", "#80ed99", "#5e60ce", "#64dfdf", "#7b9acc", "#4cc9f0"]
+  };
+  const palette = paletteByDomain[domain];
 
-  const stepTwoMovements = baseObjects
-    .slice(Math.max(1, Math.floor(baseObjects.length / 3)), Math.max(3, Math.floor((baseObjects.length * 2) / 3)))
-    .map((obj, index) => ({
-      objectId: obj.id,
-      type: index % 2 === 0 ? ("rotate" as const) : ("scale" as const),
-      axis: { x: 0.35 + index * 0.06, y: 1, z: 0.2 },
-      durationMs: 1700 + index * 200,
-      repeat: 0
-    }));
+  const blueprints = stageBlueprints(domain, topic.title, keywords, mathTopic, graphTopic).slice(0, 8);
+  return blueprints.map((stage, stageIndex) => {
+    const positions = layoutPositions(stage.layout, stage.labels.length);
+    const objects: SimObject[] = stage.labels.map((label, index) => {
+      const type = pickObjectType(label, stageIndex + index + seed);
+      const thickness = type === "plane" ? 0.25 : 1;
+      return {
+        id: objectIdFromLabel(label, index),
+        type,
+        color: palette[(stageIndex + index + seed) % palette.length],
+        size: {
+          x: type === "plane" ? 1.8 : 1 + ((seed + index + stageIndex) % 3) * 0.22,
+          y: type === "plane" ? 1.1 : 1 + ((seed + index * 3) % 3) * 0.24,
+          z: thickness
+        },
+        position: positions[index] ?? { x: 0, y: 0, z: 0 },
+        rotation: { x: 0, y: 0, z: 0 },
+        label: label.slice(0, 80)
+      };
+    });
 
-  const stepThreeMovements = baseObjects.slice(-Math.max(2, Math.ceil(baseObjects.length / 3))).map((obj, index) => ({
-    objectId: obj.id,
-    type: index % 2 === 0 ? ("pulse" as const) : ("translate" as const),
-    to: { x: obj.position.x + 1.6, y: obj.position.y + 0.4, z: obj.position.z },
-    durationMs: 1800 + index * 210,
-    repeat: index % 2 === 0 ? 1 : 0
-  }));
+    const connections = buildConnectionsFromLayout(stage.layout, objects);
+    const movements = objects
+      .slice(0, Math.min(8, objects.length))
+      .map((object, index) => {
+        const targetIndex = Math.min(objects.length - 1, index + 1);
+        const target = objects[targetIndex];
+        if ((stage.layout === "pipeline" || stage.layout === "timeline") && index < targetIndex) {
+          return {
+            objectId: object.id,
+            type: "translate" as const,
+            to: {
+              x: Number((object.position.x + (target.position.x - object.position.x) * 0.28).toFixed(2)),
+              y: Number((object.position.y + (target.position.y - object.position.y) * 0.28).toFixed(2)),
+              z: object.position.z
+            },
+            durationMs: 1650 + index * 160,
+            repeat: 1
+          };
+        }
+        if (index % 2 === 0) {
+          return {
+            objectId: object.id,
+            type: "pulse" as const,
+            durationMs: 1500 + index * 130,
+            repeat: 1
+          };
+        }
+        return {
+          objectId: object.id,
+          type: "rotate" as const,
+          axis: { x: 0.2, y: 1, z: 0.15 },
+          durationMs: 1700 + index * 120,
+          repeat: 0
+        };
+      });
 
-  return [
-    {
-      step: 1,
-      objects: baseObjects,
-      movements: stepOneMovements,
+    return {
+      step: stageIndex + 1,
+      concept: stage.concept.slice(0, 180),
+      objects,
+      movements,
       labels: [
         {
-          text: `${topic.title}: input and setup phase`,
-          position: { x: 0, y: 4.8, z: 0 },
-          color: "#1f2937"
+          text: `${topic.title}: ${stage.concept}`.slice(0, 180),
+          position: { x: 0, y: 4.7, z: 0 },
+          color: "#dbeafe"
         }
       ],
-      annotation: `Step 1 sets the input context for ${topic.title} and positions core components.`,
-      mathExpressions: mathTopic
-        ? [
-            { expression: "v = d / t", variables: { d: 24, t: 6 } },
-            { expression: "E = m * c^2", variables: { m: 0.002, c: 300000000 } }
-          ]
-        : undefined
-    },
-    {
-      step: 2,
-      objects: baseObjects,
-      movements: stepTwoMovements,
-      labels: [
-        {
-          text: `${topic.title}: transformation and internal processing`,
-          position: { x: 0, y: 4.6, z: 0 },
-          color: "#1f2937"
-        }
-      ],
-      annotation: `Step 2 executes internal transformations and state changes for ${topic.title}.`,
-      graph: graphTopic
-        ? {
-            type: "line",
-            title: `${topic.title} trend`,
-            x: [0, 1, 2, 3, 4, 5],
-            y: [1, 1.5, 2.7, 3.4, 4.1, 4.8]
-          }
-        : undefined
-    },
-    {
-      step: 3,
-      objects: baseObjects,
-      movements: stepThreeMovements,
-      labels: [
-        {
-          text: `${topic.title}: validation and output`,
-          position: { x: 0, y: 4.4, z: 0 },
-          color: "#1f2937"
-        }
-      ],
-      annotation: `Step 3 validates results and explains final output behavior for ${topic.title}.`
-    }
-  ];
+      connections,
+      annotation: stage.annotation.slice(0, 300),
+      graph: stage.graph,
+      mathExpressions: stage.mathExpressions
+    };
+  });
 }
 
-function normalizeSimulationSteps(
-  rawSteps: z.infer<typeof simStepSchema>[],
-  fallback: z.infer<typeof simStepSchema>[]
-): z.infer<typeof simStepSchema>[] {
-  if (!rawSteps.length) {
-    return fallback;
+function stepSpecificityScore(step: SimStep, topicTerms: string[], domainTerms: string[]): number {
+  const objectLabels = step.objects.map((item) => (item.label ?? item.id).toLowerCase());
+  const labelTexts = step.labels.map((item) => item.text.toLowerCase());
+  const bag = [step.annotation.toLowerCase(), (step.concept ?? "").toLowerCase(), ...objectLabels, ...labelTexts].join(
+    " "
+  );
+
+  const topicHits = topicTerms.filter((term) => bag.includes(term)).length;
+  const domainHits = domainTerms.filter((term) => bag.includes(term)).length;
+  const unlabeledObjects = step.objects.filter((item) => !(item.label ?? "").trim()).length;
+  const genericIds = step.objects.filter((item) => /^obj[-_ ]?\d+$/i.test(item.id)).length;
+
+  let score = 0;
+  score += Math.min(3, topicHits);
+  score += Math.min(2, domainHits);
+  score += step.connections?.length ? 1 : 0;
+  score += step.objects.length >= 4 ? 1 : 0;
+  score -= unlabeledObjects >= Math.ceil(step.objects.length * 0.7) ? 2 : 0;
+  score -= genericIds >= Math.ceil(step.objects.length * 0.7) ? 1 : 0;
+  return score;
+}
+
+function normalizeSimulationSteps(rawSteps: SimStep[], fallback: SimStep[], topicTitle: string): SimStep[] {
+  const domain = detectTechDomain(topicTitle);
+  const topicTerms = topicKeywords(
+    {
+      id: "tmp",
+      title: topicTitle,
+      description: topicTitle,
+      narration: [],
+      visualTheme: "systems"
+    },
+    domain
+  );
+  const domainTerms = DOMAIN_TERMS[domain];
+
+  const base = rawSteps.length > 0 ? rawSteps.slice(0, 12) : fallback.slice(0, 12);
+  const expanded = [...base];
+  while (expanded.length < 6) {
+    expanded.push(fallback[expanded.length % fallback.length]);
   }
 
-  return rawSteps.slice(0, 12).map((step, index) => {
+  return expanded.map((step, index) => {
     const fallbackStep = fallback[index % fallback.length];
-    const objectIds = new Set(step.objects.map((item) => item.id));
-    const movements = step.movements
+    const chosen = stepSpecificityScore(step, topicTerms, domainTerms) >= 3 ? step : fallbackStep;
+    const objectIds = new Set(chosen.objects.map((item) => item.id));
+    const movements = chosen.movements
       .filter((move) => objectIds.has(move.objectId))
       .map((move) => ({
         ...move,
@@ -536,18 +947,34 @@ function normalizeSimulationSteps(
         repeat: Math.max(0, Math.min(8, Math.round(move.repeat ?? 0)))
       }))
       .slice(0, 40);
-    const labels = step.labels.slice(0, 24);
+    const labels = chosen.labels.slice(0, 24);
+    const connections = (chosen.connections ?? [])
+      .filter((link) => objectIds.has(link.fromId) && objectIds.has(link.toId) && link.fromId !== link.toId)
+      .slice(0, 40);
     const graph =
-      step.graph && step.graph.x.length === step.graph.y.length && step.graph.x.length > 1
-        ? step.graph
+      chosen.graph && chosen.graph.x.length === chosen.graph.y.length && chosen.graph.x.length > 1
+        ? chosen.graph
         : undefined;
+    const safeConnections =
+      connections.length > 0
+        ? connections
+        : Array.from(objectIds)
+            .slice(0, -1)
+            .map((fromId, linkIndex) => ({
+              fromId,
+              toId: Array.from(objectIds)[linkIndex + 1],
+              type: "line" as const,
+              color: "#6fb6ff"
+            }));
     return {
-      step: step.step,
-      objects: step.objects.slice(0, 24),
+      step: index + 1,
+      concept: chosen.concept?.trim().slice(0, 180) || fallbackStep.concept,
+      objects: chosen.objects.slice(0, 24),
       movements,
       labels,
-      annotation: step.annotation.trim().slice(0, 300) || fallbackStep.annotation,
-      mathExpressions: step.mathExpressions?.slice(0, 10),
+      connections: safeConnections,
+      annotation: chosen.annotation.trim().slice(0, 300) || fallbackStep.annotation,
+      mathExpressions: chosen.mathExpressions?.slice(0, 10),
       graph
     };
   });
@@ -608,95 +1035,50 @@ async function generateSimulationFromGemini(
   const systemPrompt =
     "You are an expert technical tutor and simulation planner. Return only valid JSON.";
   const userPrompt = `
-Generate teaching content for topic "${topic}" at ${level} depth.
+You are an expert educator and visualization designer.
+For the topic "${topic}", generate a step by step simulation plan in JSON format.
+Start from the absolute basics a beginner would need to know, and progressively build to a thorough understanding.
+Generate minimum 6 steps.
 
-Output strict JSON with this shape:
+Return only valid JSON with this exact top-level structure:
 {
   "description": "string",
   "openingMessage": "string",
-  "explanation_script": "full step-by-step script for narration",
-  "narration": ["line1", "line2", "... 4-8 lines"],
+  "explanation_script": "string",
+  "narration": ["line1", "line2", "..."],
   "simulation_steps": [
     {
       "step": 1,
-      "objects": [
-        {
-          "id": "obj-1",
-          "type": "box|sphere|cylinder|cone|torus|plane|line|arrow|text",
-          "color": "#RRGGBB",
-          "size": { "x": 1, "y": 1, "z": 1 },
-          "position": { "x": 0, "y": 0, "z": 0 },
-          "rotation": { "x": 0, "y": 0, "z": 0 },
-          "label": "optional label"
-        }
-      ],
-      "movements": [
-        {
-          "objectId": "obj-1",
-          "type": "translate|rotate|scale|pulse",
-          "to": { "x": 2, "y": 1, "z": 0 },
-          "axis": { "x": 0, "y": 1, "z": 0 },
-          "durationMs": 2200,
-          "repeat": 0
-        }
-      ],
-      "labels": [
-        {
-          "text": "annotation label",
-          "objectId": "obj-1",
-          "position": { "x": 0, "y": 2, "z": 0 },
-          "color": "#RRGGBB"
-        }
-      ],
-      "annotation": "what this step shows",
-      "mathExpressions": [
-        { "expression": "v = d / t", "variables": { "d": 10, "t": 2 } }
-      ],
-      "graph": {
-        "type": "line|scatter|bar",
-        "title": "graph title",
-        "x": [0, 1, 2],
-        "y": [0, 1, 4]
-      }
+      "concept": "single concept of this step",
+      "objects": [...],
+      "movements": [...],
+      "labels": [...],
+      "connections": [...],
+      "annotation": "one sentence annotation"
     }
   ],
-  "problemSets": [
-    {
-      "level": "beginner",
-      "passingScore": 70,
-      "problems": [
-        {
-          "question": "string",
-          "choices": ["a", "b", "c", "d"],
-          "answer": "one choice exactly",
-          "explanation": "string"
-        }
-      ]
-    },
-    {
-      "level": "intermediate",
-      "passingScore": 75,
-      "problems": [...]
-    },
-    {
-      "level": "advanced",
-      "passingScore": 80,
-      "problems": [...]
-    }
-  ]
+  "problemSets": [...]
 }
 
-Rules:
-- simulation_steps must be topic-specific and visually meaningful.
-- Do not reuse generic object labels across unrelated topics.
-- Keep object count per step between 4 and 12.
-- Use labels and annotations so a learner can understand what each step means.
-- Include mathExpressions only when topic needs math rigor.
-- Include graph only when topic needs graph/data representation.
-- Keep narration natural and simulation-oriented.
-- Problems must match level difficulty.
-- Keep content concise and practical.
-- Return JSON only, no markdown.
+For each simulation step specify:
+- concept being explained
+- exact objects to draw (shape, color, size, position)
+- exact animations (what moves, how, speed, direction)
+- labels with positions
+- explicit connections between objects (fromId, toId, connection type)
+- one sentence annotation
+
+Constraints:
+- Make each step visually distinct and directly illustrative of one concept only.
+- Treat this as a real technical simulation, not abstract art.
+- Use topic-specific labels and ids (avoid generic ids like obj-1, obj-2 unless unavoidable).
+- Ensure visual topology is coherent: connected systems must show connected lines/branches.
+- Keep objects and labels readable and non-overlapping in a bounded scene.
+- Keep all object positions in a coherent bounded scene.
+- Include graph only when topic truly requires data plot representation.
+- Include mathExpressions only when mathematically necessary.
+- problems must match ${level} depth and remain practical.
+- return JSON only, no markdown.
 `.trim();
 
   const response = await fetch(
@@ -1246,7 +1628,11 @@ app.post(
     explanationScript = llmGenerated.explanation_script.trim().slice(0, 2800);
   }
   if ((llmGenerated.simulation_steps ?? []).length > 0) {
-    simulationSteps = normalizeSimulationSteps(llmGenerated.simulation_steps ?? [], fallbackSimulationSteps);
+    simulationSteps = normalizeSimulationSteps(
+      llmGenerated.simulation_steps ?? [],
+      fallbackSimulationSteps,
+      requestedTopic
+    );
   }
   problemSets = normalizeProblemSets(topic, llmGenerated.problemSets);
   if (llmGenerated.openingMessage?.trim()) {
