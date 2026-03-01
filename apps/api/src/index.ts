@@ -119,8 +119,8 @@ const simMovementSchema = z.object({
   type: z.enum(["translate", "rotate", "scale", "pulse"]),
   to: vec3Schema.optional(),
   axis: vec3Schema.optional(),
-  durationMs: z.number().min(300).max(10000).default(2200),
-  repeat: z.number().int().min(0).max(8).default(0)
+  durationMs: z.number().positive().max(30000).default(2200),
+  repeat: z.number().int().min(0).max(20).default(0)
 });
 
 const simLabelSchema = z.object({
@@ -511,6 +511,11 @@ function normalizeSimulationSteps(
     const objectIds = new Set(step.objects.map((item) => item.id));
     const movements = step.movements
       .filter((move) => objectIds.has(move.objectId))
+      .map((move) => ({
+        ...move,
+        durationMs: Math.max(300, Math.min(10000, Math.round(move.durationMs))),
+        repeat: Math.max(0, Math.min(8, Math.round(move.repeat ?? 0)))
+      }))
       .slice(0, 40);
     const labels = step.labels.slice(0, 24);
     const graph =
