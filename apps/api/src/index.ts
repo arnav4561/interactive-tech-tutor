@@ -33,6 +33,21 @@ const allowedOrigins = new Set([
   "http://127.0.0.1:4173",
   ...configuredOrigins
 ]);
+const SIMULATION_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
+const simulationResponseCache = new Map<
+  string,
+  {
+    cachedAt: number;
+    payload: {
+      topic: Topic;
+      problemSets: ProblemSet[];
+      openingMessage: string;
+      generationSource: "template" | "gemini";
+      explanation_script: string;
+      simulation_steps: unknown[];
+    };
+  }
+>();
 
 app.use(
   cors({
@@ -1196,6 +1211,14 @@ app.post(
   }
 
   const { topic: requestedTopic, level } = parsed.data;
+  const cacheKey = `${level}::${requestedTopic.trim().toLowerCase()}`;
+  const cached = simulationResponseCache.get(cacheKey);
+  if (cached && Date.now() - cached.cachedAt <= SIMULATION_CACHE_TTL_MS) {
+    const cachedPayload = JSON.parse(JSON.stringify(cached.payload)) as typeof cached.payload;
+    res.json(cachedPayload);
+    return;
+  }
+
   const topic = buildGeneratedTopic(requestedTopic, level);
   let problemSets = buildGeneratedProblemSets(topic);
   const fallbackSimulationSteps = buildTemplateSimulationSteps(topic);
@@ -1248,14 +1271,21 @@ app.post(
     store.history.push(interaction);
   });
 
-  res.json({
+  const responsePayload = {
     topic,
     problemSets,
     openingMessage,
     generationSource,
     explanation_script: explanationScript,
     simulation_steps: simulationSteps
+  };
+
+  simulationResponseCache.set(cacheKey, {
+    cachedAt: Date.now(),
+    payload: JSON.parse(JSON.stringify(responsePayload)) as typeof responsePayload
   });
+
+  res.json(responsePayload);
   })
 );
 

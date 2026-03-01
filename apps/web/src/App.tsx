@@ -17,7 +17,6 @@ const LEVELS: DifficultyLevel[] = ["beginner", "intermediate", "advanced"];
 
 let threeLibPromise: Promise<any> | null = null;
 let plotlyLibPromise: Promise<any> | null = null;
-let mathjsLibPromise: Promise<any> | null = null;
 
 function loadThreeLib(): Promise<any> {
   if (!threeLibPromise) {
@@ -33,17 +32,11 @@ function loadPlotlyLib(): Promise<any> {
   return plotlyLibPromise;
 }
 
-function loadMathjsLib(): Promise<any> {
-  if (!mathjsLibPromise) {
-    mathjsLibPromise = import("mathjs");
-  }
-  return mathjsLibPromise;
-}
-
 type RecognitionConstructor = new () => {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
+  onstart: (() => void) | null;
   onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
   onerror: ((event: { error: string }) => void) | null;
   onend: (() => void) | null;
@@ -108,6 +101,7 @@ export default function App(): JSX.Element {
   const [uploadFeedback, setUploadFeedback] = useState("");
   const [statusMessage, setStatusMessage] = useState("Ready.");
   const [loading, setLoading] = useState(false);
+  const [sessionBootstrapping, setSessionBootstrapping] = useState(false);
   const [appView, setAppView] = useState<AppView>("home");
   const [menuOpen, setMenuOpen] = useState(false);
   const [chatPanelOpen, setChatPanelOpen] = useState(true);
@@ -129,11 +123,15 @@ export default function App(): JSX.Element {
   const [mathOverlayLines, setMathOverlayLines] = useState<string[]>([]);
   const [voiceNarrationEnabled, setVoiceNarrationEnabled] = useState(false);
   const [topicListening, setTopicListening] = useState(false);
+  const [simulationRendererLoading, setSimulationRendererLoading] = useState(false);
 
   const simulationHostRef = useRef<HTMLDivElement | null>(null);
   const graphOverlayRef = useRef<HTMLDivElement | null>(null);
+  const homeMascotRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const recognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
+  const topicRecognitionActiveRef = useRef(false);
   const narrationTimersRef = useRef<number[]>([]);
   const subtitleTimerRef = useRef<number | null>(null);
   const voiceCaptureDesiredRef = useRef(false);
@@ -143,6 +141,12 @@ export default function App(): JSX.Element {
   const isNarratingRef = useRef(false);
   const simulationStepRef = useRef(0);
   const spokenStepRef = useRef(-1);
+  const recognitionStartingRef = useRef(false);
+  const recognitionActiveRef = useRef(false);
+  const recognitionStoppingRef = useRef(false);
+  const recognitionRestartTimerRef = useRef<number | null>(null);
+  const mathWorkerRef = useRef<Worker | null>(null);
+  const mathWorkerTicketRef = useRef(0);
 
   const selectedTopic = useMemo(
     () => topics.find((topic) => topic.id === selectedTopicId) ?? null,
@@ -392,6 +396,7 @@ export default function App(): JSX.Element {
   const bootstrap = useCallback(
     async (authToken: string) => {
       setLoading(true);
+      setSessionBootstrapping(true);
       try {
         const [topicsResponse, progressResponse, prefResponse] = await Promise.all([
           apiGet<{ topics: Topic[] }>("/topics", authToken),
@@ -414,6 +419,7 @@ export default function App(): JSX.Element {
         setStatusMessage((error as Error).message);
       } finally {
         setLoading(false);
+        setSessionBootstrapping(false);
       }
     },
     [userName]
@@ -485,6 +491,15 @@ export default function App(): JSX.Element {
     if (!token || !requestedTopic) {
       return;
     }
+    const normalizedRequestedTopic = requestedTopic.toLowerCase();
+    const existingTopic = topics.find((item) => item.title.trim().toLowerCase() === normalizedRequestedTopic);
+    if (existingTopic && generatedSimulations[existingTopic.id]) {
+      setSelectedTopicId(existingTopic.id);
+      setAppView("simulation");
+      setSimulationPaused(false);
+      setStatusMessage(`Loaded cached simulation for ${existingTopic.title}.`);
+      return;
+    }
 
     setGeneratingTopic(true);
     try {
@@ -526,7 +541,7 @@ export default function App(): JSX.Element {
     } finally {
       setGeneratingTopic(false);
     }
-  }, [customTopicInput, selectedLevel, subtitlesEnabled, token]);
+  }, [customTopicInput, generatedSimulations, selectedLevel, subtitlesEnabled, token, topics]);
 
   const captureTopicFromVoice = useCallback(() => {
     const win = window as Window & {
@@ -539,39 +554,70 @@ export default function App(): JSX.Element {
       return;
     }
 
+    if (topicListening) {
+      try {
+        topicRecognitionRef.current?.stop();
+      } catch (_error) {
+        // no-op
+      }
+      return;
+    }
+
     if (!topicRecognitionRef.current) {
       const recognition = new RecognitionCtor();
-      recognition.continuous = false;
-      recognition.interimResults = false;
+      recognition.continuous = true;
+      recognition.interimResults = true;
       recognition.lang = "en-US";
       topicRecognitionRef.current = recognition;
     }
 
     const recognition = topicRecognitionRef.current;
-    recognition.onresult = (event) => {
-      const spoken = event.results[0]?.[0]?.transcript?.trim();
-      if (spoken) {
-        setCustomTopicInput(spoken);
-        setStatusMessage("Voice topic captured.");
+    let finalizedTranscript = "";
+    recognition.onresult = (event: any) => {
+      let interimTranscript = "";
+      const resultStart = typeof event.resultIndex === "number" ? event.resultIndex : 0;
+      for (let index = resultStart; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const segment = result?.[0]?.transcript?.trim() ?? "";
+        if (!segment) {
+          continue;
+        }
+        if (result.isFinal) {
+          finalizedTranscript = `${finalizedTranscript} ${segment}`.trim();
+        } else {
+          interimTranscript = `${interimTranscript} ${segment}`.trim();
+        }
       }
-      setTopicListening(false);
+      const composed = `${finalizedTranscript} ${interimTranscript}`.trim();
+      if (composed) {
+        setCustomTopicInput(composed);
+      }
     };
     recognition.onerror = (event) => {
+      topicRecognitionActiveRef.current = false;
       setTopicListening(false);
       setStatusMessage(`Voice input error: ${event.error}`);
     };
     recognition.onend = () => {
+      topicRecognitionActiveRef.current = false;
       setTopicListening(false);
+      setStatusMessage("Voice topic capture stopped.");
     };
 
     try {
+      if (topicRecognitionActiveRef.current) {
+        recognition.stop();
+      }
       setTopicListening(true);
+      topicRecognitionActiveRef.current = true;
       recognition.start();
+      setStatusMessage("Listening for topic...");
     } catch (error) {
+      topicRecognitionActiveRef.current = false;
       setTopicListening(false);
       setStatusMessage(`Unable to start topic voice input: ${(error as Error).message}`);
     }
-  }, []);
+  }, [topicListening]);
 
   const sendChat = useCallback(
     async (mode: "voice" | "text", rawMessage?: string) => {
@@ -712,7 +758,7 @@ export default function App(): JSX.Element {
   );
 
   const startListening = useCallback(() => {
-    if (listening) {
+    if (recognitionStartingRef.current || recognitionActiveRef.current) {
       return;
     }
     if (appView !== "simulation") {
@@ -734,6 +780,7 @@ export default function App(): JSX.Element {
     }
 
     voiceCaptureDesiredRef.current = true;
+    recognitionStoppingRef.current = false;
 
     if (!recognitionRef.current) {
       const recognition = new RecognitionCtor();
@@ -756,7 +803,15 @@ export default function App(): JSX.Element {
         void sendChat("voice", transcript);
       }
     };
+    recognitionRef.current.onstart = () => {
+      recognitionStartingRef.current = false;
+      recognitionActiveRef.current = true;
+      setListening(true);
+      setStatusMessage("Voice capture active.");
+    };
     recognitionRef.current.onerror = (event) => {
+      recognitionStartingRef.current = false;
+      recognitionActiveRef.current = false;
       setStatusMessage(`Voice input error: ${event.error}`);
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         voiceCaptureDesiredRef.current = false;
@@ -764,38 +819,69 @@ export default function App(): JSX.Element {
       }
     };
     recognitionRef.current.onend = () => {
+      recognitionActiveRef.current = false;
+      recognitionStartingRef.current = false;
       setListening(false);
-      if (!voiceCaptureDesiredRef.current) {
+      if (!voiceCaptureDesiredRef.current || recognitionStoppingRef.current) {
+        recognitionStoppingRef.current = false;
         return;
       }
-      window.setTimeout(() => {
-        if (!voiceCaptureDesiredRef.current || !recognitionRef.current) {
+      if (recognitionRestartTimerRef.current !== null) {
+        window.clearTimeout(recognitionRestartTimerRef.current);
+      }
+      recognitionRestartTimerRef.current = window.setTimeout(() => {
+        if (
+          !voiceCaptureDesiredRef.current ||
+          !recognitionRef.current ||
+          recognitionStartingRef.current ||
+          recognitionActiveRef.current
+        ) {
           return;
         }
         try {
+          recognitionStartingRef.current = true;
           recognitionRef.current.start();
-          setListening(true);
-        } catch (_error) {
-          // Browser may reject rapid restart; next recognition cycle will retry.
+        } catch (error) {
+          recognitionStartingRef.current = false;
+          setStatusMessage(`Unable to restart voice capture: ${(error as Error).message}`);
         }
       }, 280);
     };
 
     try {
+      recognitionStartingRef.current = true;
       recognitionRef.current.start();
-      setListening(true);
-      setStatusMessage("Voice capture active.");
+      window.setTimeout(() => {
+        if (recognitionStartingRef.current && !recognitionActiveRef.current) {
+          recognitionStartingRef.current = false;
+          recognitionActiveRef.current = true;
+          setListening(true);
+          setStatusMessage("Voice capture active.");
+        }
+      }, 140);
     } catch (error) {
+      recognitionStartingRef.current = false;
+      recognitionActiveRef.current = false;
       setStatusMessage(`Unable to start voice capture: ${(error as Error).message}`);
     }
-  }, [appView, listening, preferences, processVoiceCommand, sendChat]);
+  }, [appView, preferences, processVoiceCommand, sendChat]);
 
   const stopListening = useCallback(() => {
     voiceCaptureDesiredRef.current = false;
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      setListening(false);
+    recognitionStoppingRef.current = true;
+    if (recognitionRestartTimerRef.current !== null) {
+      window.clearTimeout(recognitionRestartTimerRef.current);
+      recognitionRestartTimerRef.current = null;
     }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (_error) {
+        recognitionStartingRef.current = false;
+        recognitionActiveRef.current = false;
+      }
+    }
+    setListening(false);
   }, []);
 
   const submitCurrentProblemSet = useCallback(async () => {
@@ -938,6 +1024,15 @@ export default function App(): JSX.Element {
   }, [token]);
 
   useEffect(() => {
+    const worker = new Worker(new URL("./workers/mathWorker.ts", import.meta.url), { type: "module" });
+    mathWorkerRef.current = worker;
+    return () => {
+      worker.terminate();
+      mathWorkerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     appViewRef.current = appView;
   }, [appView]);
 
@@ -962,6 +1057,15 @@ export default function App(): JSX.Element {
   useEffect(() => {
     localStorage.setItem("itt_subtitles", String(subtitlesEnabled));
   }, [subtitlesEnabled]);
+
+  useEffect(() => {
+    const textarea = chatInputRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(220, Math.max(88, textarea.scrollHeight))}px`;
+  }, [chatInput]);
 
   useEffect(() => {
     setVoiceNarrationEnabled(preferences.voiceSettings.narrationEnabled);
@@ -1083,12 +1187,12 @@ export default function App(): JSX.Element {
       setCurrentStepText("No simulation data found for this topic.");
       setMathOverlayLines([]);
       setActiveGraph(null);
+      setSimulationRendererLoading(false);
       return;
     }
+    setSimulationRendererLoading(true);
     let disposed = false;
     let cleanup = () => undefined;
-    let mathEvaluate: ((expression: string, scope?: Record<string, number>) => unknown) | null = null;
-    let mathTicket = 0;
 
     const run = async () => {
       const THREE = await loadThreeLib();
@@ -1163,9 +1267,20 @@ export default function App(): JSX.Element {
         } else if (obj.type === "line" || obj.type === "arrow") {
           const geometry = new THREE.BufferGeometry().setFromPoints([
             new THREE.Vector3(0, 0, 0),
-            new THREE.Vector3(Math.max(0.6, obj.size.x), 0, 0)
+            new THREE.Vector3(
+              obj.type === "arrow" ? Math.max(0.8, obj.size.x) : obj.size.x,
+              obj.size.y,
+              obj.size.z
+            )
           ]);
-          mesh = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color }));
+          mesh = new THREE.Line(
+            geometry,
+            new THREE.LineBasicMaterial({
+              color,
+              transparent: true,
+              opacity: 0.9
+            })
+          );
         } else if (obj.type === "text") {
           const sprite = createTextSprite(obj.label ?? obj.id, obj.color);
           mesh = sprite ?? new THREE.Group();
@@ -1195,21 +1310,19 @@ export default function App(): JSX.Element {
         repeat: number;
       };
 
+      type ConnectionRuntime = {
+        line: any;
+        from: any;
+        to: any;
+      };
+
       let objectMap = new Map<string, any>();
       let movementRuntimes: MovementRuntime[] = [];
+      let connectionRuntimes: ConnectionRuntime[] = [];
       let frameId = 0;
       let lastTime = performance.now();
       let stepElapsedMs = 0;
       const stepDurationMs = 3000;
-
-      const ensureMathEvaluate = async () => {
-        if (mathEvaluate) {
-          return mathEvaluate;
-        }
-        const mathjs = await loadMathjsLib();
-        mathEvaluate = mathjs.evaluate as (expression: string, scope?: Record<string, number>) => unknown;
-        return mathEvaluate;
-      };
 
       const setStepNarration = (step: SimulationStep, index: number) => {
         setCurrentStepText(`Step ${step.step}: ${step.annotation}`);
@@ -1223,21 +1336,24 @@ export default function App(): JSX.Element {
         if (expressions.length === 0) {
           setMathOverlayLines([]);
         } else {
-          const currentTicket = ++mathTicket;
-          void ensureMathEvaluate().then((evaluateExpression) => {
-            if (disposed || currentTicket !== mathTicket) {
-              return;
-            }
-            const mathLines = expressions.map((item) => {
-              try {
-                const result = evaluateExpression(item.expression, item.variables ?? {});
-                return `${item.expression} = ${String(result)}`;
-              } catch (_error) {
-                return `${item.expression} = [invalid expression]`;
+          const worker = mathWorkerRef.current;
+          if (!worker) {
+            setMathOverlayLines(expressions.map((item) => `${item.expression} = [worker unavailable]`));
+          } else {
+            const ticket = ++mathWorkerTicketRef.current;
+            const onMessage = (event: MessageEvent<{ ticket: number; lines: string[] }>) => {
+              if (disposed || event.data.ticket !== ticket) {
+                return;
               }
+              worker.removeEventListener("message", onMessage as EventListener);
+              setMathOverlayLines(event.data.lines);
+            };
+            worker.addEventListener("message", onMessage as EventListener);
+            worker.postMessage({
+              ticket,
+              expressions
             });
-            setMathOverlayLines(mathLines);
-          });
+          }
         }
 
         setActiveGraph(step.graph ?? null);
@@ -1257,11 +1373,82 @@ export default function App(): JSX.Element {
         }
       };
 
+      const buildAutoConnections = (objects: SimulationStep["objects"]) => {
+        const nodes = objects.filter((obj) => !["line", "arrow", "text"].includes(obj.type));
+        if (nodes.length < 2) {
+          return [] as Array<{ fromId: string; toId: string }>;
+        }
+
+        const topicName = selectedTopic?.title.toLowerCase() ?? "";
+        if (topicName.includes("tree") || topicName.includes("decision")) {
+          const byY = new Map<number, SimulationStep["objects"]>();
+          nodes.forEach((node) => {
+            const bucket = Math.round(node.position.y * 10) / 10;
+            byY.set(bucket, [...(byY.get(bucket) ?? []), node]);
+          });
+          const levels = Array.from(byY.entries())
+            .sort((a, b) => b[0] - a[0])
+            .map((entry) => entry[1].sort((left, right) => left.position.x - right.position.x));
+
+          const links: Array<{ fromId: string; toId: string }> = [];
+          for (let levelIndex = 0; levelIndex < levels.length - 1; levelIndex += 1) {
+            const parents = levels[levelIndex];
+            const children = levels[levelIndex + 1];
+            parents.forEach((parent) => {
+              const nearestChildren = children
+                .slice()
+                .sort(
+                  (left, right) =>
+                    Math.abs(left.position.x - parent.position.x) - Math.abs(right.position.x - parent.position.x)
+                )
+                .slice(0, Math.min(2, children.length));
+              nearestChildren.forEach((child) => {
+                links.push({ fromId: parent.id, toId: child.id });
+              });
+            });
+          }
+          if (links.length > 0) {
+            return links;
+          }
+        }
+
+        const sortedByX = nodes.slice().sort((left, right) => left.position.x - right.position.x);
+        return sortedByX.slice(0, -1).map((node, index) => ({
+          fromId: node.id,
+          toId: sortedByX[index + 1].id
+        }));
+      };
+
+      const renderConnection = (from: any, to: any, color = "#2a3a4f") => {
+        const geometry = new THREE.BufferGeometry().setFromPoints([
+          from.position.clone(),
+          to.position.clone()
+        ]);
+        const material = new THREE.LineBasicMaterial({
+          color: new THREE.Color(color),
+          transparent: true,
+          opacity: 0.72
+        });
+        const line = new THREE.Line(geometry, material);
+        rootGroup.add(line);
+        connectionRuntimes.push({ line, from, to });
+      };
+
+      const updateConnections = () => {
+        connectionRuntimes.forEach((connection) => {
+          connection.line.geometry.setFromPoints([
+            connection.from.position.clone(),
+            connection.to.position.clone()
+          ]);
+        });
+      };
+
       const applyStep = (index: number) => {
         const step = steps[index];
         rootGroup.clear();
         objectMap = new Map<string, any>();
         movementRuntimes = [];
+        connectionRuntimes = [];
 
         step.objects.forEach((obj) => {
           const mesh = createObjectMesh(obj);
@@ -1312,6 +1499,16 @@ export default function App(): JSX.Element {
           });
         });
 
+        buildAutoConnections(step.objects).forEach((link) => {
+          const fromObject = objectMap.get(link.fromId);
+          const toObject = objectMap.get(link.toId);
+          if (!fromObject || !toObject) {
+            return;
+          }
+          renderConnection(fromObject, toObject);
+        });
+        updateConnections();
+
         setStepNarration(step, index);
       };
 
@@ -1341,6 +1538,7 @@ export default function App(): JSX.Element {
             item.object.scale.set(item.fromScale.x * pulse, item.fromScale.y * pulse, item.fromScale.z * pulse);
           }
         });
+        updateConnections();
       };
 
       const onResize = () => {
@@ -1378,6 +1576,7 @@ export default function App(): JSX.Element {
       };
 
       frameId = window.requestAnimationFrame(animate);
+      setSimulationRendererLoading(false);
 
       cleanup = () => {
         window.cancelAnimationFrame(frameId);
@@ -1387,6 +1586,7 @@ export default function App(): JSX.Element {
         }
         renderer.dispose();
         host.innerHTML = "";
+        setSimulationRendererLoading(false);
       };
     };
 
@@ -1474,10 +1674,164 @@ export default function App(): JSX.Element {
   }, [activeGraph, appView]);
 
   useEffect(() => {
+    const host = homeMascotRef.current;
+    if (!host || appView !== "home") {
+      return;
+    }
+
+    let disposed = false;
+    let frameId = 0;
+    let cleanup = () => undefined;
+
+    const run = async () => {
+      const THREE = await loadThreeLib();
+      if (disposed) {
+        return;
+      }
+
+      host.innerHTML = "";
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 120);
+      camera.position.set(0, 1.9, 10);
+      camera.lookAt(0, 1.5, 0);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio || 1);
+      host.appendChild(renderer.domElement);
+
+      const ambient = new THREE.AmbientLight(0xffffff, 0.8);
+      const key = new THREE.DirectionalLight(0x9bb9ff, 1.1);
+      key.position.set(6, 8, 9);
+      const fill = new THREE.DirectionalLight(0xffd98a, 0.55);
+      fill.position.set(-5, 4, 6);
+      scene.add(ambient, key, fill);
+
+      const robot = new THREE.Group();
+      scene.add(robot);
+
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x6f7f93, metalness: 0.48, roughness: 0.34 });
+      const jointMat = new THREE.MeshStandardMaterial({ color: 0x2f3c4d, metalness: 0.7, roughness: 0.28 });
+      const glowMat = new THREE.MeshStandardMaterial({
+        color: 0x73ddff,
+        emissive: 0x2f7fa8,
+        emissiveIntensity: 1.6,
+        metalness: 0.3,
+        roughness: 0.2
+      });
+
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.9, 1.3), bodyMat);
+      torso.position.set(0, 1.55, 0);
+      robot.add(torso);
+
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.35, 16), jointMat);
+      neck.position.set(0, 3.15, 0);
+      robot.add(neck);
+
+      const head = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.4, 1.6), bodyMat);
+      head.position.set(0, 4.05, 0);
+      robot.add(head);
+
+      const eyeLeft = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 20), glowMat.clone());
+      const eyeRight = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 20), glowMat.clone());
+      eyeLeft.position.set(-0.42, 4.1, 0.85);
+      eyeRight.position.set(0.42, 4.1, 0.85);
+      robot.add(eyeLeft, eyeRight);
+
+      const shoulderLeft = new THREE.Mesh(new THREE.SphereGeometry(0.24, 16, 16), jointMat);
+      const shoulderRight = shoulderLeft.clone();
+      shoulderLeft.position.set(-1.42, 2.5, 0);
+      shoulderRight.position.set(1.42, 2.5, 0);
+      robot.add(shoulderLeft, shoulderRight);
+
+      const armGeo = new THREE.CylinderGeometry(0.19, 0.2, 1.75, 16);
+      const armLeft = new THREE.Mesh(armGeo, bodyMat);
+      const armRight = new THREE.Mesh(armGeo, bodyMat);
+      armLeft.position.set(-1.42, 1.55, 0);
+      armRight.position.set(1.42, 1.55, 0);
+      robot.add(armLeft, armRight);
+
+      const hip = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.55, 1.1), jointMat);
+      hip.position.set(0, -0.05, 0);
+      robot.add(hip);
+
+      const legGeo = new THREE.CylinderGeometry(0.24, 0.26, 2.2, 16);
+      const legLeft = new THREE.Mesh(legGeo, bodyMat);
+      const legRight = new THREE.Mesh(legGeo, bodyMat);
+      legLeft.position.set(-0.52, -1.35, 0);
+      legRight.position.set(0.52, -1.35, 0);
+      robot.add(legLeft, legRight);
+
+      const footGeo = new THREE.BoxGeometry(0.72, 0.28, 1.18);
+      const footLeft = new THREE.Mesh(footGeo, jointMat);
+      const footRight = new THREE.Mesh(footGeo, jointMat);
+      footLeft.position.set(-0.52, -2.56, 0.24);
+      footRight.position.set(0.52, -2.56, 0.24);
+      robot.add(footLeft, footRight);
+
+      const aura = new THREE.Mesh(
+        new THREE.TorusGeometry(2.8, 0.05, 18, 90),
+        new THREE.MeshBasicMaterial({ color: 0x7de3ff, transparent: true, opacity: 0.35 })
+      );
+      aura.rotation.x = Math.PI / 2;
+      aura.position.y = -2.1;
+      robot.add(aura);
+
+      const eyeLeftMat = eyeLeft.material as { emissiveIntensity: number };
+      const eyeRightMat = eyeRight.material as { emissiveIntensity: number };
+
+      const onResize = () => {
+        const width = host.clientWidth || 300;
+        const height = host.clientHeight || 260;
+        camera.aspect = width / Math.max(1, height);
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height, false);
+      };
+
+      onResize();
+      window.addEventListener("resize", onResize);
+
+      const tick = (now: number) => {
+        const t = now * 0.0011;
+        const speaking = topicListening;
+        torso.scale.y = 1 + Math.sin(t * 1.8) * 0.03;
+        head.rotation.y = speaking ? Math.sin(t * 1.4) * 0.28 : Math.sin(t * 0.65) * 0.12;
+        armLeft.rotation.z = -0.18 + Math.sin(t * 0.7) * 0.06;
+        armRight.rotation.z = 0.18 - Math.sin(t * 0.7) * 0.06;
+        aura.rotation.z += 0.0025;
+        eyeLeftMat.emissiveIntensity = speaking ? 3.9 : 1.6;
+        eyeRightMat.emissiveIntensity = speaking ? 3.9 : 1.6;
+
+        renderer.render(scene, camera);
+        frameId = window.requestAnimationFrame(tick);
+      };
+      frameId = window.requestAnimationFrame(tick);
+
+      cleanup = () => {
+        window.cancelAnimationFrame(frameId);
+        window.removeEventListener("resize", onResize);
+        renderer.dispose();
+        host.innerHTML = "";
+      };
+    };
+
+    void run();
+    return () => {
+      disposed = true;
+      cleanup();
+    };
+  }, [appView, topicListening]);
+
+  useEffect(() => {
     return () => {
       voiceCaptureDesiredRef.current = false;
+      if (recognitionRestartTimerRef.current !== null) {
+        window.clearTimeout(recognitionRestartTimerRef.current);
+      }
       if (recognitionRef.current) {
         recognitionRef.current.stop();
+      }
+      if (topicRecognitionRef.current) {
+        topicRecognitionRef.current.stop();
       }
       clearNarrationTimers();
     };
@@ -1556,6 +1910,12 @@ export default function App(): JSX.Element {
             {registerMode ? "Use existing account" : "Create new account"}
           </button>
           {loading ? <div className="auth-progress">Processing request...</div> : null}
+          {loading ? (
+            <div className="inline-skeleton">
+              <div className="skeleton-line sm" />
+              <div className="skeleton-line md" />
+            </div>
+          ) : null}
           <div className="status">{statusMessage}</div>
         </div>
       </div>
@@ -1577,34 +1937,20 @@ export default function App(): JSX.Element {
           <span className="ambient-icon i8">ML</span>
         </div>
         <div className="home-content">
+          {sessionBootstrapping ? (
+            <div className="page-skeleton">
+              <div className="skeleton-line lg" />
+              <div className="skeleton-line md" />
+              <div className="skeleton-box" />
+            </div>
+          ) : null}
           <div className="home-hero">
             <div className="home-hero-copy">
               <h1>Welcome, {userName || "Learner"}</h1>
               <p>Enter any technical topic and get a dynamic simulation with step-by-step visual flow.</p>
             </div>
             <div className="hero-character-wrap" aria-hidden="true">
-              <div className="mentor-character">
-                <div className="mentor-chair" />
-                <div className="mentor-leg leg-left" />
-                <div className="mentor-leg leg-right" />
-                <div className="mentor-shoe shoe-left" />
-                <div className="mentor-shoe shoe-right" />
-                <div className="mentor-torso" />
-                <div className="mentor-neck" />
-                <div className="mentor-head">
-                  <span className="eye eye-left" />
-                  <span className="eye eye-right" />
-                </div>
-                <div className="mentor-hair" />
-                <div className="mentor-arm upper-left" />
-                <div className="mentor-arm upper-right" />
-                <div className="mentor-forearm fore-left" />
-                <div className="mentor-forearm fore-right" />
-                <div className="mentor-laptop">
-                  <span>{"<dev/>"}</span>
-                </div>
-                <div className="mentor-desk" />
-              </div>
+              <div ref={homeMascotRef} className="mentor-3d-stage" />
             </div>
           </div>
           <div className="home-controls">
@@ -1617,8 +1963,17 @@ export default function App(): JSX.Element {
               />
             </label>
             <div className="home-controls-actions">
-              <button disabled={topicListening || generatingTopic} onClick={captureTopicFromVoice}>
-                {topicListening ? "Listening..." : "Use Voice Topic"}
+              <button
+                className={topicListening ? "mic-icon-btn listening" : "mic-icon-btn"}
+                disabled={generatingTopic}
+                onClick={captureTopicFromVoice}
+                aria-label={topicListening ? "Stop microphone" : "Start microphone"}
+                title={topicListening ? "Stop microphone" : "Start microphone"}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" />
+                  <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
+                </svg>
               </button>
               <button
                 disabled={generatingTopic || !customTopicInput.trim()}
@@ -1628,6 +1983,12 @@ export default function App(): JSX.Element {
               </button>
             </div>
           </div>
+          {generatingTopic ? (
+            <div className="inline-skeleton">
+              <div className="skeleton-line sm" />
+              <div className="skeleton-line md" />
+            </div>
+          ) : null}
           <div className="status">{statusMessage}</div>
         </div>
       </div>
@@ -1749,30 +2110,38 @@ export default function App(): JSX.Element {
   return (
     <div className={chatPanelOpen ? "app-shell chat-open" : "app-shell chat-closed"}>
       {userMenu}
-      <button className="sim-back-floating" onClick={navigateBack} aria-label="Go back">
-        {"<"}
-      </button>
       <main className="simulation-area">
-        <header className="top-bar">
-          <div className="top-title-wrap compact">
-            <h1>Interactive Tech Tutor</h1>
+        <header className="main-navbar">
+          <div className="navbar-left">
+            <button className="nav-icon-btn" onClick={navigateBack} aria-label="Go back" title="Go back">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14.7 5.3a1 1 0 0 1 0 1.4L10.41 11H20a1 1 0 1 1 0 2h-9.59l4.3 4.3a1 1 0 0 1-1.42 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.41 0Z" />
+              </svg>
+            </button>
+            <div className="top-title-wrap compact">
+              <h1>Interactive Tech Tutor</h1>
+            </div>
           </div>
-          <div className="top-actions icon-stack">
+          <div className="navbar-actions">
             <button
-              className={chatPanelOpen ? "active icon-button" : "icon-button"}
+              className={chatPanelOpen ? "active nav-icon-btn" : "nav-icon-btn"}
               onClick={() => setChatPanelOpen((value) => !value)}
               aria-label={chatPanelOpen ? "Hide chat panel" : "Show chat panel"}
               title={chatPanelOpen ? "Hide chat panel" : "Show chat panel"}
             >
-              []
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1h-4.5a1 1 0 0 1-.7-.3L11.6 18H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm1 2v11h7a1 1 0 0 1 .7.3L15.9 19H19V5H5Z" />
+              </svg>
             </button>
             <button
-              className={toolsPanelOpen ? "active icon-button" : "icon-button"}
+              className={toolsPanelOpen ? "active nav-icon-btn" : "nav-icon-btn"}
               onClick={() => setToolsPanelOpen((value) => !value)}
               aria-label={toolsPanelOpen ? "Hide controls" : "Show controls"}
               title={toolsPanelOpen ? "Hide controls" : "Show controls"}
             >
-              ...
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 12a2 2 0 1 1 .001-3.999A2 2 0 0 1 6 12Zm6 0a2 2 0 1 1 .001-3.999A2 2 0 0 1 12 12Zm6 0a2 2 0 1 1 .001-3.999A2 2 0 0 1 18 12Z" />
+              </svg>
             </button>
           </div>
         </header>
@@ -1792,85 +2161,106 @@ export default function App(): JSX.Element {
               <p key={`math-line-${index}`}>{line}</p>
             ))}
           </div>
+          {simulationRendererLoading || generatingTopic ? (
+            <div className="simulation-skeleton">
+              <div className="skeleton-line lg" />
+              <div className="skeleton-line md" />
+            </div>
+          ) : null}
+          <div className="sim-bottom-bar">
+            <button
+              className="sim-play-toggle nav-icon-btn"
+              onClick={() => setSimulationPaused((value) => !value)}
+              aria-label={simulationPaused ? "Play simulation" : "Pause simulation"}
+              title={simulationPaused ? "Play simulation" : "Pause simulation"}
+            >
+              {simulationPaused ? (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 5.5a1 1 0 0 1 1.5-.87l8 5.5a1 1 0 0 1 0 1.74l-8 5.5A1 1 0 0 1 8 16.5v-11Z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 5a1 1 0 0 1 1 1v12a1 1 0 1 1-2 0V6a1 1 0 0 1 1-1Zm10 0a1 1 0 0 1 1 1v12a1 1 0 1 1-2 0V6a1 1 0 0 1 1-1Z" />
+                </svg>
+              )}
+            </button>
+            <div className="subtitle-bar">
+              {subtitlesEnabled ? subtitle || "Simulation subtitles will appear here." : "Subtitles are muted."}
+            </div>
+          </div>
         </section>
 
-        {toolsPanelOpen ? (
-          <section className="panel-section tools-panel floating">
-            <h3>Simulation Controls</h3>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={subtitlesEnabled}
-                onChange={(event) => setSubtitlesEnabled(event.target.checked)}
-              />
-              Subtitles
-            </label>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={voiceNarrationEnabled}
-                onChange={(event) => {
-                  const checked = event.target.checked;
-                  setVoiceNarrationEnabled(checked);
-                  const next = {
-                    ...preferences,
-                    voiceSettings: {
-                      ...preferences.voiceSettings,
-                      narrationEnabled: checked
-                    }
-                  };
-                  setAndPersistPreferences(next);
-                }}
-              />
-              Voice Narration
-            </label>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={voiceCaptureEnabled}
-                onChange={(event) => setVoiceCaptureEnabled(event.target.checked)}
-              />
-              Voice Capture
-            </label>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={preferences.voiceSettings.interactionEnabled}
-                onChange={(event) => {
-                  const next = {
-                    ...preferences,
-                    voiceSettings: {
-                      ...preferences.voiceSettings,
-                      interactionEnabled: event.target.checked
-                    }
-                  };
-                  setAndPersistPreferences(next);
-                }}
-              />
-              Voice Interaction
-            </label>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={preferences.voiceSettings.navigationEnabled}
-                onChange={(event) => {
-                  const next = {
-                    ...preferences,
-                    voiceSettings: {
-                      ...preferences.voiceSettings,
-                      navigationEnabled: event.target.checked
-                    }
-                  };
-                  setAndPersistPreferences(next);
-                }}
-              />
-              Voice Navigation
-            </label>
-            <div className="voice-note">
-              Voice capture state: {listening ? "Listening..." : "Idle"}.
-            </div>
-          </section>
-        ) : null}
+        <aside className={toolsPanelOpen ? "controls-drawer open" : "controls-drawer"}>
+          <h3>Simulation Controls</h3>
+          <button
+            className={subtitlesEnabled ? "switch-row active" : "switch-row"}
+            onClick={() => setSubtitlesEnabled((value) => !value)}
+          >
+            <span>Subtitles</span>
+            <span className="switch-knob" />
+          </button>
+          <button
+            className={voiceNarrationEnabled ? "switch-row active" : "switch-row"}
+            onClick={() => {
+              const checked = !voiceNarrationEnabled;
+              setVoiceNarrationEnabled(checked);
+              const next = {
+                ...preferences,
+                voiceSettings: {
+                  ...preferences.voiceSettings,
+                  narrationEnabled: checked
+                }
+              };
+              setAndPersistPreferences(next);
+            }}
+          >
+            <span>Voice Narration</span>
+            <span className="switch-knob" />
+          </button>
+          <button
+            className={voiceCaptureEnabled ? "switch-row active" : "switch-row"}
+            onClick={() => setVoiceCaptureEnabled((value) => !value)}
+          >
+            <span>Voice Capture</span>
+            <span className="switch-knob" />
+          </button>
+          <button
+            className={preferences.voiceSettings.interactionEnabled ? "switch-row active" : "switch-row"}
+            onClick={() => {
+              const next = {
+                ...preferences,
+                voiceSettings: {
+                  ...preferences.voiceSettings,
+                  interactionEnabled: !preferences.voiceSettings.interactionEnabled
+                }
+              };
+              setAndPersistPreferences(next);
+            }}
+          >
+            <span>Voice Interaction</span>
+            <span className="switch-knob" />
+          </button>
+          <button
+            className={preferences.voiceSettings.navigationEnabled ? "switch-row active" : "switch-row"}
+            onClick={() => {
+              const next = {
+                ...preferences,
+                voiceSettings: {
+                  ...preferences.voiceSettings,
+                  navigationEnabled: !preferences.voiceSettings.navigationEnabled
+                }
+              };
+              setAndPersistPreferences(next);
+            }}
+          >
+            <span>Voice Navigation</span>
+            <span className="switch-knob" />
+          </button>
+          <div className={listening ? "voice-indicator active" : "voice-indicator idle"}>
+            <span className="state-dot" />
+            {listening ? "Capture Active" : "Capture Idle"}
+          </div>
+        </aside>
       </main>
 
       {chatPanelOpen ? (
@@ -1879,12 +2269,14 @@ export default function App(): JSX.Element {
             <h3>Topic Chat</h3>
             <div className="chat-window">
               {messages.slice(-16).map((message, index) => (
-                <p key={`${message.role}-${index}`} className={`chat-${message.role}`}>
-                  <strong>{message.role === "user" ? "You" : "Tutor"}:</strong> {message.text}
-                </p>
+                <article key={`${message.role}-${index}`} className={`chat-bubble chat-${message.role}`}>
+                  <span className="chat-label">{message.role === "user" ? "You" : "Tutor"}</span>
+                  <p>{message.text}</p>
+                </article>
               ))}
             </div>
             <textarea
+              ref={chatInputRef}
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
               placeholder="Ask a question about the active simulation..."
@@ -1909,20 +2301,6 @@ export default function App(): JSX.Element {
           </section>
         </aside>
       ) : null}
-
-      <div className="sim-controls-bottom">
-        <button
-          className="sim-play-toggle icon-button"
-          onClick={() => setSimulationPaused((value) => !value)}
-          aria-label={simulationPaused ? "Play simulation" : "Pause simulation"}
-          title={simulationPaused ? "Play simulation" : "Pause simulation"}
-        >
-          {simulationPaused ? ">" : "||"}
-        </button>
-      </div>
-      <div className="subtitle-bar">
-        {subtitlesEnabled ? subtitle || "Simulation subtitles will appear here." : "Subtitles are muted."}
-      </div>
       <div className="status-bar">{loading ? "Loading..." : statusMessage}</div>
     </div>
   );
