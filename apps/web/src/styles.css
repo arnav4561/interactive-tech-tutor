@@ -178,8 +178,8 @@ button.active {
 .hero-character-wrap {
   position: relative;
   height: 280px;
-  margin-top: -16px;
-  margin-bottom: 14px;
+  margin-top: -28px;
+  margin-bottom: 20px;
   overflow: visible;
 }
 
@@ -902,8 +902,8 @@ textarea {
     max-width: 360px;
     width: 100%;
     justify-self: end;
-    margin-top: -20px;
-    margin-bottom: 16px;
+    margin-top: -30px;
+    margin-bottom: 20px;
   }
 
   .home-controls {
@@ -914,7 +914,7 @@ textarea {
 .mentor-3d-stage {
   width: 100%;
   height: 100%;
-  transform: translateY(-20px);
+  transform: translateY(-34px);
 }
 
 .mic-icon-btn {

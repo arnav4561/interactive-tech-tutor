@@ -2123,13 +2123,6 @@ export default function App(): JSX.Element {
           <span className="ambient-icon i8">ML</span>
         </div>
         <div className="home-content">
-          {sessionBootstrapping && loading ? (
-            <div className="page-skeleton">
-              <div className="skeleton-line lg" />
-              <div className="skeleton-line md" />
-              <div className="skeleton-box" />
-            </div>
-          ) : null}
           <div className="home-hero">
             <div className="home-hero-copy">
               <h1>Welcome, {userName || "Learner"}</h1>
