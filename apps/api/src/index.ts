@@ -152,34 +152,38 @@ const simStepSchema = z.object({
   graph: simGraphSchema.optional()
 });
 
+const generatedProblemSchema = z.object({
+  question: z.string().min(10).max(700),
+  choices: z.array(z.string().min(1).max(260)).min(2).max(10),
+  answer: z.string().min(1).max(260),
+  explanation: z.string().min(10).max(700)
+});
+
+const generatedProblemSetSchema = z.object({
+  level: z.enum(["beginner", "intermediate", "advanced"]),
+  passingScore: z.number().min(60).max(95),
+  problems: z.array(generatedProblemSchema).min(1).max(12)
+});
+
+const generatedProblemSetsSchema = z.array(generatedProblemSetSchema).min(3).max(12);
+
 const llmSimulationSchema = z.object({
   description: z.string().min(20).max(1400),
   narration: z.array(z.string().min(8).max(700)).min(3).max(14),
   openingMessage: z.string().min(20).max(700),
   explanation_script: z.string().min(40).max(2800),
   simulation_steps: z.array(simStepSchema).min(3).max(12),
-  problemSets: z
-    .array(
-      z.object({
-        level: z.enum(["beginner", "intermediate", "advanced"]),
-        passingScore: z.number().min(60).max(95),
-        problems: z
-          .array(
-            z.object({
-              question: z.string().min(10).max(700),
-              choices: z.array(z.string().min(1).max(260)).min(2).max(10),
-              answer: z.string().min(1).max(260),
-              explanation: z.string().min(10).max(700)
-            })
-          )
-          .min(1)
-          .max(12)
-      })
-    )
-    .min(3)
-    .max(12)
-    .optional()
+  problemSets: generatedProblemSetsSchema.optional()
 });
+
+type GeminiSimulationPayload = {
+  description?: string;
+  narration?: string[];
+  openingMessage?: string;
+  explanation_script?: string;
+  simulation_steps?: z.infer<typeof simStepSchema>[];
+  problemSets?: z.infer<typeof generatedProblemSetsSchema>;
+};
 
 function slugify(value: string): string {
   return value
@@ -534,9 +538,12 @@ function normalizeSimulationSteps(
   });
 }
 
-function normalizeProblemSets(topic: Topic, llmData: z.infer<typeof llmSimulationSchema>): ProblemSet[] {
+function normalizeProblemSets(
+  topic: Topic,
+  generatedProblemSets?: z.infer<typeof generatedProblemSetsSchema>
+): ProblemSet[] {
   const fallbackByLevel = new Map(buildGeneratedProblemSets(topic).map((set) => [set.level, set]));
-  const generatedByLevel = new Map((llmData.problemSets ?? []).map((set) => [set.level, set]));
+  const generatedByLevel = new Map((generatedProblemSets ?? []).map((set) => [set.level, set]));
 
   return LEVELS.map((level) => {
     const fallback = fallbackByLevel.get(level)!;
@@ -578,7 +585,7 @@ function normalizeProblemSets(topic: Topic, llmData: z.infer<typeof llmSimulatio
 async function generateSimulationFromGemini(
   topic: string,
   level: DifficultyLevel
-): Promise<z.infer<typeof llmSimulationSchema> | null> {
+): Promise<GeminiSimulationPayload | null> {
   if (!GEMINI_API_KEY || !GEMINI_MODEL) {
     return null;
   }
@@ -727,11 +734,79 @@ Rules:
 
   const parsed = extractJsonObject(content);
   const validated = llmSimulationSchema.safeParse(parsed);
-  if (!validated.success) {
+  if (validated.success) {
+    return validated.data;
+  }
+
+  const looseResult = z
+    .object({
+      description: z.string().optional(),
+      narration: z.array(z.string()).optional(),
+      openingMessage: z.string().optional(),
+      explanation_script: z.string().optional(),
+      simulation_steps: z.array(z.unknown()).optional(),
+      problemSets: z.array(z.unknown()).optional()
+    })
+    .passthrough()
+    .safeParse(parsed);
+
+  if (!looseResult.success) {
     throw new Error(`Gemini JSON validation failed: ${validated.error.issues[0]?.message ?? "Unknown issue"}`);
   }
 
-  return validated.data;
+  const loose = looseResult.data;
+  const partial: GeminiSimulationPayload = {};
+
+  if (typeof loose.description === "string" && loose.description.trim().length > 0) {
+    partial.description = loose.description.trim().slice(0, 1400);
+  }
+
+  if (typeof loose.openingMessage === "string" && loose.openingMessage.trim().length > 0) {
+    partial.openingMessage = loose.openingMessage.trim().slice(0, 700);
+  }
+
+  if (typeof loose.explanation_script === "string" && loose.explanation_script.trim().length > 0) {
+    partial.explanation_script = loose.explanation_script.trim().slice(0, 2800);
+  }
+
+  if (Array.isArray(loose.narration)) {
+    const cleanedNarration = loose.narration
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .slice(0, 14);
+    if (cleanedNarration.length > 0) {
+      partial.narration = cleanedNarration;
+    }
+  }
+
+  if (Array.isArray(loose.simulation_steps)) {
+    const validSteps = loose.simulation_steps
+      .map((step) => simStepSchema.safeParse(step))
+      .filter((result): result is z.SafeParseSuccess<z.infer<typeof simStepSchema>> => result.success)
+      .map((result) => result.data)
+      .slice(0, 12);
+    if (validSteps.length > 0) {
+      partial.simulation_steps = validSteps;
+    }
+  }
+
+  if (Array.isArray(loose.problemSets)) {
+    const validProblemSets = loose.problemSets
+      .map((set) => generatedProblemSetSchema.safeParse(set))
+      .filter(
+        (result): result is z.SafeParseSuccess<z.infer<typeof generatedProblemSetSchema>> => result.success
+      )
+      .map((result) => result.data);
+    if (validProblemSets.length > 0) {
+      partial.problemSets = validProblemSets;
+    }
+  }
+
+  if (Object.keys(partial).length === 0) {
+    throw new Error(`Gemini JSON validation failed: ${validated.error.issues[0]?.message ?? "Unknown issue"}`);
+  }
+
+  return partial;
 }
 
 async function generateChatReplyFromGemini(
@@ -1122,7 +1197,12 @@ app.post(
 
   const { topic: requestedTopic, level } = parsed.data;
   const topic = buildGeneratedTopic(requestedTopic, level);
+  let problemSets = buildGeneratedProblemSets(topic);
   const fallbackSimulationSteps = buildTemplateSimulationSteps(topic);
+  let explanationScript = topic.narration.join(" ");
+  let simulationSteps = fallbackSimulationSteps;
+  let openingMessage = `Generated a live simulation plan for ${topic.title}.`;
+  let generationSource: "template" | "gemini" = "template";
   const llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
   if (!llmGenerated) {
     res.status(503).json({
@@ -1132,16 +1212,26 @@ app.post(
     return;
   }
 
-  topic.description = llmGenerated.description.trim();
-  const narration = normalizeNarration(llmGenerated.narration);
+  if (llmGenerated.description?.trim()) {
+    topic.description = llmGenerated.description.trim().slice(0, 1400);
+  }
+  const narration = normalizeNarration(llmGenerated.narration ?? []);
   if (narration.length >= 3) {
     topic.narration = narration;
   }
-  const explanationScript = llmGenerated.explanation_script.trim();
-  const simulationSteps = normalizeSimulationSteps(llmGenerated.simulation_steps, fallbackSimulationSteps);
-  const problemSets = normalizeProblemSets(topic, llmGenerated);
-  const openingMessage = llmGenerated.openingMessage.trim();
-  const generationSource: "gemini" = "gemini";
+  if (llmGenerated.explanation_script?.trim()) {
+    explanationScript = llmGenerated.explanation_script.trim().slice(0, 2800);
+  }
+  if ((llmGenerated.simulation_steps ?? []).length > 0) {
+    simulationSteps = normalizeSimulationSteps(llmGenerated.simulation_steps ?? [], fallbackSimulationSteps);
+  }
+  problemSets = normalizeProblemSets(topic, llmGenerated.problemSets);
+  if (llmGenerated.openingMessage?.trim()) {
+    openingMessage = llmGenerated.openingMessage.trim().slice(0, 700);
+  }
+  if ((llmGenerated.simulation_steps ?? []).length > 0) {
+    generationSource = "gemini";
+  }
 
   const interaction: InteractionRecord = {
     id: randomUUID(),
