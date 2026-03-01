@@ -26,6 +26,9 @@ const API_BASE_URLS = (() => {
   return [API_BASE_URL];
 })();
 
+const HEALTH_URLS = API_BASE_URLS.map((baseUrl) => baseUrl.replace(/\/api$/, "/health"));
+let prewarmPromise: Promise<void> | null = null;
+
 type Method = "GET" | "POST" | "PUT" | "DELETE";
 
 async function request<T>(method: Method, path: string, body?: unknown, token?: string): Promise<T> {
@@ -83,4 +86,23 @@ export function apiPut<T>(path: string, body: unknown, token?: string): Promise<
 
 export function apiDelete<T>(path: string, token?: string): Promise<T> {
   return request<T>("DELETE", path, undefined, token);
+}
+
+export function prewarmApi(): Promise<void> {
+  if (prewarmPromise) {
+    return prewarmPromise;
+  }
+
+  prewarmPromise = (async () => {
+    for (const healthUrl of HEALTH_URLS) {
+      try {
+        await fetch(healthUrl, { method: "GET" });
+        return;
+      } catch (_error) {
+        // Keep trying fallback hosts.
+      }
+    }
+  })();
+
+  return prewarmPromise;
 }

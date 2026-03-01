@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { apiDelete, apiGet, apiPost, apiPut } from "./api";
+import { apiDelete, apiGet, apiPost, apiPut, prewarmApi } from "./api";
 import {
   ChatMessage,
   DifficultyLevel,
@@ -23,6 +23,8 @@ type RecognitionConstructor = new () => {
   start: () => void;
   stop: () => void;
 };
+
+type AppView = "home" | "simulation" | "history-list" | "history-detail";
 
 function defaultPreferences(): UserPreferences {
   return {
@@ -73,7 +75,7 @@ export default function App(): JSX.Element {
   const [uploadFeedback, setUploadFeedback] = useState("");
   const [statusMessage, setStatusMessage] = useState("Ready.");
   const [loading, setLoading] = useState(false);
-  const [appView, setAppView] = useState<"home" | "simulation">("home");
+  const [appView, setAppView] = useState<AppView>("home");
   const [menuOpen, setMenuOpen] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceCaptureEnabled, setVoiceCaptureEnabled] = useState<boolean>(() => loadVoiceCapturePreference());
@@ -83,6 +85,8 @@ export default function App(): JSX.Element {
   const [customTopicInput, setCustomTopicInput] = useState("");
   const [generatingTopic, setGeneratingTopic] = useState(false);
   const [generatedProblemSets, setGeneratedProblemSets] = useState<Record<string, ProblemSet[]>>({});
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const recognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
@@ -90,7 +94,9 @@ export default function App(): JSX.Element {
   const subtitleTimerRef = useRef<number | null>(null);
   const voiceCaptureDesiredRef = useRef(false);
   const narrationSessionRef = useRef(0);
-  const appViewRef = useRef<"home" | "simulation">("home");
+  const appViewRef = useRef<AppView>("home");
+  const lastNarratedTopicRef = useRef("");
+  const isNarratingRef = useRef(false);
 
   const selectedTopic = useMemo(
     () => topics.find((topic) => topic.id === selectedTopicId) ?? null,
@@ -104,6 +110,24 @@ export default function App(): JSX.Element {
     });
     return map;
   }, [topics]);
+
+  const chatHistory = useMemo(
+    () => history.filter((item) => item.type === "text" || item.type === "voice"),
+    [history]
+  );
+
+  const selectedHistoryItem = useMemo(
+    () => chatHistory.find((item) => item.id === selectedHistoryId) ?? null,
+    [chatHistory, selectedHistoryId]
+  );
+
+  const sortedProgress = useMemo(
+    () =>
+      progress
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [progress]
+  );
 
   const currentProblemSet = useMemo(
     () => problemSets.find((set) => set.level === selectedLevel),
@@ -186,6 +210,7 @@ export default function App(): JSX.Element {
 
   const clearNarrationTimers = useCallback(() => {
     narrationSessionRef.current += 1;
+    isNarratingRef.current = false;
     narrationTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
     narrationTimersRef.current = [];
     if (subtitleTimerRef.current !== null) {
@@ -211,6 +236,10 @@ export default function App(): JSX.Element {
 
   const playNarration = useCallback(
     (topic: Topic) => {
+      if (lastNarratedTopicRef.current === topic.id && appViewRef.current === "simulation") {
+        return;
+      }
+      lastNarratedTopicRef.current = topic.id;
       clearNarrationTimers();
       if (appViewRef.current !== "simulation") {
         return;
@@ -222,8 +251,10 @@ export default function App(): JSX.Element {
       }
 
       const run = async () => {
+        isNarratingRef.current = true;
         for (const line of narrationLines) {
           if (narrationSessionRef.current !== sessionId || appViewRef.current !== "simulation") {
+            isNarratingRef.current = false;
             return;
           }
           if (subtitlesEnabled) {
@@ -243,10 +274,12 @@ export default function App(): JSX.Element {
           }
 
           if (narrationSessionRef.current !== sessionId || appViewRef.current !== "simulation") {
+            isNarratingRef.current = false;
             return;
           }
         }
 
+        isNarratingRef.current = false;
         if (narrationSessionRef.current === sessionId && subtitlesEnabled) {
           setSubtitle("");
         }
@@ -257,18 +290,22 @@ export default function App(): JSX.Element {
     [clearNarrationTimers, preferences.voiceSettings.narrationEnabled, preferences.voiceSettings.rate, speakText, subtitlesEnabled]
   );
 
-  const loadHistory = useCallback(async () => {
-    if (!token || !selectedTopicId) {
+  const loadHistory = useCallback(async (topicId?: string) => {
+    if (!token) {
       setHistory([]);
       return;
     }
+    setHistoryLoading(true);
     try {
-      const response = await apiGet<{ history: HistoryItem[] }>(`/history?topicId=${selectedTopicId}`, token);
+      const query = topicId ? `?topicId=${encodeURIComponent(topicId)}` : "";
+      const response = await apiGet<{ history: HistoryItem[] }>(`/history${query}`, token);
       setHistory(response.history);
     } catch (error) {
       setStatusMessage((error as Error).message);
+    } finally {
+      setHistoryLoading(false);
     }
-  }, [selectedTopicId, token]);
+  }, [token]);
 
   const runActionFeedback = useCallback(
     async (actionType: "drag" | "scroll" | "back" | "voice-command" | "navigation", detail: string) => {
@@ -291,7 +328,7 @@ export default function App(): JSX.Element {
             pushSubtitle(response.response, 3200);
           }
           if (preferences.voiceSettings.interactionEnabled) {
-            speak(response.response, true);
+            speak(response.response, false);
           }
         }
         await loadHistory();
@@ -334,11 +371,7 @@ export default function App(): JSX.Element {
 
   const handleAuth = useCallback(async () => {
     setLoading(true);
-    setStatusMessage(
-      registerMode
-        ? "Creating account... this can take up to 20 seconds on first server wake-up."
-        : "Authenticating... this can take up to 20 seconds on first server wake-up."
-    );
+    setStatusMessage(registerMode ? "Creating account..." : "Authenticating...");
     try {
       const route = registerMode ? "/auth/register" : "/auth/login";
       const response = await apiPost<{
@@ -346,13 +379,17 @@ export default function App(): JSX.Element {
         user: { email: string };
       }>(route, { email, password });
 
-      const normalizedName = displayName.trim() || response.user.email.split("@")[0] || "Learner";
+      const fallbackName = response.user.email.split("@")[0] || "Learner";
+      const storedName = localStorage.getItem("itt_name")?.trim() ?? "";
+      const normalizedName = registerMode ? displayName.trim() || fallbackName : storedName || fallbackName;
       setToken(response.token);
       setUserEmail(response.user.email);
       setUserName(normalizedName);
       localStorage.setItem("itt_token", response.token);
       localStorage.setItem("itt_email", response.user.email);
-      localStorage.setItem("itt_name", normalizedName);
+      if (normalizedName) {
+        localStorage.setItem("itt_name", normalizedName);
+      }
       setStatusMessage(registerMode ? "Account created." : "Login successful.");
     } catch (error) {
       setStatusMessage((error as Error).message);
@@ -379,6 +416,7 @@ export default function App(): JSX.Element {
     setMessages([]);
     setGeneratedProblemSets({});
     setCustomTopicInput("");
+    setSelectedHistoryId("");
     clearNarrationTimers();
     localStorage.removeItem("itt_token");
     localStorage.removeItem("itt_email");
@@ -449,7 +487,7 @@ export default function App(): JSX.Element {
             pushSubtitle(response.response, 3200);
           }
           if (preferences.voiceSettings.interactionEnabled) {
-            speak(response.response, true);
+            speak(response.response, false);
           }
         }
         await loadHistory();
@@ -546,7 +584,16 @@ export default function App(): JSX.Element {
       }
 
       if (command.includes("go back")) {
-        void runActionFeedback("back", "voice navigation");
+        setAppView((current) => {
+          if (current === "history-detail") {
+            return "history-list";
+          }
+          if (current === "simulation" || current === "history-list") {
+            return "home";
+          }
+          return current;
+        });
+        setStatusMessage("Moved back.");
         return true;
       }
 
@@ -727,11 +774,47 @@ export default function App(): JSX.Element {
     }
   }, [loadHistory, selectedTopicId, token]);
 
+  const openHistoryPage = useCallback(async () => {
+    setMenuOpen(false);
+    setSelectedHistoryId("");
+    await loadHistory();
+    setAppView("history-list");
+    setStatusMessage("Viewing interaction history.");
+  }, [loadHistory]);
+
+  const openHistoryDetail = useCallback((historyId: string) => {
+    setSelectedHistoryId(historyId);
+    setAppView("history-detail");
+  }, []);
+
+  const navigateBack = useCallback(() => {
+    if (appView === "history-detail") {
+      setAppView("history-list");
+      return;
+    }
+    if (appView === "history-list") {
+      setAppView("home");
+      setStatusMessage("Returned to home.");
+      return;
+    }
+    if (appView === "simulation") {
+      setAppView("home");
+      setStatusMessage("Returned to home.");
+    }
+  }, [appView]);
+
   useEffect(() => {
     if (token) {
       void bootstrap(token);
     }
   }, [bootstrap, token]);
+
+  useEffect(() => {
+    if (token) {
+      return;
+    }
+    void prewarmApi();
+  }, [token]);
 
   useEffect(() => {
     appViewRef.current = appView;
@@ -809,7 +892,7 @@ export default function App(): JSX.Element {
   ]);
 
   useEffect(() => {
-    if (!token || !selectedTopicId) {
+    if (!token) {
       return;
     }
     void loadHistory();
@@ -888,69 +971,223 @@ export default function App(): JSX.Element {
     const height = canvas.clientHeight;
     canvas.width = width * dpr;
     canvas.height = height * dpr;
+    context.setTransform(1, 0, 0, 1, 0, 0);
     context.scale(dpr, dpr);
 
-    const particles = Array.from({ length: 14 }, () => ({
-      x: Math.random() * width,
-      y: Math.random() * height,
-      vx: (Math.random() - 0.5) * 1.4,
-      vy: (Math.random() - 0.5) * 1.4,
-      radius: 8 + Math.random() * 10
+    const seed = selectedTopic.title
+      .split("")
+      .reduce((sum, char) => sum + char.charCodeAt(0), 0);
+    const paletteOptions = [
+      {
+        bgA: "#f8f9fb",
+        bgB: "#f1f3f7",
+        bgC: "#fff7d1",
+        line: "rgba(46, 57, 71, 0.16)",
+        nodeFill: "rgba(248, 223, 132, 0.6)",
+        nodeStroke: "#5d5a4f",
+        text: "#1f2329",
+        accent: "#f4c542",
+        dock: "rgba(255, 249, 227, 0.92)"
+      },
+      {
+        bgA: "#f5f6f8",
+        bgB: "#ebedf1",
+        bgC: "#ffeeb3",
+        line: "rgba(25, 32, 40, 0.15)",
+        nodeFill: "rgba(255, 220, 120, 0.58)",
+        nodeStroke: "#3e434c",
+        text: "#1d2127",
+        accent: "#e6bc39",
+        dock: "rgba(255, 248, 215, 0.9)"
+      },
+      {
+        bgA: "#f7f7f7",
+        bgB: "#eef0f3",
+        bgC: "#fff1be",
+        line: "rgba(60, 60, 60, 0.14)",
+        nodeFill: "rgba(244, 210, 106, 0.56)",
+        nodeStroke: "#44484f",
+        text: "#1f2024",
+        accent: "#e0ae2b",
+        dock: "rgba(254, 247, 219, 0.92)"
+      }
+    ] as const;
+    const palette = paletteOptions[seed % paletteOptions.length];
+
+    const symbolFallback = ["<>", "{}", "[]", "()", "=>", "API", "NN", "DB", "CPU", "ML"];
+    const topicTokens = Array.from(
+      new Set(
+        `${selectedTopic.title} ${selectedTopic.description}`
+          .toUpperCase()
+          .replace(/[^A-Z0-9 ]/g, " ")
+          .split(/\s+/)
+          .filter((token) => token.length >= 3)
+      )
+    )
+      .slice(0, 12)
+      .map((token) => token.slice(0, 7));
+    const symbolPool = topicTokens.length > 0 ? [...topicTokens, ...symbolFallback] : symbolFallback;
+
+    type VisualNodeShape = "circle" | "square" | "triangle";
+    const shapes: VisualNodeShape[] = ["circle", "square", "triangle"];
+    const nodes = Array.from({ length: 15 }, (_, index) => ({
+      x: 70 + Math.random() * Math.max(140, width - 160),
+      y: 56 + Math.random() * Math.max(120, height - 150),
+      vx: (Math.random() - 0.5) * 0.7,
+      vy: (Math.random() - 0.5) * 0.7,
+      size: 14 + Math.random() * 12,
+      shape: shapes[(seed + index) % shapes.length],
+      label: symbolPool[index % symbolPool.length]
     }));
 
     const draggable = {
       x: width * 0.12,
       y: height * 0.65,
-      size: 34
+      size: 42,
+      label: symbolPool[0]
     };
 
     const target = {
-      x: width * 0.72,
-      y: height * 0.14,
-      w: width * 0.18,
-      h: height * 0.2
+      x: width * 0.69,
+      y: height * 0.13,
+      w: width * 0.24,
+      h: height * 0.23
     };
 
     let dragging = false;
     let dragOffsetX = 0;
     let dragOffsetY = 0;
+    let lastScrollFeedbackAt = 0;
+
+    const drawRoundedRect = (x: number, y: number, w: number, h: number, radius: number) => {
+      context.beginPath();
+      context.moveTo(x + radius, y);
+      context.lineTo(x + w - radius, y);
+      context.quadraticCurveTo(x + w, y, x + w, y + radius);
+      context.lineTo(x + w, y + h - radius);
+      context.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      context.lineTo(x + radius, y + h);
+      context.quadraticCurveTo(x, y + h, x, y + h - radius);
+      context.lineTo(x, y + radius);
+      context.quadraticCurveTo(x, y, x + radius, y);
+      context.closePath();
+    };
+
+    const drawNode = (x: number, y: number, size: number, shape: VisualNodeShape) => {
+      if (shape === "circle") {
+        context.beginPath();
+        context.arc(x, y, size, 0, Math.PI * 2);
+        context.closePath();
+        return;
+      }
+      if (shape === "square") {
+        context.beginPath();
+        context.rect(x - size, y - size, size * 2, size * 2);
+        context.closePath();
+        return;
+      }
+      context.beginPath();
+      context.moveTo(x, y - size * 1.2);
+      context.lineTo(x + size, y + size * 0.9);
+      context.lineTo(x - size, y + size * 0.9);
+      context.closePath();
+    };
 
     const render = () => {
       context.clearRect(0, 0, width, height);
       const bg = context.createLinearGradient(0, 0, width, height);
-      bg.addColorStop(0, "#071726");
-      bg.addColorStop(1, "#1c0f2f");
+      bg.addColorStop(0, palette.bgA);
+      bg.addColorStop(0.6, palette.bgB);
+      bg.addColorStop(1, palette.bgC);
       context.fillStyle = bg;
       context.fillRect(0, 0, width, height);
 
-      context.fillStyle = "rgba(255, 255, 255, 0.08)";
-      context.fillRect(target.x, target.y, target.w, target.h);
-      context.strokeStyle = "rgba(255, 255, 255, 0.5)";
-      context.strokeRect(target.x, target.y, target.w, target.h);
-      context.fillStyle = "#fef4c0";
-      context.font = "14px 'Trebuchet MS', sans-serif";
-      context.fillText("Drop Zone", target.x + 12, target.y + 24);
-
-      particles.forEach((particle) => {
-        particle.x += particle.vx;
-        particle.y += particle.vy;
-        if (particle.x < 0 || particle.x > width) {
-          particle.vx *= -1;
-        }
-        if (particle.y < 0 || particle.y > height) {
-          particle.vy *= -1;
-        }
+      for (let x = 0; x < width; x += 52) {
+        context.strokeStyle = "rgba(20, 24, 31, 0.04)";
         context.beginPath();
-        context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
-        context.fillStyle = "rgba(91, 217, 229, 0.35)";
+        context.moveTo(x, 0);
+        context.lineTo(x, height);
+        context.stroke();
+      }
+      for (let y = 0; y < height; y += 46) {
+        context.strokeStyle = "rgba(20, 24, 31, 0.04)";
+        context.beginPath();
+        context.moveTo(0, y);
+        context.lineTo(width, y);
+        context.stroke();
+      }
+
+      drawRoundedRect(target.x, target.y, target.w, target.h, 12);
+      context.fillStyle = palette.dock;
+      context.fill();
+      context.setLineDash([8, 5]);
+      context.strokeStyle = palette.line;
+      context.lineWidth = 1.4;
+      context.stroke();
+      context.setLineDash([]);
+      context.fillStyle = palette.text;
+      context.font = "600 13px 'Trebuchet MS', sans-serif";
+      context.fillText("Validation Dock", target.x + 14, target.y + 24);
+      context.font = "12px 'Trebuchet MS', sans-serif";
+      context.fillStyle = "rgba(30, 33, 39, 0.78)";
+      context.fillText("Drop active symbol here", target.x + 14, target.y + 44);
+
+      for (let i = 0; i < nodes.length; i += 1) {
+        const node = nodes[i];
+        node.x += node.vx;
+        node.y += node.vy;
+        if (node.x < 24 || node.x > width - 24) {
+          node.vx *= -1;
+        }
+        if (node.y < 24 || node.y > height - 24) {
+          node.vy *= -1;
+        }
+
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const other = nodes[j];
+          const dx = node.x - other.x;
+          const dy = node.y - other.y;
+          const distance = Math.hypot(dx, dy);
+          if (distance < 170) {
+            context.strokeStyle = `rgba(65, 72, 84, ${Math.max(0.03, 0.2 - distance / 1200)})`;
+            context.lineWidth = 1;
+            context.beginPath();
+            context.moveTo(node.x, node.y);
+            context.lineTo(other.x, other.y);
+            context.stroke();
+          }
+        }
+      }
+
+      nodes.forEach((node) => {
+        drawNode(node.x, node.y, node.size, node.shape);
+        context.fillStyle = palette.nodeFill;
         context.fill();
+        context.strokeStyle = palette.nodeStroke;
+        context.lineWidth = 1.2;
+        context.stroke();
+        context.fillStyle = palette.text;
+        context.font = "600 10px 'Trebuchet MS', sans-serif";
+        const label = node.label.length > 6 ? `${node.label.slice(0, 6)}` : node.label;
+        context.fillText(label, node.x - node.size * 0.7, node.y + 3);
       });
 
-      context.fillStyle = "#f86266";
-      context.fillRect(draggable.x, draggable.y, draggable.size, draggable.size);
-      context.fillStyle = "#ffffff";
-      context.font = "13px 'Trebuchet MS', sans-serif";
-      context.fillText(selectedTopic.title, 24, 34);
+      drawRoundedRect(draggable.x, draggable.y, draggable.size, draggable.size, 10);
+      context.fillStyle = palette.accent;
+      context.fill();
+      context.strokeStyle = "rgba(45, 45, 45, 0.6)";
+      context.lineWidth = 1.4;
+      context.stroke();
+      context.fillStyle = palette.text;
+      context.font = "700 11px 'Trebuchet MS', sans-serif";
+      context.fillText(draggable.label.slice(0, 6), draggable.x + 7, draggable.y + draggable.size / 2 + 4);
+
+      context.fillStyle = palette.text;
+      context.font = "700 14px 'Trebuchet MS', sans-serif";
+      context.fillText(selectedTopic.title, 20, 28);
+      context.font = "12px 'Trebuchet MS', sans-serif";
+      context.fillStyle = "rgba(26, 29, 34, 0.76)";
+      context.fillText("Interactive simulation: drag module + scroll to explore transitions", 20, 48);
 
       animationFrame = window.requestAnimationFrame(render);
     };
@@ -964,7 +1201,7 @@ export default function App(): JSX.Element {
       );
     };
 
-    const pointerToCanvas = (event: MouseEvent) => {
+    const pointerToCanvas = (event: PointerEvent) => {
       const rect = canvas.getBoundingClientRect();
       return {
         x: event.clientX - rect.left,
@@ -972,16 +1209,17 @@ export default function App(): JSX.Element {
       };
     };
 
-    const onMouseDown = (event: MouseEvent) => {
+    const onPointerDown = (event: PointerEvent) => {
       const point = pointerToCanvas(event);
       if (pointInDraggable(point.x, point.y)) {
         dragging = true;
         dragOffsetX = point.x - draggable.x;
         dragOffsetY = point.y - draggable.y;
+        canvas.setPointerCapture(event.pointerId);
       }
     };
 
-    const onMouseMove = (event: MouseEvent) => {
+    const onPointerMove = (event: PointerEvent) => {
       if (!dragging) {
         return;
       }
@@ -990,7 +1228,7 @@ export default function App(): JSX.Element {
       draggable.y = point.y - dragOffsetY;
     };
 
-    const onMouseUp = () => {
+    const onPointerUp = () => {
       if (!dragging) {
         return;
       }
@@ -1006,22 +1244,28 @@ export default function App(): JSX.Element {
     };
 
     const onWheel = (event: WheelEvent) => {
+      const now = Date.now();
+      if (now - lastScrollFeedbackAt < 1000) {
+        return;
+      }
+      lastScrollFeedbackAt = now;
       void runActionFeedback("scroll", event.deltaY > 0 ? "forward-scroll" : "back-scroll");
     };
 
-    canvas.addEventListener("mousedown", onMouseDown);
-    canvas.addEventListener("mousemove", onMouseMove);
-    canvas.addEventListener("mouseup", onMouseUp);
-    canvas.addEventListener("mouseleave", onMouseUp);
+    canvas.style.touchAction = "none";
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointerleave", onPointerUp);
     canvas.addEventListener("wheel", onWheel);
     render();
 
     return () => {
       window.cancelAnimationFrame(animationFrame);
-      canvas.removeEventListener("mousedown", onMouseDown);
-      canvas.removeEventListener("mousemove", onMouseMove);
-      canvas.removeEventListener("mouseup", onMouseUp);
-      canvas.removeEventListener("mouseleave", onMouseUp);
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("pointerleave", onPointerUp);
       canvas.removeEventListener("wheel", onWheel);
     };
   }, [appView, runActionFeedback, selectedTopic]);
@@ -1030,6 +1274,7 @@ export default function App(): JSX.Element {
     if (appView === "simulation") {
       return;
     }
+    lastNarratedTopicRef.current = "";
     clearNarrationTimers();
   }, [appView, clearNarrationTimers]);
 
@@ -1064,43 +1309,22 @@ export default function App(): JSX.Element {
             <p>No progress yet.</p>
           ) : (
             <div className="side-scroll">
-              {progress
-                .slice()
-                .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-                .map((item, index) => (
-                  <p key={`${item.topicId}-${item.level}-${index}`}>
-                    <strong>{topicTitleById.get(item.topicId) ?? item.topicId}</strong> [{item.level}] {item.status} ({item.score}%)
-                  </p>
-                ))}
+              {sortedProgress.map((item, index) => (
+                <p key={`${item.topicId}-${item.level}-${index}`}>
+                  <strong>{topicTitleById.get(item.topicId) ?? item.topicId}</strong> [{item.level}] {item.status} ({item.score}%)
+                </p>
+              ))}
             </div>
           )}
         </section>
         <section className="side-menu-section">
-          <h3>Interaction History</h3>
-          {history.length === 0 ? (
-            <p>No interactions yet for current topic.</p>
-          ) : (
-            <div className="side-scroll">
-              {history
-                .slice()
-                .reverse()
-                .slice(0, 30)
-                .map((item) => (
-                  <p key={item.id}>
-                    <strong>{new Date(item.timestamp).toLocaleTimeString()}</strong> [{item.type}] {item.input}
-                  </p>
-                ))}
-            </div>
-          )}
-          {selectedTopicId ? (
-            <button className="ghost" onClick={() => void deleteTopicHistory()}>
-              Delete Current Topic History
-            </button>
-          ) : null}
+          <button className="ghost menu-option" onClick={() => void openHistoryPage()}>
+            Interaction History
+          </button>
         </section>
         <section className="side-menu-section">
           <button
-            className="ghost"
+            className="ghost menu-option"
             onClick={handleLogout}
           >
             Logout
@@ -1115,15 +1339,17 @@ export default function App(): JSX.Element {
       <div className="auth-screen">
         <div className="auth-card">
           <h1>Interactive Tech Tutor</h1>
-          <p>Sign in to continue your multi-modal learning session.</p>
-          <label>
-            Name
-            <input
-              value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
-              placeholder="Your name"
-            />
-          </label>
+          <p>{registerMode ? "Create an account to start learning." : "Login to continue your learning session."}</p>
+          {registerMode ? (
+            <label>
+              Name
+              <input
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="Your name"
+              />
+            </label>
+          ) : null}
           <label>
             Email
             <input
@@ -1159,8 +1385,28 @@ export default function App(): JSX.Element {
       <div className="home-shell">
         {userMenu}
         <div className="home-content">
-          <h1>Welcome, {userName || "Learner"}</h1>
-          <p>Choose your topic and launch a fresh simulation.</p>
+          <div className="home-hero">
+            <div className="home-hero-copy">
+              <h1>Welcome, {userName || "Learner"}</h1>
+              <p>Choose a topic, generate a simulation, and learn with voice, visuals, and interactive feedback.</p>
+            </div>
+            <div className="tech-character-scene" aria-hidden="true">
+              <div className="tech-symbol symbol-a">&lt;/&gt;</div>
+              <div className="tech-symbol symbol-b">{"{}"}</div>
+              <div className="tech-symbol symbol-c">NN</div>
+              <div className="tech-symbol symbol-d">API</div>
+              <div className="tech-character">
+                <div className="character-head" />
+                <div className="character-body" />
+                <div className="character-arm arm-left" />
+                <div className="character-arm arm-right" />
+                <div className="character-laptop">
+                  <span>{"<code/>"}</span>
+                </div>
+                <div className="character-desk" />
+              </div>
+            </div>
+          </div>
           <div className="home-controls">
             <label>
               Topic
@@ -1196,14 +1442,100 @@ export default function App(): JSX.Element {
     );
   }
 
+  if (appView === "history-list") {
+    return (
+      <div className="history-shell">
+        {userMenu}
+        <div className="history-content">
+          <header className="page-header">
+            <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
+              ←
+            </button>
+            <h1>Interaction History</h1>
+          </header>
+          <p className="history-description">Select a previous chat to view full details.</p>
+          {historyLoading ? <p>Loading interaction history...</p> : null}
+          {!historyLoading && chatHistory.length === 0 ? (
+            <div className="history-empty">
+              No previous interaction chats yet. Start a simulation and send your first message.
+            </div>
+          ) : (
+            <div className="history-list">
+              {chatHistory
+                .slice()
+                .reverse()
+                .map((item) => (
+                  <button
+                    key={item.id}
+                    className="history-item"
+                    onClick={() => openHistoryDetail(item.id)}
+                  >
+                    <strong>{topicTitleById.get(item.topicId) ?? item.topicId}</strong>
+                    <span>{new Date(item.timestamp).toLocaleString()}</span>
+                    <p>{item.input}</p>
+                  </button>
+                ))}
+            </div>
+          )}
+          {selectedTopicId ? (
+            <button className="ghost delete-history" onClick={() => void deleteTopicHistory()}>
+              Delete Current Topic History
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  if (appView === "history-detail") {
+    return (
+      <div className="history-shell">
+        {userMenu}
+        <div className="history-content">
+          <header className="page-header">
+            <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
+              ←
+            </button>
+            <h1>Chat Detail</h1>
+          </header>
+          {!selectedHistoryItem ? (
+            <div className="history-empty">
+              This interaction is no longer available.
+            </div>
+          ) : (
+            <article className="history-detail-card">
+              <div className="history-meta">
+                <strong>{topicTitleById.get(selectedHistoryItem.topicId) ?? selectedHistoryItem.topicId}</strong>
+                <span>{new Date(selectedHistoryItem.timestamp).toLocaleString()}</span>
+              </div>
+              <div className="history-chat-block">
+                <h3>You</h3>
+                <p>{selectedHistoryItem.input}</p>
+              </div>
+              <div className="history-chat-block">
+                <h3>Tutor</h3>
+                <p>{selectedHistoryItem.output}</p>
+              </div>
+            </article>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       {userMenu}
       <main className="simulation-area">
         <header className="top-bar">
-          <div>
+          <div className="top-title-wrap">
+            <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
+              ←
+            </button>
+            <div>
             <h1>Interactive Tech Tutor</h1>
             <p>{userName || userEmail}</p>
+            </div>
           </div>
           <div className="top-actions">
             <select value={selectedTopicId} onChange={(event) => setSelectedTopicId(event.target.value)}>
@@ -1221,20 +1553,8 @@ export default function App(): JSX.Element {
                 <option key={level} value={level} disabled={!unlockedLevels.has(level)}>
                   {unlockedLevels.has(level) ? level : `${level} [locked]`}
                 </option>
-              ))}
+                ))}
             </select>
-            <button className="ghost" onClick={() => void runActionFeedback("back", "manual-back-navigation")}>
-              Back Feedback
-            </button>
-            <button
-              className="ghost"
-              onClick={() => {
-                setAppView("home");
-                setStatusMessage("Returned to home.");
-              }}
-            >
-              Home
-            </button>
           </div>
         </header>
 
