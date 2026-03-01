@@ -26,13 +26,105 @@ type RecognitionConstructor = new () => {
 
 type AppView = "home" | "simulation" | "history-list" | "history-detail";
 
+type VisualKind = "service" | "store" | "queue" | "decision" | "client" | "processor";
+
+interface VisualNode {
+  id: string;
+  label: string;
+  kind: VisualKind;
+}
+
+interface VisualStep {
+  id: string;
+  title: string;
+  action: string;
+  highlightNodeIds: string[];
+}
+
+interface VisualPlan {
+  sceneTitle: string;
+  nodes: VisualNode[];
+  steps: VisualStep[];
+}
+
+function toNodeKind(token: string): VisualKind {
+  const value = token.toLowerCase();
+  if (value.includes("queue") || value.includes("stream") || value.includes("event")) {
+    return "queue";
+  }
+  if (value.includes("db") || value.includes("data") || value.includes("table") || value.includes("store")) {
+    return "store";
+  }
+  if (value.includes("auth") || value.includes("rule") || value.includes("policy")) {
+    return "decision";
+  }
+  if (value.includes("api") || value.includes("service") || value.includes("endpoint")) {
+    return "service";
+  }
+  if (value.includes("user") || value.includes("client") || value.includes("browser")) {
+    return "client";
+  }
+  return "processor";
+}
+
+function buildVisualPlanFromTopic(topic: Topic): VisualPlan {
+  const mergedText = `${topic.title} ${topic.description} ${topic.narration.join(" ")}`.replace(/[^a-zA-Z0-9 ]/g, " ");
+  const baseTokens = Array.from(
+    new Set(
+      mergedText
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 4)
+        .map((token) => token.toLowerCase())
+    )
+  ).slice(0, 10);
+
+  const fallbackTokens = ["input", "transform", "validate", "store", "feedback", "output"];
+  const tokens = baseTokens.length >= 6 ? baseTokens : [...baseTokens, ...fallbackTokens].slice(0, 6);
+
+  const nodes: VisualNode[] = tokens.slice(0, 8).map((token, index) => ({
+    id: `node-${index + 1}`,
+    label: token.toUpperCase(),
+    kind: toNodeKind(token)
+  }));
+
+  const narrationLines = topic.narration.filter((line) => line.trim().length > 0);
+  const stepSource =
+    narrationLines.length > 0
+      ? narrationLines
+      : [
+          `Initialize ${topic.title}`,
+          `Route input through key processing stages`,
+          `Validate and refine intermediate output`,
+          `Return final result and feedback`
+        ];
+
+  const steps: VisualStep[] = stepSource.slice(0, 8).map((line, index) => {
+    const first = nodes[index % nodes.length]?.id;
+    const second = nodes[(index + 1) % nodes.length]?.id;
+    const third = nodes[(index + 2) % nodes.length]?.id;
+    return {
+      id: `step-${index + 1}`,
+      title: `Step ${index + 1}`,
+      action: line,
+      highlightNodeIds: [first, second, third].filter((value): value is string => Boolean(value))
+    };
+  });
+
+  return {
+    sceneTitle: topic.title,
+    nodes,
+    steps
+  };
+}
+
 function defaultPreferences(): UserPreferences {
   return {
-    interactionMode: "both",
+    interactionMode: "click",
     voiceSettings: {
-      narrationEnabled: true,
-      interactionEnabled: true,
-      navigationEnabled: true,
+      narrationEnabled: false,
+      interactionEnabled: false,
+      navigationEnabled: false,
       rate: 1,
       voiceName: ""
     }
@@ -77,6 +169,9 @@ export default function App(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [appView, setAppView] = useState<AppView>("home");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [chatPanelOpen, setChatPanelOpen] = useState(true);
+  const [toolsPanelOpen, setToolsPanelOpen] = useState(false);
+  const [simulationPaused, setSimulationPaused] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceCaptureEnabled, setVoiceCaptureEnabled] = useState<boolean>(() => loadVoiceCapturePreference());
   const [subtitlesEnabled, setSubtitlesEnabled] = useState<boolean>(() => loadSubtitlePreference());
@@ -85,6 +180,7 @@ export default function App(): JSX.Element {
   const [customTopicInput, setCustomTopicInput] = useState("");
   const [generatingTopic, setGeneratingTopic] = useState(false);
   const [generatedProblemSets, setGeneratedProblemSets] = useState<Record<string, ProblemSet[]>>({});
+  const [generatedVisualPlans, setGeneratedVisualPlans] = useState<Record<string, VisualPlan>>({});
   const [selectedHistoryId, setSelectedHistoryId] = useState("");
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -97,6 +193,7 @@ export default function App(): JSX.Element {
   const appViewRef = useRef<AppView>("home");
   const lastNarratedTopicRef = useRef("");
   const isNarratingRef = useRef(false);
+  const simulationStepRef = useRef(0);
 
   const selectedTopic = useMemo(
     () => topics.find((topic) => topic.id === selectedTopicId) ?? null,
@@ -120,6 +217,13 @@ export default function App(): JSX.Element {
     () => chatHistory.find((item) => item.id === selectedHistoryId) ?? null,
     [chatHistory, selectedHistoryId]
   );
+
+  const selectedVisualPlan = useMemo(() => {
+    if (!selectedTopic) {
+      return null;
+    }
+    return generatedVisualPlans[selectedTopic.id] ?? buildVisualPlanFromTopic(selectedTopic);
+  }, [generatedVisualPlans, selectedTopic]);
 
   const sortedProgress = useMemo(
     () =>
@@ -327,16 +431,13 @@ export default function App(): JSX.Element {
           if (subtitlesEnabled) {
             pushSubtitle(response.response, 3200);
           }
-          if (preferences.voiceSettings.interactionEnabled) {
-            speak(response.response, false);
-          }
         }
         await loadHistory();
       } catch (error) {
         setStatusMessage((error as Error).message);
       }
     },
-    [loadHistory, preferences.voiceSettings.interactionEnabled, pushSubtitle, selectedTopicId, speak, subtitlesEnabled, token]
+    [loadHistory, pushSubtitle, selectedTopicId, subtitlesEnabled, token]
   );
 
   const bootstrap = useCallback(
@@ -351,7 +452,17 @@ export default function App(): JSX.Element {
 
         setTopics(topicsResponse.topics);
         setProgress(progressResponse.progress);
-        setPreferences(prefResponse.preferences);
+        setPreferences({
+          ...prefResponse.preferences,
+          interactionMode: "click",
+          voiceSettings: {
+            ...prefResponse.preferences.voiceSettings,
+            narrationEnabled: false,
+            interactionEnabled: false,
+            navigationEnabled: false,
+            rate: 1
+          }
+        });
         setSelectedTopicId((current) => current || topicsResponse.topics[0]?.id || "");
         if (!userName.trim()) {
           const localEmail = localStorage.getItem("itt_email") ?? "";
@@ -415,8 +526,12 @@ export default function App(): JSX.Element {
     setHistory([]);
     setMessages([]);
     setGeneratedProblemSets({});
+    setGeneratedVisualPlans({});
     setCustomTopicInput("");
     setSelectedHistoryId("");
+    setChatPanelOpen(true);
+    setToolsPanelOpen(false);
+    setSimulationPaused(false);
     clearNarrationTimers();
     localStorage.removeItem("itt_token");
     localStorage.removeItem("itt_email");
@@ -447,10 +562,19 @@ export default function App(): JSX.Element {
         ...current,
         [response.topic.id]: response.problemSets
       }));
+      setGeneratedVisualPlans((current) => ({
+        ...current,
+        [response.topic.id]: buildVisualPlanFromTopic(response.topic)
+      }));
       setSelectedTopicId(response.topic.id);
       setAppView("simulation");
+      simulationStepRef.current = 0;
+      setSimulationPaused(false);
       setMenuOpen(false);
       setMessages((current) => [...current, { role: "assistant", text: response.openingMessage }]);
+      if (subtitlesEnabled) {
+        setSubtitle(response.openingMessage);
+      }
       const source = response.generationSource === "gemini" ? "Gemini" : "template";
       setStatusMessage(`Generated simulation for ${response.topic.title} (${source}).`);
       setCustomTopicInput("");
@@ -459,7 +583,7 @@ export default function App(): JSX.Element {
     } finally {
       setGeneratingTopic(false);
     }
-  }, [customTopicInput, selectedLevel, token]);
+  }, [customTopicInput, selectedLevel, subtitlesEnabled, token]);
 
   const sendChat = useCallback(
     async (mode: "voice" | "text", rawMessage?: string) => {
@@ -486,16 +610,13 @@ export default function App(): JSX.Element {
           if (subtitlesEnabled) {
             pushSubtitle(response.response, 3200);
           }
-          if (preferences.voiceSettings.interactionEnabled) {
-            speak(response.response, false);
-          }
         }
         await loadHistory();
       } catch (error) {
         setStatusMessage((error as Error).message);
       }
     },
-    [chatInput, loadHistory, preferences.voiceSettings.interactionEnabled, pushSubtitle, selectedTopicId, speak, subtitlesEnabled, token]
+    [chatInput, loadHistory, pushSubtitle, selectedTopicId, subtitlesEnabled, token]
   );
 
   const processVoiceCommand = useCallback(
@@ -798,6 +919,8 @@ export default function App(): JSX.Element {
       return;
     }
     if (appView === "simulation") {
+      setSimulationPaused(true);
+      setToolsPanelOpen(false);
       setAppView("home");
       setStatusMessage("Returned to home.");
     }
@@ -821,6 +944,20 @@ export default function App(): JSX.Element {
   }, [appView]);
 
   useEffect(() => {
+    if (appView !== "simulation") {
+      return;
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible" && !simulationPaused) {
+        setSimulationPaused(true);
+        setStatusMessage("Simulation paused because this tab is in the background.");
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [appView, simulationPaused]);
+
+  useEffect(() => {
     localStorage.setItem("itt_voice_capture", String(voiceCaptureEnabled));
   }, [voiceCaptureEnabled]);
 
@@ -832,28 +969,9 @@ export default function App(): JSX.Element {
     if (!token) {
       return;
     }
-    if (appView !== "simulation") {
-      stopListening();
-      return;
-    }
-    const captureAllowed =
-      voiceCaptureEnabled &&
-      (preferences.voiceSettings.interactionEnabled || preferences.voiceSettings.navigationEnabled);
-
-    if (captureAllowed) {
-      startListening();
-      return;
-    }
+    // Voice capture is intentionally disabled in the current simulation build.
     stopListening();
-  }, [
-    preferences.voiceSettings.interactionEnabled,
-    preferences.voiceSettings.navigationEnabled,
-    startListening,
-    stopListening,
-    token,
-    voiceCaptureEnabled,
-    appView
-  ]);
+  }, [appView, stopListening, token, voiceCaptureEnabled]);
 
   useEffect(() => {
     if (!("speechSynthesis" in window)) {
@@ -908,10 +1026,6 @@ export default function App(): JSX.Element {
       if (generatedSet) {
         setProblemSets(generatedSet);
         setSelectedAnswers({});
-        const topic = topics.find((item) => item.id === selectedTopicId);
-        if (topic) {
-          playNarration(topic);
-        }
         return;
       }
 
@@ -922,10 +1036,6 @@ export default function App(): JSX.Element {
         );
         setProblemSets(response.problemSets);
         setSelectedAnswers({});
-        const topic = topics.find((item) => item.id === selectedTopicId);
-        if (topic) {
-          playNarration(topic);
-        }
       } catch (error) {
         setProblemSets([]);
         setStatusMessage((error as Error).message);
@@ -933,7 +1043,7 @@ export default function App(): JSX.Element {
     };
 
     void loadTopicData();
-  }, [appView, generatedProblemSets, playNarration, selectedTopicId, token, topics]);
+  }, [appView, generatedProblemSets, selectedTopicId, token]);
 
   useEffect(() => {
     if (!selectedTopicId) {
@@ -956,7 +1066,7 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !selectedTopic || appView !== "simulation") {
+    if (!canvas || !selectedTopic || !selectedVisualPlan || appView !== "simulation") {
       return;
     }
 
@@ -966,6 +1076,8 @@ export default function App(): JSX.Element {
     }
 
     let animationFrame = 0;
+    let lastRenderTime = performance.now();
+    let elapsedStepMs = 0;
     const dpr = window.devicePixelRatio || 1;
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
@@ -974,90 +1086,79 @@ export default function App(): JSX.Element {
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.scale(dpr, dpr);
 
-    const seed = selectedTopic.title
+    const stepDurationMs = 2600;
+    const seed = selectedVisualPlan.sceneTitle
       .split("")
       .reduce((sum, char) => sum + char.charCodeAt(0), 0);
     const paletteOptions = [
       {
-        bgA: "#f8f9fb",
-        bgB: "#f1f3f7",
-        bgC: "#fff7d1",
-        line: "rgba(46, 57, 71, 0.16)",
-        nodeFill: "rgba(248, 223, 132, 0.6)",
-        nodeStroke: "#5d5a4f",
-        text: "#1f2329",
-        accent: "#f4c542",
-        dock: "rgba(255, 249, 227, 0.92)"
+        bgA: "#f5f7fb",
+        bgB: "#edf2f9",
+        bgC: "#fff3c4",
+        line: "rgba(43, 53, 69, 0.22)",
+        text: "#1f2937",
+        accent: "#f7c948",
+        card: "rgba(255, 255, 255, 0.84)"
       },
       {
-        bgA: "#f5f6f8",
-        bgB: "#ebedf1",
-        bgC: "#ffeeb3",
-        line: "rgba(25, 32, 40, 0.15)",
-        nodeFill: "rgba(255, 220, 120, 0.58)",
-        nodeStroke: "#3e434c",
-        text: "#1d2127",
-        accent: "#e6bc39",
-        dock: "rgba(255, 248, 215, 0.9)"
+        bgA: "#f4f7f8",
+        bgB: "#e7edf1",
+        bgC: "#ffe8af",
+        line: "rgba(39, 45, 56, 0.22)",
+        text: "#20262f",
+        accent: "#efb940",
+        card: "rgba(255, 255, 255, 0.82)"
       },
       {
-        bgA: "#f7f7f7",
-        bgB: "#eef0f3",
-        bgC: "#fff1be",
-        line: "rgba(60, 60, 60, 0.14)",
-        nodeFill: "rgba(244, 210, 106, 0.56)",
-        nodeStroke: "#44484f",
-        text: "#1f2024",
-        accent: "#e0ae2b",
-        dock: "rgba(254, 247, 219, 0.92)"
+        bgA: "#f8f9fa",
+        bgB: "#edf1f4",
+        bgC: "#fff0bf",
+        line: "rgba(49, 55, 66, 0.2)",
+        text: "#1f252f",
+        accent: "#e7ad2f",
+        card: "rgba(255, 255, 255, 0.85)"
       }
     ] as const;
     const palette = paletteOptions[seed % paletteOptions.length];
 
-    const symbolFallback = ["<>", "{}", "[]", "()", "=>", "API", "NN", "DB", "CPU", "ML"];
-    const topicTokens = Array.from(
-      new Set(
-        `${selectedTopic.title} ${selectedTopic.description}`
-          .toUpperCase()
-          .replace(/[^A-Z0-9 ]/g, " ")
-          .split(/\s+/)
-          .filter((token) => token.length >= 3)
-      )
-    )
-      .slice(0, 12)
-      .map((token) => token.slice(0, 7));
-    const symbolPool = topicTokens.length > 0 ? [...topicTokens, ...symbolFallback] : symbolFallback;
+    const nodes = selectedVisualPlan.nodes.slice(0, 12);
+    const steps = selectedVisualPlan.steps.length > 0 ? selectedVisualPlan.steps : [
+      {
+        id: "step-1",
+        title: "Step 1",
+        action: `Exploring ${selectedTopic.title} flow.`,
+        highlightNodeIds: nodes.slice(0, 3).map((item) => item.id)
+      }
+    ];
 
-    type VisualNodeShape = "circle" | "square" | "triangle";
-    const shapes: VisualNodeShape[] = ["circle", "square", "triangle"];
-    const nodes = Array.from({ length: 15 }, (_, index) => ({
-      x: 70 + Math.random() * Math.max(140, width - 160),
-      y: 56 + Math.random() * Math.max(120, height - 150),
-      vx: (Math.random() - 0.5) * 0.7,
-      vy: (Math.random() - 0.5) * 0.7,
-      size: 14 + Math.random() * 12,
-      shape: shapes[(seed + index) % shapes.length],
-      label: symbolPool[index % symbolPool.length]
-    }));
+    if (simulationStepRef.current >= steps.length) {
+      simulationStepRef.current = 0;
+    }
+
+    const nodeLayouts = nodes.map((node, index) => {
+      const count = Math.max(nodes.length, 1);
+      const angle = (Math.PI * 2 * index) / count - Math.PI / 2;
+      const radiusX = Math.max(140, width * 0.33);
+      const radiusY = Math.max(110, height * 0.27);
+      return {
+        node,
+        x: width * 0.5 + Math.cos(angle) * radiusX,
+        y: height * 0.52 + Math.sin(angle) * radiusY
+      };
+    });
+
+    const nodeMap = new Map(nodeLayouts.map((item) => [item.node.id, item]));
 
     const draggable = {
-      x: width * 0.12,
-      y: height * 0.65,
-      size: 42,
-      label: symbolPool[0]
-    };
-
-    const target = {
-      x: width * 0.69,
-      y: height * 0.13,
-      w: width * 0.24,
-      h: height * 0.23
+      x: width * 0.08,
+      y: height * 0.82,
+      size: 38,
+      label: "CTRL"
     };
 
     let dragging = false;
     let dragOffsetX = 0;
     let dragOffsetY = 0;
-    let lastScrollFeedbackAt = 0;
 
     const drawRoundedRect = (x: number, y: number, w: number, h: number, radius: number) => {
       context.beginPath();
@@ -1073,14 +1174,36 @@ export default function App(): JSX.Element {
       context.closePath();
     };
 
-    const drawNode = (x: number, y: number, size: number, shape: VisualNodeShape) => {
-      if (shape === "circle") {
+    const drawNodeByKind = (x: number, y: number, size: number, kind: VisualKind) => {
+      if (kind === "store") {
+        drawRoundedRect(x - size * 1.1, y - size * 0.8, size * 2.2, size * 1.6, 8);
+        return;
+      }
+      if (kind === "queue") {
+        context.beginPath();
+        context.moveTo(x - size, y);
+        context.lineTo(x, y - size);
+        context.lineTo(x + size, y);
+        context.lineTo(x, y + size);
+        context.closePath();
+        return;
+      }
+      if (kind === "decision") {
+        context.beginPath();
+        context.moveTo(x, y - size * 1.2);
+        context.lineTo(x + size, y);
+        context.lineTo(x, y + size * 1.2);
+        context.lineTo(x - size, y);
+        context.closePath();
+        return;
+      }
+      if (kind === "client") {
         context.beginPath();
         context.arc(x, y, size, 0, Math.PI * 2);
         context.closePath();
         return;
       }
-      if (shape === "square") {
+      if (kind === "service") {
         context.beginPath();
         context.rect(x - size, y - size, size * 2, size * 2);
         context.closePath();
@@ -1093,101 +1216,131 @@ export default function App(): JSX.Element {
       context.closePath();
     };
 
-    const render = () => {
-      context.clearRect(0, 0, width, height);
+    const drawBackground = () => {
       const bg = context.createLinearGradient(0, 0, width, height);
       bg.addColorStop(0, palette.bgA);
-      bg.addColorStop(0.6, palette.bgB);
+      bg.addColorStop(0.62, palette.bgB);
       bg.addColorStop(1, palette.bgC);
       context.fillStyle = bg;
       context.fillRect(0, 0, width, height);
 
-      for (let x = 0; x < width; x += 52) {
-        context.strokeStyle = "rgba(20, 24, 31, 0.04)";
+      for (let x = 0; x < width; x += 56) {
+        context.strokeStyle = "rgba(24, 34, 45, 0.04)";
         context.beginPath();
         context.moveTo(x, 0);
         context.lineTo(x, height);
         context.stroke();
       }
-      for (let y = 0; y < height; y += 46) {
-        context.strokeStyle = "rgba(20, 24, 31, 0.04)";
+      for (let y = 0; y < height; y += 52) {
+        context.strokeStyle = "rgba(24, 34, 45, 0.04)";
         context.beginPath();
         context.moveTo(0, y);
         context.lineTo(width, y);
         context.stroke();
       }
 
-      drawRoundedRect(target.x, target.y, target.w, target.h, 12);
-      context.fillStyle = palette.dock;
-      context.fill();
-      context.setLineDash([8, 5]);
-      context.strokeStyle = palette.line;
-      context.lineWidth = 1.4;
-      context.stroke();
-      context.setLineDash([]);
       context.fillStyle = palette.text;
-      context.font = "600 13px 'Trebuchet MS', sans-serif";
-      context.fillText("Validation Dock", target.x + 14, target.y + 24);
+      context.font = "700 15px 'Trebuchet MS', sans-serif";
+      context.fillText(selectedVisualPlan.sceneTitle, 20, 28);
       context.font = "12px 'Trebuchet MS', sans-serif";
-      context.fillStyle = "rgba(30, 33, 39, 0.78)";
-      context.fillText("Drop active symbol here", target.x + 14, target.y + 44);
+      context.fillStyle = "rgba(30, 37, 46, 0.72)";
+      context.fillText("Topic-driven motion sequence generated from model context", 20, 48);
+    };
 
-      for (let i = 0; i < nodes.length; i += 1) {
-        const node = nodes[i];
-        node.x += node.vx;
-        node.y += node.vy;
-        if (node.x < 24 || node.x > width - 24) {
-          node.vx *= -1;
-        }
-        if (node.y < 24 || node.y > height - 24) {
-          node.vy *= -1;
-        }
+    const syncSubtitleWithStep = () => {
+      if (!subtitlesEnabled) {
+        setSubtitle("");
+        return;
+      }
+      const currentStep = steps[simulationStepRef.current];
+      setSubtitle(currentStep ? currentStep.action : "");
+    };
 
-        for (let j = i + 1; j < nodes.length; j += 1) {
-          const other = nodes[j];
-          const dx = node.x - other.x;
-          const dy = node.y - other.y;
-          const distance = Math.hypot(dx, dy);
-          if (distance < 170) {
-            context.strokeStyle = `rgba(65, 72, 84, ${Math.max(0.03, 0.2 - distance / 1200)})`;
-            context.lineWidth = 1;
-            context.beginPath();
-            context.moveTo(node.x, node.y);
-            context.lineTo(other.x, other.y);
-            context.stroke();
-          }
+    syncSubtitleWithStep();
+
+    const render = (time: number) => {
+      const deltaMs = Math.min(50, time - lastRenderTime);
+      lastRenderTime = time;
+
+      if (!simulationPaused && !document.hidden) {
+        elapsedStepMs += deltaMs;
+        if (elapsedStepMs >= stepDurationMs) {
+          elapsedStepMs = 0;
+          simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
+          syncSubtitleWithStep();
         }
       }
 
-      nodes.forEach((node) => {
-        drawNode(node.x, node.y, node.size, node.shape);
-        context.fillStyle = palette.nodeFill;
-        context.fill();
-        context.strokeStyle = palette.nodeStroke;
-        context.lineWidth = 1.2;
+      drawBackground();
+
+      const currentStep = steps[simulationStepRef.current];
+      const highlighted = new Set(currentStep?.highlightNodeIds ?? []);
+
+      const highlightedLayouts = (currentStep?.highlightNodeIds ?? [])
+        .map((id) => nodeMap.get(id))
+        .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+      for (let index = 0; index < highlightedLayouts.length - 1; index += 1) {
+        const from = highlightedLayouts[index];
+        const to = highlightedLayouts[index + 1];
+        context.strokeStyle = "rgba(63, 74, 89, 0.72)";
+        context.lineWidth = 2.2;
+        context.beginPath();
+        context.moveTo(from.x, from.y);
+        context.lineTo(to.x, to.y);
         context.stroke();
+      }
+
+      nodeLayouts.forEach((item, index) => {
+        const pulse = highlighted.has(item.node.id) ? 1 + 0.08 * Math.sin(time / 180 + index) : 1;
+        const size = 24 * pulse;
+        drawNodeByKind(item.x, item.y, size, item.node.kind);
+        context.fillStyle = highlighted.has(item.node.id)
+          ? "rgba(247, 201, 72, 0.64)"
+          : "rgba(255, 255, 255, 0.88)";
+        context.fill();
+        context.strokeStyle = palette.line;
+        context.lineWidth = highlighted.has(item.node.id) ? 2 : 1.2;
+        context.stroke();
+
         context.fillStyle = palette.text;
-        context.font = "600 10px 'Trebuchet MS', sans-serif";
-        const label = node.label.length > 6 ? `${node.label.slice(0, 6)}` : node.label;
-        context.fillText(label, node.x - node.size * 0.7, node.y + 3);
+        context.font = "600 11px 'Trebuchet MS', sans-serif";
+        const label = item.node.label.length > 10 ? `${item.node.label.slice(0, 10)}.` : item.node.label;
+        context.fillText(label, item.x - 30, item.y + 4);
       });
 
-      drawRoundedRect(draggable.x, draggable.y, draggable.size, draggable.size, 10);
+      const target = highlightedLayouts[0] ?? nodeLayouts[0];
+      const markerRadius = 14;
+      context.beginPath();
+      context.arc(target.x, target.y, markerRadius, 0, Math.PI * 2);
+      context.strokeStyle = "rgba(37, 49, 68, 0.8)";
+      context.lineWidth = 2;
+      context.setLineDash([5, 4]);
+      context.stroke();
+      context.setLineDash([]);
+
+      drawRoundedRect(draggable.x, draggable.y, draggable.size, draggable.size, 9);
       context.fillStyle = palette.accent;
       context.fill();
-      context.strokeStyle = "rgba(45, 45, 45, 0.6)";
-      context.lineWidth = 1.4;
+      context.strokeStyle = "rgba(39, 43, 49, 0.6)";
+      context.lineWidth = 1.2;
       context.stroke();
       context.fillStyle = palette.text;
-      context.font = "700 11px 'Trebuchet MS', sans-serif";
-      context.fillText(draggable.label.slice(0, 6), draggable.x + 7, draggable.y + draggable.size / 2 + 4);
+      context.font = "700 10px 'Trebuchet MS', sans-serif";
+      context.fillText(draggable.label, draggable.x + 6, draggable.y + draggable.size / 2 + 4);
 
+      drawRoundedRect(16, height - 68, 300, 50, 10);
+      context.fillStyle = palette.card;
+      context.fill();
+      context.strokeStyle = palette.line;
+      context.lineWidth = 1;
+      context.stroke();
       context.fillStyle = palette.text;
-      context.font = "700 14px 'Trebuchet MS', sans-serif";
-      context.fillText(selectedTopic.title, 20, 28);
-      context.font = "12px 'Trebuchet MS', sans-serif";
-      context.fillStyle = "rgba(26, 29, 34, 0.76)";
-      context.fillText("Interactive simulation: drag module + scroll to explore transitions", 20, 48);
+      context.font = "700 12px 'Trebuchet MS', sans-serif";
+      context.fillText(currentStep?.title ?? "Step", 28, height - 43);
+      context.font = "11px 'Trebuchet MS', sans-serif";
+      const actionText = (currentStep?.action ?? "").slice(0, 62);
+      context.fillText(actionText, 28, height - 24);
 
       animationFrame = window.requestAnimationFrame(render);
     };
@@ -1235,21 +1388,13 @@ export default function App(): JSX.Element {
       dragging = false;
       const centerX = draggable.x + draggable.size / 2;
       const centerY = draggable.y + draggable.size / 2;
-      const isCorrect =
-        centerX >= target.x &&
-        centerX <= target.x + target.w &&
-        centerY >= target.y &&
-        centerY <= target.y + target.h;
+      const currentStep = steps[simulationStepRef.current];
+      const targetNode = currentStep.highlightNodeIds
+        .map((id) => nodeMap.get(id))
+        .find((item): item is NonNullable<typeof item> => Boolean(item)) ?? nodeLayouts[0];
+      const distance = Math.hypot(centerX - targetNode.x, centerY - targetNode.y);
+      const isCorrect = distance < 46;
       void runActionFeedback("drag", isCorrect ? "correct placement" : "missed placement");
-    };
-
-    const onWheel = (event: WheelEvent) => {
-      const now = Date.now();
-      if (now - lastScrollFeedbackAt < 1000) {
-        return;
-      }
-      lastScrollFeedbackAt = now;
-      void runActionFeedback("scroll", event.deltaY > 0 ? "forward-scroll" : "back-scroll");
     };
 
     canvas.style.touchAction = "none";
@@ -1257,8 +1402,7 @@ export default function App(): JSX.Element {
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointerleave", onPointerUp);
-    canvas.addEventListener("wheel", onWheel);
-    render();
+    animationFrame = window.requestAnimationFrame(render);
 
     return () => {
       window.cancelAnimationFrame(animationFrame);
@@ -1266,9 +1410,8 @@ export default function App(): JSX.Element {
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointerleave", onPointerUp);
-      canvas.removeEventListener("wheel", onWheel);
     };
-  }, [appView, runActionFeedback, selectedTopic]);
+  }, [appView, runActionFeedback, selectedTopic, selectedVisualPlan, simulationPaused, subtitlesEnabled]);
 
   useEffect(() => {
     if (appView === "simulation") {
@@ -1384,26 +1527,44 @@ export default function App(): JSX.Element {
     return (
       <div className="home-shell">
         {userMenu}
+        <div className="home-ambient" aria-hidden="true">
+          <span className="ambient-icon i1">&lt;/&gt;</span>
+          <span className="ambient-icon i2">{"{}"}</span>
+          <span className="ambient-icon i3">API</span>
+          <span className="ambient-icon i4">NN</span>
+          <span className="ambient-icon i5">SQL</span>
+          <span className="ambient-icon i6">TS</span>
+          <span className="ambient-icon i7">λ</span>
+          <span className="ambient-icon i8">ML</span>
+        </div>
         <div className="home-content">
           <div className="home-hero">
             <div className="home-hero-copy">
               <h1>Welcome, {userName || "Learner"}</h1>
-              <p>Choose a topic, generate a simulation, and learn with voice, visuals, and interactive feedback.</p>
+              <p>Enter any technical topic and get a dynamic simulation with step-by-step visual flow.</p>
             </div>
-            <div className="tech-character-scene" aria-hidden="true">
-              <div className="tech-symbol symbol-a">&lt;/&gt;</div>
-              <div className="tech-symbol symbol-b">{"{}"}</div>
-              <div className="tech-symbol symbol-c">NN</div>
-              <div className="tech-symbol symbol-d">API</div>
-              <div className="tech-character">
-                <div className="character-head" />
-                <div className="character-body" />
-                <div className="character-arm arm-left" />
-                <div className="character-arm arm-right" />
-                <div className="character-laptop">
-                  <span>{"<code/>"}</span>
+            <div className="hero-character-wrap" aria-hidden="true">
+              <div className="mentor-character">
+                <div className="mentor-chair" />
+                <div className="mentor-leg leg-left" />
+                <div className="mentor-leg leg-right" />
+                <div className="mentor-shoe shoe-left" />
+                <div className="mentor-shoe shoe-right" />
+                <div className="mentor-torso" />
+                <div className="mentor-neck" />
+                <div className="mentor-head">
+                  <span className="eye eye-left" />
+                  <span className="eye eye-right" />
                 </div>
-                <div className="character-desk" />
+                <div className="mentor-hair" />
+                <div className="mentor-arm upper-left" />
+                <div className="mentor-arm upper-right" />
+                <div className="mentor-forearm fore-left" />
+                <div className="mentor-forearm fore-right" />
+                <div className="mentor-laptop">
+                  <span>{"<dev/>"}</span>
+                </div>
+                <div className="mentor-desk" />
               </div>
             </div>
           </div>
@@ -1415,19 +1576,6 @@ export default function App(): JSX.Element {
                 onChange={(event) => setCustomTopicInput(event.target.value)}
                 placeholder="e.g. Event sourcing, OAuth 2.0, CPU scheduling"
               />
-            </label>
-            <label>
-              Difficulty
-              <select
-                value={selectedLevel}
-                onChange={(event) => setSelectedLevel(event.target.value as DifficultyLevel)}
-              >
-                {LEVELS.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
             </label>
             <button
               disabled={generatingTopic || !customTopicInput.trim()}
@@ -1524,7 +1672,7 @@ export default function App(): JSX.Element {
   }
 
   return (
-    <div className="app-shell">
+    <div className={chatPanelOpen ? "app-shell chat-open" : "app-shell chat-closed"}>
       {userMenu}
       <main className="simulation-area">
         <header className="top-bar">
@@ -1533,36 +1681,31 @@ export default function App(): JSX.Element {
               ←
             </button>
             <div>
-            <h1>Interactive Tech Tutor</h1>
-            <p>{userName || userEmail}</p>
+              <h1>Interactive Tech Tutor</h1>
+              <p>{userName || userEmail}</p>
             </div>
           </div>
-          <div className="top-actions">
-            <select value={selectedTopicId} onChange={(event) => setSelectedTopicId(event.target.value)}>
-              {topics.map((topic) => (
-                <option key={topic.id} value={topic.id}>
-                  {topic.title}
-                </option>
-              ))}
-            </select>
-            <select
-              value={selectedLevel}
-              onChange={(event) => setSelectedLevel(event.target.value as DifficultyLevel)}
+          <div className="top-actions stacked">
+            <button
+              className={chatPanelOpen ? "active" : ""}
+              onClick={() => setChatPanelOpen((value) => !value)}
             >
-              {LEVELS.map((level) => (
-                <option key={level} value={level} disabled={!unlockedLevels.has(level)}>
-                  {unlockedLevels.has(level) ? level : `${level} [locked]`}
-                </option>
-                ))}
-            </select>
+              {chatPanelOpen ? "Hide Chat Panel" : "Show Chat Panel"}
+            </button>
+            <button
+              className={toolsPanelOpen ? "active" : ""}
+              onClick={() => setToolsPanelOpen((value) => !value)}
+            >
+              {toolsPanelOpen ? "Hide Controls" : "Show Controls"}
+            </button>
           </div>
         </header>
 
         <section className="topic-summary">
-          <h2>{selectedTopic?.title ?? "Select a topic"}</h2>
-          <p>{selectedTopic?.description ?? "No topic selected."}</p>
+          <h2>{selectedTopic?.title ?? "Simulation Topic"}</h2>
+          <p>{selectedTopic?.description ?? "Generate a topic from home to start the simulation."}</p>
           <div className="feedback-strip">
-            <strong>Action Feedback:</strong> {feedbackText || "Perform drag/scroll/back actions to receive feedback."}
+            <strong>Action Feedback:</strong> {feedbackText || "Drag elements in the simulation to get feedback."}
           </div>
         </section>
 
@@ -1570,204 +1713,111 @@ export default function App(): JSX.Element {
           <canvas ref={canvasRef} className="sim-canvas" />
         </section>
 
-        <section className="problem-panel">
-          <h3>Current Level Exercise: {selectedLevel}</h3>
-          {!currentProblemSet ? (
-            <p>No problem set found for this topic/level.</p>
-          ) : (
-            <div className="problem-list">
-              {currentProblemSet.problems.map((problem) => (
-                <article key={problem.id} className="problem-card">
-                  <p>{problem.question}</p>
-                  <div className="choice-group">
-                    {problem.choices.map((choice) => (
-                      <button
-                        key={choice}
-                        className={selectedAnswers[problem.id] === choice ? "choice active" : "choice"}
-                        onClick={() =>
-                          setSelectedAnswers((current) => ({
-                            ...current,
-                            [problem.id]: choice
-                          }))
-                        }
-                      >
-                        {choice}
-                      </button>
-                    ))}
-                  </div>
-                </article>
-              ))}
-              <button onClick={() => void submitCurrentProblemSet()}>Submit Level</button>
+        {toolsPanelOpen ? (
+          <section className="panel-section tools-panel">
+            <h3>Simulation Controls</h3>
+            <label>
+              Difficulty Level
+              <select
+                value={selectedLevel}
+                onChange={(event) => setSelectedLevel(event.target.value as DifficultyLevel)}
+              >
+                {LEVELS.map((level) => (
+                  <option key={level} value={level} disabled={!unlockedLevels.has(level)}>
+                    {unlockedLevels.has(level) ? level : `${level} [locked]`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={subtitlesEnabled}
+                onChange={(event) => setSubtitlesEnabled(event.target.checked)}
+              />
+              Subtitles
+            </label>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={voiceCaptureEnabled}
+                disabled
+                onChange={(event) => setVoiceCaptureEnabled(event.target.checked)}
+              />
+              Voice Capture (coming soon)
+            </label>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={preferences.voiceSettings.interactionEnabled}
+                disabled
+                onChange={() => undefined}
+              />
+              Voice Interaction (coming soon)
+            </label>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={preferences.voiceSettings.navigationEnabled}
+                disabled
+                onChange={() => undefined}
+              />
+              Voice Navigation (coming soon)
+            </label>
+            <div className="voice-note">
+              Voice narration and voice capture are disabled in simulation for now.
             </div>
-          )}
-        </section>
+          </section>
+        ) : null}
       </main>
 
-      <aside className="interaction-panel">
-        <section className="panel-section">
-          <h3>Interaction Mode</h3>
-          <div className="button-row">
-            {(["voice", "click", "both"] as const).map((mode) => (
-              <button
-                key={mode}
-                className={preferences.interactionMode === mode ? "active" : ""}
-                onClick={() => setAndPersistPreferences({ ...preferences, interactionMode: mode })}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="panel-section">
-          <h3>Voice Controls</h3>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={voiceCaptureEnabled}
-              onChange={(event) => setVoiceCaptureEnabled(event.target.checked)}
-            />
-            Capture User Voice ({listening ? "active" : "inactive"})
-          </label>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={preferences.voiceSettings.narrationEnabled}
-              onChange={(event) =>
-                setAndPersistPreferences({
-                  ...preferences,
-                  voiceSettings: {
-                    ...preferences.voiceSettings,
-                    narrationEnabled: event.target.checked
-                  }
-                })
-              }
-            />
-            Narration Voice
-          </label>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={subtitlesEnabled}
-              onChange={(event) => setSubtitlesEnabled(event.target.checked)}
-            />
-            Subtitles
-          </label>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={preferences.voiceSettings.interactionEnabled}
-              onChange={(event) =>
-                setAndPersistPreferences({
-                  ...preferences,
-                  voiceSettings: {
-                    ...preferences.voiceSettings,
-                    interactionEnabled: event.target.checked
-                  }
-                })
-              }
-            />
-            Voice Interaction
-          </label>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={preferences.voiceSettings.navigationEnabled}
-              onChange={(event) =>
-                setAndPersistPreferences({
-                  ...preferences,
-                  voiceSettings: {
-                    ...preferences.voiceSettings,
-                    navigationEnabled: event.target.checked
-                  }
-                })
-              }
-            />
-            Voice Navigation
-          </label>
-          <label>
-            System Voice
-            <select
-              value={preferences.voiceSettings.voiceName}
-              onChange={(event) =>
-                setAndPersistPreferences({
-                  ...preferences,
-                  voiceSettings: {
-                    ...preferences.voiceSettings,
-                    voiceName: event.target.value
-                  }
-                })
-              }
-            >
-              <option value="">Auto (prefer Voice Box)</option>
-              {availableVoices.map((voice) => (
-                <option key={`${voice.name}-${voice.lang}`} value={voice.name}>
-                  {voice.name} ({voice.lang})
-                </option>
+      {chatPanelOpen ? (
+        <aside className="interaction-panel">
+          <section className="panel-section">
+            <h3>Topic Chat</h3>
+            <div className="chat-window">
+              {messages.slice(-16).map((message, index) => (
+                <p key={`${message.role}-${index}`} className={`chat-${message.role}`}>
+                  <strong>{message.role === "user" ? "You" : "Tutor"}:</strong> {message.text}
+                </p>
               ))}
-            </select>
-          </label>
-          <label>
-            Narration Speed: {preferences.voiceSettings.rate.toFixed(1)}x
-            <input
-              type="range"
-              min={0.7}
-              max={1.8}
-              step={0.1}
-              value={preferences.voiceSettings.rate}
-              onChange={(event) =>
-                setAndPersistPreferences({
-                  ...preferences,
-                  voiceSettings: {
-                    ...preferences.voiceSettings,
-                    rate: Number(event.target.value)
-                  }
-                })
-              }
+            </div>
+            <textarea
+              value={chatInput}
+              onChange={(event) => setChatInput(event.target.value)}
+              placeholder="Ask a question about the active simulation..."
             />
-          </label>
-          <p className="voice-note">
-            Voice capture starts only after mic permission and can be turned off anytime.
-          </p>
-        </section>
+            <button onClick={() => void sendChat("text")}>Send</button>
+          </section>
 
-        <section className="panel-section">
-          <h3>Chat</h3>
-          <div className="chat-window">
-            {messages.slice(-12).map((message, index) => (
-              <p key={`${message.role}-${index}`} className={`chat-${message.role}`}>
-                <strong>{message.role === "user" ? "You" : "Tutor"}:</strong> {message.text}
-              </p>
-            ))}
-          </div>
-          <textarea
-            value={chatInput}
-            onChange={(event) => setChatInput(event.target.value)}
-            placeholder="Ask a question about the current topic..."
-          />
-          <button onClick={() => void sendChat("text")}>Send</button>
-        </section>
+          <section className="panel-section">
+            <h3>Visual Input</h3>
+            <input
+              type="file"
+              accept="image/*,.pdf,.doc,.docx"
+              capture="environment"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  void handleUpload(file);
+                }
+              }}
+            />
+            <p>{uploadFeedback || "Upload an image/document for analysis."}</p>
+          </section>
+        </aside>
+      ) : null}
 
-        <section className="panel-section">
-          <h3>Visual Input</h3>
-          <input
-            type="file"
-            accept="image/*,.pdf,.doc,.docx"
-            capture="environment"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                void handleUpload(file);
-              }
-            }}
-          />
-          <p>{uploadFeedback || "Upload a file or capture an image for analysis."}</p>
-        </section>
-
-      </aside>
-
+      <div className="sim-controls-bottom">
+        <button
+          className="sim-play-toggle"
+          onClick={() => setSimulationPaused((value) => !value)}
+        >
+          {simulationPaused ? "Play Simulation" : "Pause Simulation"}
+        </button>
+      </div>
       <div className="subtitle-bar">
-        {subtitlesEnabled ? subtitle || "Subtitles will appear here during narration." : "Subtitles are muted."}
+        {subtitlesEnabled ? subtitle || "Simulation subtitles will appear here." : "Subtitles are muted."}
       </div>
       <div className="status-bar">{loading ? "Loading..." : statusMessage}</div>
     </div>
