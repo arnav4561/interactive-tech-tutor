@@ -1357,7 +1357,8 @@ textarea {
   justify-items: center;
   gap: 12px;
   background: rgba(250, 252, 255, 0.65);
-  z-index: 28;
+  z-index: 160;
+  pointer-events: auto;
 }
 
 .sim-bottom-bar {

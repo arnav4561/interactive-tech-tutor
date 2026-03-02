@@ -144,6 +144,8 @@ export default function App(): JSX.Element {
   const mathWorkerRef = useRef<Worker | null>(null);
   const mathWorkerTicketRef = useRef(0);
   const commandFlashTimerRef = useRef<number | null>(null);
+  const simulationLoaderTimeoutRef = useRef<number | null>(null);
+  const simulationLoadStartedAtRef = useRef(0);
   const pendingSimulationCommandRef = useRef<{
     id: number;
     action:
@@ -529,15 +531,31 @@ export default function App(): JSX.Element {
     const normalizedRequestedTopic = requestedTopic.toLowerCase();
     const existingTopic = topics.find((item) => item.title.trim().toLowerCase() === normalizedRequestedTopic);
     if (existingTopic && generatedSimulations[existingTopic.id]) {
+      if (simulationLoaderTimeoutRef.current !== null) {
+        window.clearTimeout(simulationLoaderTimeoutRef.current);
+        simulationLoaderTimeoutRef.current = null;
+      }
+      simulationLoadStartedAtRef.current = Date.now();
       setSelectedTopicId(existingTopic.id);
       setAppView("simulation");
       setChatPanelOpen(false);
       setSimulationPaused(false);
       setSimulationLoadingTopic(existingTopic.title);
+      setSimulationRendererLoading(true);
       setStatusMessage("Simulation ready.");
+      simulationLoaderTimeoutRef.current = window.setTimeout(() => {
+        setSimulationRendererLoading(false);
+        setSimulationLoadingTopic("");
+        simulationLoaderTimeoutRef.current = null;
+      }, 900);
       return;
     }
 
+    if (simulationLoaderTimeoutRef.current !== null) {
+      window.clearTimeout(simulationLoaderTimeoutRef.current);
+      simulationLoaderTimeoutRef.current = null;
+    }
+    simulationLoadStartedAtRef.current = Date.now();
     setAppView("simulation");
     setSelectedTopicId("");
     setChatPanelOpen(false);
@@ -583,8 +601,14 @@ export default function App(): JSX.Element {
       setStatusMessage((error as Error).message);
     } finally {
       setGeneratingTopic(false);
-      setSimulationRendererLoading(false);
-      setSimulationLoadingTopic("");
+      const elapsed = Date.now() - simulationLoadStartedAtRef.current;
+      const minimumVisibleMs = 1200;
+      const waitMore = Math.max(0, minimumVisibleMs - elapsed);
+      simulationLoaderTimeoutRef.current = window.setTimeout(() => {
+        setSimulationRendererLoading(false);
+        setSimulationLoadingTopic("");
+        simulationLoaderTimeoutRef.current = null;
+      }, waitMore);
     }
   }, [customTopicInput, generatedSimulations, selectedLevel, subtitlesEnabled, token, topics]);
 
@@ -2176,6 +2200,9 @@ export default function App(): JSX.Element {
       }
       if (topicSilenceTimerRef.current !== null) {
         window.clearTimeout(topicSilenceTimerRef.current);
+      }
+      if (simulationLoaderTimeoutRef.current !== null) {
+        window.clearTimeout(simulationLoaderTimeoutRef.current);
       }
       clearNarrationTimers();
     };
