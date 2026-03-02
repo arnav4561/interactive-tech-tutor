@@ -169,7 +169,6 @@ export default function App(): JSX.Element {
   const [topicListening, setTopicListening] = useState(false);
   const [simulationRendererLoading, setSimulationRendererLoading] = useState(false);
   const [simulationLoadingTopic, setSimulationLoadingTopic] = useState("");
-  const [simulationLoadingPhase, setSimulationLoadingPhase] = useState(0);
   const [simulationError, setSimulationError] = useState("");
   const [voiceCommandFlash, setVoiceCommandFlash] = useState("");
 
@@ -243,11 +242,6 @@ export default function App(): JSX.Element {
     }
     return generatedSimulations[selectedTopic.id] ?? null;
   }, [generatedSimulations, selectedTopic]);
-
-  const simulationLoadingSteps = useMemo(
-    () => ["Collecting topic context", "Planning simulation steps", "Rendering scene and labels", "Finalizing interactions"],
-    []
-  );
 
   const sortedProgress = useMemo(
     () =>
@@ -621,6 +615,9 @@ export default function App(): JSX.Element {
           generationSource: response.generationSource === "gemini" ? "gemini" : "template"
         }
       }));
+      console.log(
+        `[Simulation] source=${response.generationSource ?? "unknown"} steps=${response.simulation_steps.length}`
+      );
       setSelectedTopicId(response.topic.id);
       simulationStepRef.current = 0;
       setSimulationPaused(false);
@@ -1325,17 +1322,6 @@ export default function App(): JSX.Element {
   ]);
 
   useEffect(() => {
-    if (appView !== "simulation" || (!simulationRendererLoading && !generatingTopic)) {
-      setSimulationLoadingPhase(0);
-      return;
-    }
-    const timerId = window.setInterval(() => {
-      setSimulationLoadingPhase((current) => (current + 1) % simulationLoadingSteps.length);
-    }, 1200);
-    return () => window.clearInterval(timerId);
-  }, [appView, generatingTopic, simulationLoadingSteps.length, simulationRendererLoading]);
-
-  useEffect(() => {
     if (appView !== "home") {
       return;
     }
@@ -1510,7 +1496,6 @@ export default function App(): JSX.Element {
 
       type LabelRuntime = {
         sprite: any;
-        line: any;
         target: any;
         offset: any;
       };
@@ -1582,6 +1567,20 @@ export default function App(): JSX.Element {
         return new THREE.Vector3(0, 0, 0);
       };
 
+      const rotationFromDirection = (direction: string) => {
+        const normalized = direction.toLowerCase();
+        if (normalized.includes("top_to_bottom") || normalized === "down" || normalized === "bottom") {
+          return -Math.PI / 2;
+        }
+        if (normalized.includes("bottom_to_top") || normalized === "up" || normalized === "top") {
+          return Math.PI / 2;
+        }
+        if (normalized.includes("right_to_left") || normalized === "left") {
+          return Math.PI;
+        }
+        return 0;
+      };
+
       const collectMaterials = (node: any): any[] => {
         const materials: any[] = [];
         node.traverse((child: any) => {
@@ -1642,6 +1641,29 @@ export default function App(): JSX.Element {
         return group;
       };
 
+      const endpointsFromSizeAndDirection = (size: { w: number; h: number }, direction: string) => {
+        const normalized = direction.toLowerCase();
+        if (normalized.includes("top_to_bottom") || normalized.includes("bottom_to_top")) {
+          return {
+            start: new THREE.Vector3(0, -size.h / 2, 0),
+            end: new THREE.Vector3(0, size.h / 2, 0),
+            axis: "y" as const
+          };
+        }
+        if (normalized.includes("diagonal")) {
+          return {
+            start: new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
+            end: new THREE.Vector3(size.w / 2, size.h / 2, 0),
+            axis: "x" as const
+          };
+        }
+        return {
+          start: new THREE.Vector3(-size.w / 2, 0, 0),
+          end: new THREE.Vector3(size.w / 2, 0, 0),
+          axis: "x" as const
+        };
+      };
+
       const buildElementNode = (element: SimulationCanvasElement): ElementRuntime | null => {
         const size = percentToSize(element.width, element.height);
         const position = percentToWorld(element.x, element.y);
@@ -1672,24 +1694,28 @@ export default function App(): JSX.Element {
           drawable = new THREE.Mesh(new THREE.ShapeGeometry(shape), meshMaterial);
         } else if (element.type === "arrow") {
           drawable = makeArrow(size, color, false);
+          drawable.rotation.z = rotationFromDirection(element.animation.direction);
         } else if (element.type === "curved arrow") {
           drawable = makeArrow(size, color, true);
+          drawable.rotation.z = rotationFromDirection(element.animation.direction);
         } else if (element.type === "line") {
+          const segment = endpointsFromSizeAndDirection(size, element.animation.direction);
           drawable = makeLine(
-            new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
-            new THREE.Vector3(size.w / 2, size.h / 2, 0),
+            segment.start,
+            segment.end,
             color,
             false
           );
-          drawAxis = Math.abs(size.w) >= Math.abs(size.h) ? "x" : "y";
+          drawAxis = segment.axis;
         } else if (element.type === "dashed line") {
+          const segment = endpointsFromSizeAndDirection(size, element.animation.direction);
           drawable = makeLine(
-            new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
-            new THREE.Vector3(size.w / 2, size.h / 2, 0),
+            segment.start,
+            segment.end,
             color,
             true
           );
-          drawAxis = Math.abs(size.w) >= Math.abs(size.h) ? "x" : "y";
+          drawAxis = segment.axis;
         } else if (element.type === "text") {
           drawable = createTextSprite(element.label, color);
           if (drawable) {
@@ -1756,11 +1782,8 @@ export default function App(): JSX.Element {
           const offset = labelOffsetFor(element.label_position, size);
           labelSprite.position.copy(position.clone().add(offset));
           rootGroup.add(labelSprite);
-          const connector = makeLine(position, labelSprite.position, "#7f97b3");
-          rootGroup.add(connector);
           labels.push({
             sprite: labelSprite,
-            line: connector,
             target: node,
             offset
           });
@@ -1781,7 +1804,6 @@ export default function App(): JSX.Element {
       const updateAnchoredLabels = () => {
         labels.forEach((item) => {
           item.sprite.position.copy(item.target.position.clone().add(item.offset));
-          item.line.geometry.setFromPoints([item.target.position.clone(), item.sprite.position.clone()]);
         });
       };
 
@@ -1827,6 +1849,10 @@ export default function App(): JSX.Element {
         runtimes = [];
         labels = [];
         const elements = step.canvas_instructions?.elements ?? [];
+        console.log(
+          `[Simulation] step=${index + 1} elementTypes=`,
+          elements.map((element) => element.type)
+        );
         const maxAnimationDuration = elements.reduce(
           (maxValue, element) => Math.max(maxValue, Math.max(700, element.animation?.duration ?? 700)),
           700
@@ -1909,16 +1935,27 @@ export default function App(): JSX.Element {
         camera.aspect = width / Math.max(1, height);
         camera.updateProjectionMatrix();
         renderer.setSize(width, height, false);
+        fitCameraToScene();
       };
 
       onResize();
       window.addEventListener("resize", onResize);
+      let resizeObserver: ResizeObserver | null = null;
+      if (typeof ResizeObserver !== "undefined") {
+        resizeObserver = new ResizeObserver(() => {
+          onResize();
+          renderer.render(scene, camera);
+        });
+        resizeObserver.observe(host);
+      }
 
       if (simulationStepRef.current >= steps.length) {
         simulationStepRef.current = 0;
       }
       applyStep(simulationStepRef.current);
       let lastProcessedCommandId = 0;
+      renderer.render(scene, camera);
+      setSimulationRendererLoading(false);
 
       const animate = (now: number) => {
         const delta = Math.min(50, now - lastTime);
@@ -1964,11 +2001,11 @@ export default function App(): JSX.Element {
       };
 
       frameId = window.requestAnimationFrame(animate);
-      setSimulationRendererLoading(false);
 
       cleanup = () => {
         window.cancelAnimationFrame(frameId);
         window.removeEventListener("resize", onResize);
+        resizeObserver?.disconnect();
         if ("speechSynthesis" in window) {
           window.speechSynthesis.cancel();
         }
@@ -2554,36 +2591,9 @@ export default function App(): JSX.Element {
             ))}
           </div>
           {simulationRendererLoading || generatingTopic ? (
-            <div className="simulation-skeleton">
-              <div className="sim-skeleton-shell">
-                <div className="sim-buffering-row">
-                  <div className="sim-buffer-ring" aria-hidden="true">
-                    <div className="sim-buffer-core" />
-                  </div>
-                  <div className="sim-buffer-dots" aria-hidden="true">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                </div>
-                <div className="skeleton-line lg" />
-                <div className="skeleton-line md" />
-                <div className="skeleton-box" />
-                <p className="sim-skeleton-text">
-                  Generating your simulation for {simulationLoadingTopic || customTopicInput || "this topic"}... this
-                  may take a few seconds.
-                </p>
-                <div className="sim-loading-steps">
-                  {simulationLoadingSteps.map((step, index) => (
-                    <div
-                      key={step}
-                      className={index <= simulationLoadingPhase ? "sim-loading-step active" : "sim-loading-step"}
-                    >
-                      {step}
-                    </div>
-                  ))}
-                </div>
-              </div>
+            <div className="simulation-loader-overlay">
+              <div className="simulation-loader-spinner" aria-hidden="true" />
+              <p>Generating simulation for {simulationLoadingTopic || customTopicInput || "this topic"}...</p>
             </div>
           ) : null}
           {simulationError ? (

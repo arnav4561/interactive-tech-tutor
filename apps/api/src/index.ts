@@ -35,7 +35,7 @@ const allowedOrigins = new Set([
   ...configuredOrigins
 ]);
 const SIMULATION_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
-const SIMULATION_CACHE_SCHEMA_VERSION = "canvas-json-v2";
+const SIMULATION_CACHE_SCHEMA_VERSION = "canvas-json-v3";
 const simulationResponseCache = new Map<
   string,
   {
@@ -1442,86 +1442,42 @@ async function generateSimulationFromGemini(
   void level;
 
   const simulationFormatPrompt = `
-You are a world class educator and visualization expert with complete knowledge of every technical field - computer science, software engineering, artificial intelligence, machine learning, data science, networking, cybersecurity, electronics, electrical engineering, mechanical engineering, robotics, mathematics, physics, chemistry, biotechnology, aerospace, and all other technical domains. A student wants to learn about: ${topic}. Design a complete visual simulation explaining this topic from absolute basics to thorough understanding. Decide yourself how many steps are needed - use as few or as many as the topic genuinely requires. A simple topic might need 3 steps, a complex one might need 12. Let the topic decide. For each step design a visual specifically suited to that concept - never use a generic layout of floating boxes and diagonal lines. Think about what visual representation makes this specific concept clearest. Output only valid JSON in this format:
-
-{  "steps": [
+Topic: ${topic}
+Generate ONLY valid JSON with this shape:
+{
+  "steps": [
     {
       "step": 1,
-      "concept": "Name of the concept being taught in this step",
-      "subtitle": "One sentence explaining what this step shows to the user",
+      "concept": "string",
+      "subtitle": "string",
       "canvas_instructions": {
         "elements": [
           {
-            "type": "rectangle",
-            "x": 50,
-            "y": 30,
-            "width": 20,
-            "height": 10,
-            "color": "#00d4ff",
-            "label": "Label text shown next to this element",
-            "label_position": "above",
+            "type": "rectangle|circle|ellipse|triangle|arrow|curved arrow|line|dashed line|text|path|polygon|grid|axis|plot point|wave|pulse|highlight box",
+            "x": 0-100,
+            "y": 0-100,
+            "width": 0-100,
+            "height": 0-100,
+            "color": "#RRGGBB",
+            "label": "string",
+            "label_position": "above|below|left|right",
             "animation": {
-              "type": "fade_in",
-              "duration": 800,
-              "direction": "none",
-              "represents": "what this animation is showing the user"
-            }
-          },
-          {
-            "type": "circle",
-            "x": 30,
-            "y": 60,
-            "width": 8,
-            "height": 8,
-            "color": "#8b5cf6",
-            "label": "Node A",
-            "label_position": "below",
-            "animation": {
-              "type": "move",
-              "duration": 1200,
-              "direction": "right",
-              "represents": "data moving from one node to another"
-            }
-          },
-          {
-            "type": "arrow",
-            "x": 40,
-            "y": 50,
-            "width": 15,
-            "height": 2,
-            "color": "#ffffff",
-            "label": "pointer",
-            "label_position": "above",
-            "animation": {
-              "type": "draw",
-              "duration": 1000,
-              "direction": "left_to_right",
-              "represents": "showing the direction of data flow"
+              "type": "fade_in|move|draw|pulse|rotate|scale|highlight|none",
+              "duration": 100-10000,
+              "direction": "left_to_right|right_to_left|top_to_bottom|bottom_to_top|clockwise|counterclockwise|none",
+              "represents": "what this teaches"
             }
           }
         ]
       }
-    },
-    {
-      "step": 2,
-      "concept": "Next concept name",
-      "subtitle": "One sentence explaining step 2",
-      "canvas_instructions": {
-        "elements": []
-      }
     }
   ]
 }
-x and y are always a number between 0 and 100 representing percentage of canvas size - never pixels
-width and height are also percentages of canvas size - never pixels
-color is always a hex code - never a color name like "red" or "blue"
-label_position is always exactly one of: above, below, left, right
-animation.type is always exactly one of the listed types - never a custom value
-animation.direction describes the actual direction like left_to_right, top_to_bottom, clockwise, none etc
-animation.represents is a plain English sentence explaining what this animation is teaching - this is important for the renderer to know context
-Every element must have all fields present - no field should ever be null or missing
-Steps array must always have at least 1 step and elements array must always have at least 1 element per step
-Make colors bright and distinct. Make every animation meaningful and directly illustrative of the concept. Every step must look visually different from the previous one. Never repeat the same layout. Output only valid JSON with no extra text.
+Rules:
+- 6 to 8 steps.
+- At least 3 elements per step.
+- No markdown, no prose, no comments.
+- Every step must be visually distinct and topic-specific.
 `.trim();
 
   const systemPrompt = "Return only valid JSON with no markdown and no prose.";
@@ -1551,7 +1507,7 @@ Make colors bright and distinct. Make every animation meaningful and directly il
             ],
             generationConfig: {
               temperature: 0.25,
-              maxOutputTokens: 6000,
+              maxOutputTokens: 2600,
               responseMimeType: "application/json"
             }
           })
@@ -1592,30 +1548,8 @@ Make colors bright and distinct. Make every animation meaningful and directly il
     return extractJsonObject(content);
   };
 
-  const pickRetryStepPayload = (payload: unknown, stepNumber: number): unknown => {
-    if (!payload || typeof payload !== "object") {
-      return payload;
-    }
-    const maybeStep = payload as { step?: unknown; steps?: unknown };
-    if (typeof maybeStep.step === "number") {
-      return payload;
-    }
-    if (Array.isArray(maybeStep.steps)) {
-      const match = maybeStep.steps.find(
-        (item) =>
-          typeof item === "object" &&
-          item !== null &&
-          "step" in item &&
-          typeof (item as { step?: unknown }).step === "number" &&
-          (item as { step: number }).step === stepNumber
-      );
-      return match ?? maybeStep.steps[0];
-    }
-    return payload;
-  };
-
   let rawSteps: unknown[] = [];
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  for (let attempt = 1; attempt <= 1; attempt += 1) {
     try {
       const initialPayload = await requestGeminiJson(simulationFormatPrompt);
       const strict = llmSimulationSchema.safeParse(initialPayload);
@@ -1658,18 +1592,6 @@ Make colors bright and distinct. Make every animation meaningful and directly il
     console.log(
       `[Gemini simulation] step ${index + 1} parse ${parsedStep.success ? "succeeded" : "failed"}`
     );
-
-    let retryCount = 0;
-    while (!parsedStep.success && retryCount < 2) {
-      retryCount += 1;
-      const retryPrompt = `Your previous response for step [${index + 1}] was incomplete. Please regenerate only that step with complete valid JSON following the same format.`;
-      const retryPayload = await requestGeminiJson(retryPrompt);
-      stepCandidate = pickRetryStepPayload(retryPayload, index + 1);
-      parsedStep = simCanvasStepSchema.safeParse(normalizeCanvasStep(stepCandidate, index));
-      console.log(
-        `[Gemini simulation] step ${index + 1} parse retry ${retryCount} ${parsedStep.success ? "succeeded" : "failed"}`
-      );
-    }
 
     if (parsedStep.success) {
       validSteps.push(parsedStep.data);
