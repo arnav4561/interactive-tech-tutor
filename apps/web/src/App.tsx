@@ -124,6 +124,9 @@ export default function App(): JSX.Element {
   const topicRecognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionActiveRef = useRef(false);
   const topicSilenceTimerRef = useRef<number | null>(null);
+  const topicCaptureDesiredRef = useRef(false);
+  const topicFinalTranscriptRef = useRef("");
+  const topicHasSpokenRef = useRef(false);
   const narrationTimersRef = useRef<number[]>([]);
   const subtitleTimerRef = useRef<number | null>(null);
   const voiceCaptureDesiredRef = useRef(false);
@@ -591,6 +594,7 @@ export default function App(): JSX.Element {
     }
 
     if (topicListening) {
+      topicCaptureDesiredRef.current = false;
       try {
         topicRecognitionRef.current?.stop();
       } catch (_error) {
@@ -612,13 +616,16 @@ export default function App(): JSX.Element {
     }
 
     const recognition = topicRecognitionRef.current;
-    let finalizedTranscript = "";
+    topicCaptureDesiredRef.current = true;
+    topicFinalTranscriptRef.current = "";
+    topicHasSpokenRef.current = false;
+
     const resetSilenceTimer = () => {
       if (topicSilenceTimerRef.current !== null) {
         window.clearTimeout(topicSilenceTimerRef.current);
       }
       topicSilenceTimerRef.current = window.setTimeout(() => {
-        if (topicRecognitionActiveRef.current) {
+        if (topicRecognitionActiveRef.current && topicCaptureDesiredRef.current && topicHasSpokenRef.current) {
           try {
             recognition.stop();
           } catch (_error) {
@@ -630,29 +637,36 @@ export default function App(): JSX.Element {
     };
 
     recognition.onresult = (event: any) => {
-      resetSilenceTimer();
+      let finalTranscript = "";
       let interimTranscript = "";
-      const resultStart = typeof event.resultIndex === "number" ? event.resultIndex : 0;
-      for (let index = resultStart; index < event.results.length; index += 1) {
+      for (let index = 0; index < event.results.length; index += 1) {
         const result = event.results[index];
         const segment = result?.[0]?.transcript?.trim() ?? "";
         if (!segment) {
           continue;
         }
         if (result.isFinal) {
-          finalizedTranscript = `${finalizedTranscript} ${segment}`.trim();
+          finalTranscript = `${finalTranscript} ${segment}`.trim();
         } else {
           interimTranscript = `${interimTranscript} ${segment}`.trim();
         }
       }
-      const composed = `${finalizedTranscript} ${interimTranscript}`.trim();
+      if (finalTranscript) {
+        topicFinalTranscriptRef.current = finalTranscript;
+        topicHasSpokenRef.current = true;
+      }
+      const composed = `${topicFinalTranscriptRef.current} ${interimTranscript}`.trim();
       if (composed) {
         setCustomTopicInput(composed);
+      }
+      if (topicHasSpokenRef.current) {
+        resetSilenceTimer();
       }
     };
     recognition.onerror = (event) => {
       topicRecognitionActiveRef.current = false;
       setTopicListening(false);
+      topicCaptureDesiredRef.current = false;
       if (topicSilenceTimerRef.current !== null) {
         window.clearTimeout(topicSilenceTimerRef.current);
         topicSilenceTimerRef.current = null;
@@ -661,10 +675,24 @@ export default function App(): JSX.Element {
     };
     recognition.onend = () => {
       topicRecognitionActiveRef.current = false;
+      if (topicCaptureDesiredRef.current && !topicHasSpokenRef.current) {
+        try {
+          recognition.start();
+          topicRecognitionActiveRef.current = true;
+          setTopicListening(true);
+          return;
+        } catch (_error) {
+          // Fall through and fully stop.
+        }
+      }
       setTopicListening(false);
+      topicCaptureDesiredRef.current = false;
       if (topicSilenceTimerRef.current !== null) {
         window.clearTimeout(topicSilenceTimerRef.current);
         topicSilenceTimerRef.current = null;
+      }
+      if (topicFinalTranscriptRef.current.trim()) {
+        setCustomTopicInput(topicFinalTranscriptRef.current.trim());
       }
     };
 
@@ -679,6 +707,7 @@ export default function App(): JSX.Element {
     } catch (error) {
       topicRecognitionActiveRef.current = false;
       setTopicListening(false);
+      topicCaptureDesiredRef.current = false;
       if (topicSilenceTimerRef.current !== null) {
         window.clearTimeout(topicSilenceTimerRef.current);
         topicSilenceTimerRef.current = null;
@@ -2092,6 +2121,7 @@ export default function App(): JSX.Element {
   useEffect(() => {
     return () => {
       voiceCaptureDesiredRef.current = false;
+      topicCaptureDesiredRef.current = false;
       if (commandFlashTimerRef.current !== null) {
         window.clearTimeout(commandFlashTimerRef.current);
       }
