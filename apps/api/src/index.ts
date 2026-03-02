@@ -35,6 +35,7 @@ const allowedOrigins = new Set([
   ...configuredOrigins
 ]);
 const SIMULATION_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
+const SIMULATION_CACHE_SCHEMA_VERSION = "canvas-json-v2";
 const simulationResponseCache = new Map<
   string,
   {
@@ -193,25 +194,75 @@ const generatedProblemSetSchema = z.object({
 
 const generatedProblemSetsSchema = z.array(generatedProblemSetSchema).min(3).max(12);
 
+const simCanvasAnimationTypeSchema = z.enum([
+  "fade_in",
+  "move",
+  "draw",
+  "pulse",
+  "rotate",
+  "scale",
+  "highlight",
+  "none"
+]);
+
+const simCanvasAnimationSchema = z.object({
+  type: simCanvasAnimationTypeSchema,
+  duration: z.number().int().min(100).max(10000),
+  direction: z.string().min(1).max(80),
+  represents: z.string().min(3).max(240)
+});
+
+const simCanvasElementTypeSchema = z.enum([
+  "rectangle",
+  "circle",
+  "ellipse",
+  "triangle",
+  "arrow",
+  "curved arrow",
+  "line",
+  "dashed line",
+  "text",
+  "path",
+  "polygon",
+  "grid",
+  "axis",
+  "plot point",
+  "wave",
+  "pulse",
+  "highlight box"
+]);
+
+const simCanvasElementSchema = z.object({
+  type: simCanvasElementTypeSchema,
+  x: z.number().min(0).max(100),
+  y: z.number().min(0).max(100),
+  width: z.number().min(0).max(100),
+  height: z.number().min(0).max(100),
+  color: z.string().regex(/^#([0-9a-fA-F]{6})$/),
+  label: z.string().min(1).max(180),
+  label_position: z.enum(["above", "below", "left", "right"]),
+  animation: simCanvasAnimationSchema
+});
+
+const simCanvasStepSchema = z.object({
+  step: z.number().int().min(1).max(120),
+  concept: z.string().min(1).max(220),
+  subtitle: z.string().min(1).max(400),
+  canvas_instructions: z.object({
+    elements: z.array(simCanvasElementSchema).min(1).max(240)
+  })
+});
+
 const llmSimulationSchema = z.object({
-  description: z.string().min(20).max(1400),
-  narration: z.array(z.string().min(8).max(700)).min(3).max(14),
-  openingMessage: z.string().min(20).max(700),
-  explanation_script: z.string().min(40).max(2800),
-  simulation_steps: z.array(simStepSchema).length(8),
-  problemSets: generatedProblemSetsSchema.optional()
+  steps: z.array(simCanvasStepSchema).min(1).max(120)
 });
 
 type GeminiSimulationPayload = {
-  description?: string;
-  narration?: string[];
-  openingMessage?: string;
-  explanation_script?: string;
-  simulation_steps?: z.infer<typeof simStepSchema>[];
-  problemSets?: z.infer<typeof generatedProblemSetsSchema>;
+  steps: z.infer<typeof simCanvasStepSchema>[];
 };
 
 type SimStep = z.infer<typeof simStepSchema>;
+type GeminiCanvasStep = z.infer<typeof simCanvasStepSchema>;
 type SimObject = z.infer<typeof simObjectSchema>;
 type SimConnection = z.infer<typeof simConnectionSchema>;
 type SceneLayout = "pipeline" | "tree" | "layered" | "hub" | "timeline";
@@ -1048,185 +1099,223 @@ async function generateSimulationFromGemini(
     return null;
   }
 
-  const systemPrompt =
-    "You are an expert technical tutor and simulation planner. Return only valid JSON.";
-  const userPrompt = `
-You are a world class educator and data visualization expert.
-Explain "${topic}" through a precise step-by-step animated simulation.
-Start from fundamentals for a beginner and build to advanced understanding.
-Generate exactly 8 steps.
+  void level;
 
-Return only valid JSON with this exact top-level structure:
-{
-  "description": "string",
-  "openingMessage": "string",
-  "explanation_script": "string",
-  "narration": ["line1", "line2", "..."],
-  "simulation_steps": [
+  const simulationFormatPrompt = `
+You are a world class educator and visualization expert with complete knowledge of every technical field - computer science, software engineering, artificial intelligence, machine learning, data science, networking, cybersecurity, electronics, electrical engineering, mechanical engineering, robotics, mathematics, physics, chemistry, biotechnology, aerospace, and all other technical domains. A student wants to learn about: ${topic}. Design a complete visual simulation explaining this topic from absolute basics to thorough understanding. Decide yourself how many steps are needed - use as few or as many as the topic genuinely requires. A simple topic might need 3 steps, a complex one might need 12. Let the topic decide. For each step design a visual specifically suited to that concept - never use a generic layout of floating boxes and diagonal lines. Think about what visual representation makes this specific concept clearest. Output only valid JSON in this format:
+
+{  "steps": [
     {
       "step": 1,
-      "concept": "single concept of this step",
-      "objects": [...],
-      "movements": [...],
-      "labels": [...],
-      "connections": [...],
-      "annotation": "one sentence annotation"
+      "concept": "Name of the concept being taught in this step",
+      "subtitle": "One sentence explaining what this step shows to the user",
+      "canvas_instructions": {
+        "elements": [
+          {
+            "type": "rectangle",
+            "x": 50,
+            "y": 30,
+            "width": 20,
+            "height": 10,
+            "color": "#00d4ff",
+            "label": "Label text shown next to this element",
+            "label_position": "above",
+            "animation": {
+              "type": "fade_in",
+              "duration": 800,
+              "direction": "none",
+              "represents": "what this animation is showing the user"
+            }
+          },
+          {
+            "type": "circle",
+            "x": 30,
+            "y": 60,
+            "width": 8,
+            "height": 8,
+            "color": "#8b5cf6",
+            "label": "Node A",
+            "label_position": "below",
+            "animation": {
+              "type": "move",
+              "duration": 1200,
+              "direction": "right",
+              "represents": "data moving from one node to another"
+            }
+          },
+          {
+            "type": "arrow",
+            "x": 40,
+            "y": 50,
+            "width": 15,
+            "height": 2,
+            "color": "#ffffff",
+            "label": "pointer",
+            "label_position": "above",
+            "animation": {
+              "type": "draw",
+              "duration": 1000,
+              "direction": "left_to_right",
+              "represents": "showing the direction of data flow"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "step": 2,
+      "concept": "Next concept name",
+      "subtitle": "One sentence explaining step 2",
+      "canvas_instructions": {
+        "elements": []
+      }
     }
-  ],
-  "problemSets": [...]
+  ]
 }
-
-Constraints:
-- Each step teaches exactly one concept and must look visually distinct.
-- For each object provide exact shape, color, size, and position.
-- Position each element as if mapped from canvas percentages and convert to coherent scene coordinates.
-- For each animation provide target object, type, direction, and duration.
-- Labels must be explicitly placed, non-overlapping, and linked to targets.
-- Include explicit connections (fromId,toId,type) for the visual topology.
-- Use specific technical terms for this topic; avoid generic placeholder names.
-- Keep visuals bounded, legible, and professionally organized.
-- Include graph/mathExpressions only when genuinely needed.
-- Problem sets must match ${level} difficulty.
-- Output JSON only, no markdown and no extra text.
+x and y are always a number between 0 and 100 representing percentage of canvas size - never pixels
+width and height are also percentages of canvas size - never pixels
+color is always a hex code - never a color name like "red" or "blue"
+label_position is always exactly one of: above, below, left, right
+animation.type is always exactly one of the listed types - never a custom value
+animation.direction describes the actual direction like left_to_right, top_to_bottom, clockwise, none etc
+animation.represents is a plain English sentence explaining what this animation is teaching - this is important for the renderer to know context
+Every element must have all fields present - no field should ever be null or missing
+Steps array must always have at least 1 step and elements array must always have at least 1 element per step
+Make colors bright and distinct. Make every animation meaningful and directly illustrative of the concept. Every step must look visually different from the previous one. Never repeat the same layout. Output only valid JSON with no extra text.
 `.trim();
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(
-      `${GEMINI_BASE_URL}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: systemPrompt }]
+  const systemPrompt = "Return only valid JSON with no markdown and no prose.";
+
+  const requestGeminiJson = async (prompt: string): Promise<unknown> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(
+        `${GEMINI_BASE_URL}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
           },
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: userPrompt }]
+          signal: controller.signal,
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: systemPrompt }]
+            },
+            contents: [
+              {
+                role: "user",
+                parts: [{ text: prompt }]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.25,
+              maxOutputTokens: 6000,
+              responseMimeType: "application/json"
             }
-          ],
-          generationConfig: {
-            temperature: 0.45,
-            maxOutputTokens: 4800,
-            responseMimeType: "application/json"
-          }
-        })
+          })
+        }
+      );
+    } catch (error) {
+      if ((error as Error).name === "AbortError") {
+        return null;
       }
-    );
-  } catch (error) {
-    if ((error as Error).name === "AbortError") {
-      return null;
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Gemini request failed (${response.status}): ${body.slice(0, 200)}`);
-  }
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Gemini request failed (${response.status}): ${body.slice(0, 200)}`);
+    }
 
-  const payload = (await response.json()) as {
-    promptFeedback?: {
-      blockReason?: string;
-    };
-    candidates?: Array<{
-      content?: {
-        parts?: Array<{ text?: string }>;
+    const payload = (await response.json()) as {
+      promptFeedback?: {
+        blockReason?: string;
       };
-    }>;
+      candidates?: Array<{
+        content?: {
+          parts?: Array<{ text?: string }>;
+        };
+      }>;
+    };
+    const content = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n");
+    if (!content) {
+      if (payload.promptFeedback?.blockReason) {
+        throw new Error(`Gemini blocked output: ${payload.promptFeedback.blockReason}`);
+      }
+      throw new Error("Gemini response was empty.");
+    }
+    return extractJsonObject(content);
   };
-  const content = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n");
-  if (!content) {
-    if (payload.promptFeedback?.blockReason) {
-      throw new Error(`Gemini blocked output: ${payload.promptFeedback.blockReason}`);
+
+  const pickRetryStepPayload = (payload: unknown, stepNumber: number): unknown => {
+    if (!payload || typeof payload !== "object") {
+      return payload;
     }
-    throw new Error("Gemini response was empty.");
-  }
-
-  const parsed = extractJsonObject(content);
-  const validated = llmSimulationSchema.safeParse(parsed);
-  if (validated.success) {
-    return validated.data;
-  }
-
-  const looseResult = z
-    .object({
-      description: z.string().optional(),
-      narration: z.array(z.string()).optional(),
-      openingMessage: z.string().optional(),
-      explanation_script: z.string().optional(),
-      simulation_steps: z.array(z.unknown()).optional(),
-      problemSets: z.array(z.unknown()).optional()
-    })
-    .passthrough()
-    .safeParse(parsed);
-
-  if (!looseResult.success) {
-    throw new Error(`Gemini JSON validation failed: ${validated.error.issues[0]?.message ?? "Unknown issue"}`);
-  }
-
-  const loose = looseResult.data;
-  const partial: GeminiSimulationPayload = {};
-
-  if (typeof loose.description === "string" && loose.description.trim().length > 0) {
-    partial.description = loose.description.trim().slice(0, 1400);
-  }
-
-  if (typeof loose.openingMessage === "string" && loose.openingMessage.trim().length > 0) {
-    partial.openingMessage = loose.openingMessage.trim().slice(0, 700);
-  }
-
-  if (typeof loose.explanation_script === "string" && loose.explanation_script.trim().length > 0) {
-    partial.explanation_script = loose.explanation_script.trim().slice(0, 2800);
-  }
-
-  if (Array.isArray(loose.narration)) {
-    const cleanedNarration = loose.narration
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .slice(0, 14);
-    if (cleanedNarration.length > 0) {
-      partial.narration = cleanedNarration;
+    const maybeStep = payload as { step?: unknown; steps?: unknown };
+    if (typeof maybeStep.step === "number") {
+      return payload;
     }
+    if (Array.isArray(maybeStep.steps)) {
+      const match = maybeStep.steps.find(
+        (item) =>
+          typeof item === "object" &&
+          item !== null &&
+          "step" in item &&
+          typeof (item as { step?: unknown }).step === "number" &&
+          (item as { step: number }).step === stepNumber
+      );
+      return match ?? maybeStep.steps[0];
+    }
+    return payload;
+  };
+
+  const initialPayload = await requestGeminiJson(simulationFormatPrompt);
+  if (!initialPayload) {
+    return null;
   }
 
-  if (Array.isArray(loose.simulation_steps)) {
-    const validSteps = loose.simulation_steps
-      .map((step) => simStepSchema.safeParse(step))
-      .filter((result): result is z.SafeParseSuccess<z.infer<typeof simStepSchema>> => result.success)
-      .map((result) => result.data)
-      .slice(0, 8);
-    if (validSteps.length > 0) {
-      partial.simulation_steps = validSteps;
+  const strict = llmSimulationSchema.safeParse(initialPayload);
+  const rawSteps: unknown[] = strict.success
+    ? strict.data.steps
+    : Array.isArray((initialPayload as { steps?: unknown[] }).steps)
+      ? (initialPayload as { steps: unknown[] }).steps
+      : [];
+
+  if (rawSteps.length === 0) {
+    throw new Error(`Gemini JSON validation failed: ${strict.success ? "Missing steps" : strict.error.issues[0]?.message}`);
+  }
+
+  const validSteps: GeminiCanvasStep[] = [];
+  for (let index = 0; index < rawSteps.length; index += 1) {
+    let stepCandidate: unknown = rawSteps[index];
+    let parsedStep = simCanvasStepSchema.safeParse(stepCandidate);
+
+    let retryCount = 0;
+    while (!parsedStep.success && retryCount < 2) {
+      retryCount += 1;
+      const retryPrompt = `Your previous response for step [${index + 1}] was incomplete. Please regenerate only that step with complete valid JSON following the same format.`;
+      const retryPayload = await requestGeminiJson(retryPrompt);
+      if (!retryPayload) {
+        break;
+      }
+      stepCandidate = pickRetryStepPayload(retryPayload, index + 1);
+      parsedStep = simCanvasStepSchema.safeParse(stepCandidate);
+    }
+
+    if (parsedStep.success) {
+      validSteps.push(parsedStep.data);
     }
   }
 
-  if (Array.isArray(loose.problemSets)) {
-    const validProblemSets = loose.problemSets
-      .map((set) => generatedProblemSetSchema.safeParse(set))
-      .filter(
-        (result): result is z.SafeParseSuccess<z.infer<typeof generatedProblemSetSchema>> => result.success
-      )
-      .map((result) => result.data);
-    if (validProblemSets.length > 0) {
-      partial.problemSets = validProblemSets;
-    }
+  if (validSteps.length === 0) {
+    throw new Error("Gemini JSON validation failed: Required");
   }
 
-  if (Object.keys(partial).length === 0) {
-    throw new Error(`Gemini JSON validation failed: ${validated.error.issues[0]?.message ?? "Unknown issue"}`);
-  }
-
-  return partial;
+  return { steps: validSteps };
 }
 
 async function generateChatReplyFromGemini(
@@ -1616,7 +1705,7 @@ app.post(
   }
 
   const { topic: requestedTopic, level } = parsed.data;
-  const cacheKey = `${level}::${requestedTopic.trim().toLowerCase()}`;
+  const cacheKey = `${SIMULATION_CACHE_SCHEMA_VERSION}::${level}::${requestedTopic.trim().toLowerCase()}`;
   const cached = simulationResponseCache.get(cacheKey);
   if (cached && Date.now() - cached.cachedAt <= SIMULATION_CACHE_TTL_MS) {
     const cachedPayload = JSON.parse(JSON.stringify(cached.payload)) as typeof cached.payload;
@@ -1626,38 +1715,29 @@ app.post(
 
   const topic = buildGeneratedTopic(requestedTopic, level);
   let problemSets = buildGeneratedProblemSets(topic);
-  const fallbackSimulationSteps = buildTemplateSimulationSteps(topic);
-  let explanationScript = topic.narration.join(" ");
-  let simulationSteps = fallbackSimulationSteps;
+  let explanationScript = "";
+  let simulationSteps: GeminiCanvasStep[] = [];
   let openingMessage = `Generated a live simulation plan for ${topic.title}.`;
-  let generationSource: "template" | "gemini" = "template";
+  let generationSource: "template" | "gemini" = "gemini";
   const llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
-  if (llmGenerated) {
-    if (llmGenerated.description?.trim()) {
-      topic.description = llmGenerated.description.trim().slice(0, 1400);
-    }
-    const narration = normalizeNarration(llmGenerated.narration ?? []);
-    if (narration.length >= 3) {
-      topic.narration = narration;
-    }
-    if (llmGenerated.explanation_script?.trim()) {
-      explanationScript = llmGenerated.explanation_script.trim().slice(0, 2800);
-    }
-    if ((llmGenerated.simulation_steps ?? []).length > 0) {
-      simulationSteps = normalizeSimulationSteps(
-        llmGenerated.simulation_steps ?? [],
-        fallbackSimulationSteps,
-        requestedTopic
-      );
-    }
-    problemSets = normalizeProblemSets(topic, llmGenerated.problemSets);
-    if (llmGenerated.openingMessage?.trim()) {
-      openingMessage = llmGenerated.openingMessage.trim().slice(0, 700);
-    }
-    if ((llmGenerated.simulation_steps ?? []).length > 0) {
-      generationSource = "gemini";
-    }
+  if (!llmGenerated || llmGenerated.steps.length === 0) {
+    res.status(502).json({ error: "Simulation generation failed. Gemini did not return valid steps." });
+    return;
   }
+  simulationSteps = llmGenerated.steps;
+  const narration = normalizeNarration(simulationSteps.map((step) => step.subtitle));
+  if (narration.length > 0) {
+    topic.narration = narration;
+  }
+  if (simulationSteps[0]?.subtitle) {
+    openingMessage = simulationSteps[0].subtitle.slice(0, 700);
+  }
+  explanationScript = simulationSteps
+    .map((step, index) => `Step ${index + 1} (${step.concept}): ${step.subtitle}`)
+    .join(" ")
+    .slice(0, 2800);
+  topic.description = explanationScript.slice(0, 1400);
+  problemSets = normalizeProblemSets(topic);
 
   const interaction: InteractionRecord = {
     id: randomUUID(),

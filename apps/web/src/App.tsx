@@ -6,8 +6,6 @@ import {
   HistoryItem,
   ProblemSet,
   ProgressRecord,
-  SimulationGenerationResponse,
-  SimulationStep,
   Topic,
   UserPreferences
 } from "./types";
@@ -37,9 +35,65 @@ type RecognitionConstructor = new () => {
 
 type AppView = "home" | "simulation" | "history-list" | "history-detail" | "progress-list";
 
+type SimulationElementType =
+  | "rectangle"
+  | "circle"
+  | "ellipse"
+  | "triangle"
+  | "arrow"
+  | "curved arrow"
+  | "line"
+  | "dashed line"
+  | "text"
+  | "path"
+  | "polygon"
+  | "grid"
+  | "axis"
+  | "plot point"
+  | "wave"
+  | "pulse"
+  | "highlight box";
+
+interface SimulationElementAnimation {
+  type: "fade_in" | "move" | "draw" | "pulse" | "rotate" | "scale" | "highlight" | "none";
+  duration: number;
+  direction: string;
+  represents: string;
+}
+
+interface SimulationCanvasElement {
+  type: SimulationElementType;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  label: string;
+  label_position: "above" | "below" | "left" | "right";
+  animation: SimulationElementAnimation;
+}
+
+interface SimulationCanvasStep {
+  step: number;
+  concept: string;
+  subtitle: string;
+  canvas_instructions: {
+    elements: SimulationCanvasElement[];
+  };
+}
+
+interface SimulationGenerationApiResponse {
+  topic: Topic;
+  problemSets: ProblemSet[];
+  openingMessage: string;
+  generationSource?: "template" | "gemini";
+  explanation_script: string;
+  simulation_steps: SimulationCanvasStep[];
+}
+
 interface GeneratedSimulation {
   explanationScript: string;
-  steps: SimulationStep[];
+  steps: SimulationCanvasStep[];
   generationSource: "template" | "gemini";
 }
 
@@ -528,29 +582,6 @@ export default function App(): JSX.Element {
       topicRecognitionActiveRef.current = false;
       setTopicListening(false);
     }
-    const normalizedRequestedTopic = requestedTopic.toLowerCase();
-    const existingTopic = topics.find((item) => item.title.trim().toLowerCase() === normalizedRequestedTopic);
-    if (existingTopic && generatedSimulations[existingTopic.id]) {
-      if (simulationLoaderTimeoutRef.current !== null) {
-        window.clearTimeout(simulationLoaderTimeoutRef.current);
-        simulationLoaderTimeoutRef.current = null;
-      }
-      simulationLoadStartedAtRef.current = Date.now();
-      setSelectedTopicId(existingTopic.id);
-      setAppView("simulation");
-      setChatPanelOpen(false);
-      setSimulationPaused(false);
-      setSimulationLoadingTopic(existingTopic.title);
-      setSimulationRendererLoading(true);
-      setStatusMessage("Simulation ready.");
-      simulationLoaderTimeoutRef.current = window.setTimeout(() => {
-        setSimulationRendererLoading(false);
-        setSimulationLoadingTopic("");
-        simulationLoaderTimeoutRef.current = null;
-      }, 900);
-      return;
-    }
-
     if (simulationLoaderTimeoutRef.current !== null) {
       window.clearTimeout(simulationLoaderTimeoutRef.current);
       simulationLoaderTimeoutRef.current = null;
@@ -565,7 +596,7 @@ export default function App(): JSX.Element {
     setMenuOpen(false);
     setGeneratingTopic(true);
     try {
-      const response = await apiPost<SimulationGenerationResponse>(
+      const response = await apiPost<SimulationGenerationApiResponse>(
         "/ai/simulation",
         {
           topic: requestedTopic,
@@ -1404,6 +1435,7 @@ export default function App(): JSX.Element {
       setSimulationRendererLoading(false);
       return;
     }
+
     setSimulationRendererLoading(true);
     let disposed = false;
     let cleanup = () => undefined;
@@ -1416,521 +1448,431 @@ export default function App(): JSX.Element {
 
       host.innerHTML = "";
       const scene = new THREE.Scene();
-      scene.background = new THREE.Color("#1a1a2e");
+      scene.background = new THREE.Color("#12172a");
 
-      const camera = new THREE.PerspectiveCamera(52, 1, 0.1, 200);
-      camera.position.set(0, 0, 18);
+      const camera = new THREE.PerspectiveCamera(52, 1, 0.1, 220);
+      camera.position.set(0, 0, 16);
       camera.lookAt(0, 0, 0);
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
       renderer.setPixelRatio(window.devicePixelRatio || 1);
       host.appendChild(renderer.domElement);
 
-      const ambient = new THREE.AmbientLight(0xffffff, 0.72);
-      const directional = new THREE.DirectionalLight(0xffffff, 0.75);
-      directional.position.set(9, 10, 12);
+      const ambient = new THREE.AmbientLight(0xffffff, 0.8);
+      const directional = new THREE.DirectionalLight(0xffffff, 0.7);
+      directional.position.set(8, 10, 12);
       scene.add(ambient);
       scene.add(directional);
 
       const rootGroup = new THREE.Group();
       scene.add(rootGroup);
 
-      const createTextSprite = (text: string, color = "#1f2937") => {
+      const WORLD_WIDTH = 18;
+      const WORLD_HEIGHT = 10;
+
+      type ElementRuntime = {
+        node: any;
+        animation: SimulationElementAnimation;
+        basePosition: any;
+        baseRotation: any;
+        baseScale: any;
+        size: { w: number; h: number };
+        drawAxis: "x" | "y";
+        materials: any[];
+      };
+
+      type LabelRuntime = {
+        sprite: any;
+        line: any;
+        target: any;
+        offset: any;
+      };
+
+      let runtimes: ElementRuntime[] = [];
+      let labels: LabelRuntime[] = [];
+      let frameId = 0;
+      let lastTime = performance.now();
+      let stepElapsedMs = 0;
+      let currentStepDurationMs = 4200;
+
+      const createTextSprite = (text: string, color = "#111827") => {
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
         if (!ctx) {
           return null;
         }
-        canvas.width = 512;
-        canvas.height = 128;
+        canvas.width = 1024;
+        canvas.height = 192;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = "rgba(255,255,255,0.94)";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.font = "700 34px Trebuchet MS";
+        ctx.font = "700 58px Trebuchet MS";
         ctx.fillStyle = color;
-        ctx.fillText(text.slice(0, 44), 14, 72);
+        ctx.fillText(text.slice(0, 90), 24, 120);
         const texture = new THREE.CanvasTexture(canvas);
         const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
         const sprite = new THREE.Sprite(material);
-        sprite.scale.set(5.4, 1.4, 1);
+        sprite.scale.set(4.8, 0.9, 1);
         return sprite;
       };
 
-      const clampPosition = (position: { x: number; y: number; z: number }) => ({
-        x: Math.max(-8.5, Math.min(8.5, position.x)),
-        y: Math.max(-4.6, Math.min(4.6, position.y)),
-        z: Math.max(-5, Math.min(5, position.z))
+      const percentToWorld = (x: number, y: number) =>
+        new THREE.Vector3((x / 100 - 0.5) * WORLD_WIDTH, (0.5 - y / 100) * WORLD_HEIGHT, 0);
+
+      const percentToSize = (width: number, height: number) => ({
+        w: Math.max(0.25, (width / 100) * WORLD_WIDTH),
+        h: Math.max(0.25, (height / 100) * WORLD_HEIGHT)
       });
 
-      const createObjectMesh = (obj: SimulationStep["objects"][number]) => {
-        const color = new THREE.Color(obj.color);
-        const material = new THREE.MeshStandardMaterial({
-          color,
-          metalness: 0.22,
-          roughness: 0.54
+      const labelOffsetFor = (labelPosition: SimulationCanvasElement["label_position"], size: { w: number; h: number }) => {
+        const offsetGap = 0.55;
+        if (labelPosition === "above") {
+          return new THREE.Vector3(0, size.h / 2 + offsetGap, 0);
+        }
+        if (labelPosition === "below") {
+          return new THREE.Vector3(0, -(size.h / 2 + offsetGap), 0);
+        }
+        if (labelPosition === "left") {
+          return new THREE.Vector3(-(size.w / 2 + offsetGap), 0, 0);
+        }
+        return new THREE.Vector3(size.w / 2 + offsetGap, 0, 0);
+      };
+
+      const directionVector = (direction: string) => {
+        const normalized = direction.toLowerCase();
+        if (normalized.includes("left_to_right") || normalized === "right") {
+          return new THREE.Vector3(1, 0, 0);
+        }
+        if (normalized.includes("right_to_left") || normalized === "left") {
+          return new THREE.Vector3(-1, 0, 0);
+        }
+        if (normalized.includes("top_to_bottom") || normalized === "down" || normalized === "bottom") {
+          return new THREE.Vector3(0, -1, 0);
+        }
+        if (normalized.includes("bottom_to_top") || normalized === "up" || normalized === "top") {
+          return new THREE.Vector3(0, 1, 0);
+        }
+        return new THREE.Vector3(0, 0, 0);
+      };
+
+      const collectMaterials = (node: any): any[] => {
+        const materials: any[] = [];
+        node.traverse((child: any) => {
+          if (!child.material) {
+            return;
+          }
+          if (Array.isArray(child.material)) {
+            child.material.forEach((material: any) => materials.push(material));
+          } else {
+            materials.push(child.material);
+          }
         });
+        return materials;
+      };
 
-        let mesh: any;
-        if (obj.type === "sphere") {
-          mesh = new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.2, obj.size.x / 1.4), 32, 24), material);
-        } else if (obj.type === "cylinder") {
-          mesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(Math.max(0.2, obj.size.x / 2), Math.max(0.2, obj.size.z / 2), Math.max(0.2, obj.size.y), 24),
-            material
+      const makeLine = (start: any, end: any, color: string, dashed = false) => {
+        const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
+        const material = dashed
+          ? new THREE.LineDashedMaterial({ color, dashSize: 0.22, gapSize: 0.15, transparent: true, opacity: 0.95 })
+          : new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 });
+        const line = new THREE.Line(geometry, material);
+        if (dashed) {
+          line.computeLineDistances();
+        }
+        return line;
+      };
+
+      const makeArrow = (size: { w: number; h: number }, color: string, curved = false) => {
+        const group = new THREE.Group();
+        if (curved) {
+          const curve = new THREE.QuadraticBezierCurve3(
+            new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
+            new THREE.Vector3(0, size.h / 2, 0),
+            new THREE.Vector3(size.w / 2, 0, 0)
           );
-        } else if (obj.type === "cone") {
-          mesh = new THREE.Mesh(new THREE.ConeGeometry(Math.max(0.2, obj.size.x / 2), Math.max(0.2, obj.size.y), 24), material);
-        } else if (obj.type === "torus") {
-          mesh = new THREE.Mesh(new THREE.TorusGeometry(Math.max(0.3, obj.size.x / 2), 0.22, 20, 80), material);
-        } else if (obj.type === "plane") {
-          mesh = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(0.3, obj.size.x), Math.max(0.3, obj.size.y)), material);
-        } else if (obj.type === "line" || obj.type === "arrow") {
-          const geometry = new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(0, 0, 0),
-            new THREE.Vector3(
-              obj.type === "arrow" ? Math.max(0.8, obj.size.x) : obj.size.x,
-              obj.size.y,
-              obj.size.z
-            )
-          ]);
-          mesh = new THREE.Line(
-            geometry,
-            new THREE.LineBasicMaterial({
-              color,
-              transparent: true,
-              opacity: 0.9
-            })
+          const points = curve.getPoints(40);
+          const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+          const line = new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.96 }));
+          group.add(line);
+          const head = new THREE.Mesh(
+            new THREE.ConeGeometry(0.16, 0.42, 16),
+            new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.24 })
           );
-        } else if (obj.type === "text") {
-          const sprite = createTextSprite(obj.label ?? obj.id, obj.color);
-          mesh = sprite ?? new THREE.Group();
+          head.position.copy(points[points.length - 1]);
+          head.rotation.z = -Math.PI / 2;
+          group.add(head);
         } else {
-          mesh = new THREE.Mesh(
-            new THREE.BoxGeometry(Math.max(0.2, obj.size.x), Math.max(0.2, obj.size.y), Math.max(0.2, obj.size.z)),
-            material
+          const line = makeLine(new THREE.Vector3(-size.w / 2, 0, 0), new THREE.Vector3(size.w / 2, 0, 0), color);
+          group.add(line);
+          const head = new THREE.Mesh(
+            new THREE.ConeGeometry(0.16, 0.4, 16),
+            new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.22 })
           );
+          head.position.set(size.w / 2, 0, 0);
+          head.rotation.z = -Math.PI / 2;
+          group.add(head);
+        }
+        return group;
+      };
+
+      const buildElementNode = (element: SimulationCanvasElement): ElementRuntime | null => {
+        const size = percentToSize(element.width, element.height);
+        const position = percentToWorld(element.x, element.y);
+        const color = element.color;
+        const meshMaterial = new THREE.MeshStandardMaterial({
+          color,
+          metalness: 0.2,
+          roughness: 0.4
+        });
+        const lineMaterial = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.96 });
+        const node = new THREE.Group();
+        let drawAxis: "x" | "y" = "x";
+        let drawable: any | null = null;
+
+        if (element.type === "rectangle") {
+          drawable = new THREE.Mesh(new THREE.PlaneGeometry(size.w, size.h), meshMaterial);
+        } else if (element.type === "circle") {
+          drawable = new THREE.Mesh(new THREE.CircleGeometry(Math.max(0.14, Math.min(size.w, size.h) / 2), 48), meshMaterial);
+        } else if (element.type === "ellipse") {
+          drawable = new THREE.Mesh(new THREE.CircleGeometry(0.5, 48), meshMaterial);
+          drawable.scale.set(size.w, size.h, 1);
+        } else if (element.type === "triangle") {
+          const shape = new THREE.Shape();
+          shape.moveTo(0, size.h / 2);
+          shape.lineTo(-size.w / 2, -size.h / 2);
+          shape.lineTo(size.w / 2, -size.h / 2);
+          shape.closePath();
+          drawable = new THREE.Mesh(new THREE.ShapeGeometry(shape), meshMaterial);
+        } else if (element.type === "arrow") {
+          drawable = makeArrow(size, color, false);
+        } else if (element.type === "curved arrow") {
+          drawable = makeArrow(size, color, true);
+        } else if (element.type === "line") {
+          drawable = makeLine(
+            new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
+            new THREE.Vector3(size.w / 2, size.h / 2, 0),
+            color,
+            false
+          );
+          drawAxis = Math.abs(size.w) >= Math.abs(size.h) ? "x" : "y";
+        } else if (element.type === "dashed line") {
+          drawable = makeLine(
+            new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
+            new THREE.Vector3(size.w / 2, size.h / 2, 0),
+            color,
+            true
+          );
+          drawAxis = Math.abs(size.w) >= Math.abs(size.h) ? "x" : "y";
+        } else if (element.type === "text") {
+          drawable = createTextSprite(element.label, color);
+          if (drawable) {
+            drawable.scale.set(Math.max(2, size.w), Math.max(0.8, size.h), 1);
+          }
+        } else if (element.type === "path") {
+          const curve = new THREE.QuadraticBezierCurve3(
+            new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
+            new THREE.Vector3(0, size.h / 2, 0),
+            new THREE.Vector3(size.w / 2, size.h / 4, 0)
+          );
+          const points = curve.getPoints(40);
+          drawable = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial);
+        } else if (element.type === "polygon") {
+          const sides = Math.max(5, Math.min(10, Math.round((size.w + size.h) * 1.4)));
+          drawable = new THREE.Mesh(new THREE.CircleGeometry(Math.max(0.16, Math.min(size.w, size.h) / 2), sides), meshMaterial);
+        } else if (element.type === "grid") {
+          const divisions = Math.max(4, Math.min(24, Math.round((size.w + size.h) * 1.9)));
+          drawable = new THREE.GridHelper(Math.max(size.w, size.h), divisions, color, "#344861");
+          drawable.rotation.x = Math.PI / 2;
+        } else if (element.type === "axis") {
+          const axisGroup = new THREE.Group();
+          axisGroup.add(makeLine(new THREE.Vector3(-size.w / 2, 0, 0), new THREE.Vector3(size.w / 2, 0, 0), color));
+          axisGroup.add(makeLine(new THREE.Vector3(0, -size.h / 2, 0), new THREE.Vector3(0, size.h / 2, 0), color));
+          axisGroup.add(makeArrow({ w: size.w * 0.2, h: size.h * 0.1 }, color));
+          drawable = axisGroup;
+        } else if (element.type === "plot point") {
+          drawable = new THREE.Mesh(
+            new THREE.SphereGeometry(Math.max(0.1, Math.min(size.w, size.h) / 2), 20, 20),
+            meshMaterial
+          );
+        } else if (element.type === "wave") {
+          const points: any[] = [];
+          const segments = 60;
+          const amplitude = Math.max(0.16, size.h / 2);
+          for (let i = 0; i <= segments; i += 1) {
+            const t = i / segments;
+            const x = -size.w / 2 + t * size.w;
+            const y = Math.sin(t * Math.PI * 2) * amplitude;
+            points.push(new THREE.Vector3(x, y, 0));
+          }
+          drawable = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial);
+        } else if (element.type === "pulse") {
+          drawable = new THREE.Mesh(
+            new THREE.TorusGeometry(Math.max(0.16, Math.min(size.w, size.h) / 2), 0.06, 16, 48),
+            meshMaterial
+          );
+        } else if (element.type === "highlight box") {
+          const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(size.w, size.h, 0.18));
+          drawable = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 }));
+        } else {
+          return null;
         }
 
-        const safePosition = clampPosition(obj.position);
-        mesh.position.set(safePosition.x, safePosition.y, safePosition.z);
-        if (obj.rotation) {
-          mesh.rotation.set(obj.rotation.x, obj.rotation.y, obj.rotation.z);
+        if (!drawable) {
+          return null;
         }
-        return mesh;
+
+        node.add(drawable);
+        node.position.copy(position);
+
+        const labelSprite = createTextSprite(element.label, "#0b1220");
+        if (labelSprite) {
+          const offset = labelOffsetFor(element.label_position, size);
+          labelSprite.position.copy(position.clone().add(offset));
+          rootGroup.add(labelSprite);
+          const connector = makeLine(position, labelSprite.position, "#7f97b3");
+          rootGroup.add(connector);
+          labels.push({
+            sprite: labelSprite,
+            line: connector,
+            target: node,
+            offset
+          });
+        }
+
+        return {
+          node,
+          animation: element.animation,
+          basePosition: node.position.clone(),
+          baseRotation: node.rotation.clone(),
+          baseScale: node.scale.clone(),
+          size,
+          drawAxis,
+          materials: collectMaterials(node)
+        };
       };
 
-      type MovementRuntime = {
-        object: any;
-        type: "translate" | "rotate" | "scale" | "pulse";
-        fromPosition: any;
-        fromRotation: any;
-        fromScale: any;
-        toPosition?: any;
-        axis?: any;
-        durationMs: number;
-        repeat: number;
+      const updateAnchoredLabels = () => {
+        labels.forEach((item) => {
+          item.sprite.position.copy(item.target.position.clone().add(item.offset));
+          item.line.geometry.setFromPoints([item.target.position.clone(), item.sprite.position.clone()]);
+        });
       };
 
-      type ConnectionRuntime = {
-        line: any;
-        from: any;
-        to: any;
-      };
-
-      type LabelRuntime = {
-        sprite: any;
-        target: any;
-        offset: any;
-        line?: any;
-      };
-
-      let objectMap = new Map<string, any>();
-      let movementRuntimes: MovementRuntime[] = [];
-      let connectionRuntimes: ConnectionRuntime[] = [];
-      let labelRuntimes: LabelRuntime[] = [];
-      let frameId = 0;
-      let lastTime = performance.now();
-      let stepElapsedMs = 0;
-      const stepDurationMs = 3000;
-
-      const setStepNarration = (step: SimulationStep, index: number) => {
-        setCurrentStepText(`Step ${step.step}: ${step.annotation}`);
+      const setStepNarration = (step: SimulationCanvasStep, index: number) => {
+        setCurrentStepText(`Step ${index + 1}: ${step.concept}`);
         if (subtitlesEnabled) {
-          setSubtitle(step.annotation);
+          setSubtitle(step.subtitle);
         } else {
           setSubtitle("");
         }
-
-        const expressions = step.mathExpressions ?? [];
-        if (expressions.length === 0) {
-          setMathOverlayLines([]);
-        } else {
-          const worker = mathWorkerRef.current;
-          if (!worker) {
-            setMathOverlayLines(expressions.map((item) => `${item.expression} = [worker unavailable]`));
-          } else {
-            const ticket = ++mathWorkerTicketRef.current;
-            const onMessage = (event: MessageEvent<{ ticket: number; lines: string[] }>) => {
-              if (disposed || event.data.ticket !== ticket) {
-                return;
-              }
-              worker.removeEventListener("message", onMessage as EventListener);
-              setMathOverlayLines(event.data.lines);
-            };
-            worker.addEventListener("message", onMessage as EventListener);
-            worker.postMessage({
-              ticket,
-              expressions
-            });
-          }
-        }
+        setMathOverlayLines([]);
 
         if (voiceNarrationEnabled && appViewRef.current === "simulation") {
-          if ("speechSynthesis" in window) {
-            if (spokenStepRef.current !== index) {
-              spokenStepRef.current = index;
-              window.speechSynthesis.cancel();
-              const utterance = new SpeechSynthesisUtterance(step.annotation);
-              utterance.rate = 1;
-              window.speechSynthesis.speak(utterance);
-            }
+          if ("speechSynthesis" in window && spokenStepRef.current !== index) {
+            spokenStepRef.current = index;
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(step.subtitle);
+            utterance.rate = 1;
+            window.speechSynthesis.speak(utterance);
           }
         } else if ("speechSynthesis" in window) {
           window.speechSynthesis.cancel();
         }
       };
 
-      const buildAutoConnections = (objects: SimulationStep["objects"]) => {
-        const nodes = objects.filter((obj) => !["line", "arrow", "text"].includes(obj.type));
-        if (nodes.length < 2) {
-          return [] as Array<{ fromId: string; toId: string }>;
-        }
-
-        const topicName = selectedTopic?.title.toLowerCase() ?? "";
-        if (topicName.includes("tree") || topicName.includes("decision")) {
-          const byY = new Map<number, SimulationStep["objects"]>();
-          nodes.forEach((node) => {
-            const bucket = Math.round(node.position.y * 10) / 10;
-            byY.set(bucket, [...(byY.get(bucket) ?? []), node]);
-          });
-          const levels = Array.from(byY.entries())
-            .sort((a, b) => b[0] - a[0])
-            .map((entry) => entry[1].sort((left, right) => left.position.x - right.position.x));
-
-          const links: Array<{ fromId: string; toId: string }> = [];
-          for (let levelIndex = 0; levelIndex < levels.length - 1; levelIndex += 1) {
-            const parents = levels[levelIndex];
-            const children = levels[levelIndex + 1];
-            parents.forEach((parent) => {
-              const nearestChildren = children
-                .slice()
-                .sort(
-                  (left, right) =>
-                    Math.abs(left.position.x - parent.position.x) - Math.abs(right.position.x - parent.position.x)
-                )
-                .slice(0, Math.min(2, children.length));
-              nearestChildren.forEach((child) => {
-                links.push({ fromId: parent.id, toId: child.id });
-              });
-            });
-          }
-          if (links.length > 0) {
-            return links;
-          }
-        }
-
-        const sortedByX = nodes.slice().sort((left, right) => left.position.x - right.position.x);
-        return sortedByX.slice(0, -1).map((node, index) => ({
-          fromId: node.id,
-          toId: sortedByX[index + 1].id
-        }));
-      };
-
-      const renderConnection = (from: any, to: any, color = "#2a3a4f") => {
-        const geometry = new THREE.BufferGeometry().setFromPoints([
-          from.position.clone(),
-          to.position.clone()
-        ]);
-        const material = new THREE.LineBasicMaterial({
-          color: new THREE.Color(color),
-          transparent: true,
-          opacity: 0.72
-        });
-        const line = new THREE.Line(geometry, material);
-        rootGroup.add(line);
-        connectionRuntimes.push({ line, from, to });
-      };
-
-      const updateConnections = () => {
-        connectionRuntimes.forEach((connection) => {
-          connection.line.geometry.setFromPoints([
-            connection.from.position.clone(),
-            connection.to.position.clone()
-          ]);
-        });
-      };
-
-      const updateAnchoredLabels = () => {
-        labelRuntimes.forEach((item) => {
-          const nextPosition = item.target.position.clone().add(item.offset);
-          const safe = clampPosition(nextPosition);
-          item.sprite.position.set(safe.x, safe.y, safe.z);
-          if (item.line) {
-            item.line.geometry.setFromPoints([
-              item.target.position.clone(),
-              item.sprite.position.clone()
-            ]);
-          }
-        });
-      };
-
-      const fitCameraToObjects = () => {
-        const nodes = Array.from(objectMap.values());
-        if (nodes.length === 0) {
+      const fitCameraToScene = () => {
+        const box = new THREE.Box3().setFromObject(rootGroup);
+        if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) {
+          camera.position.set(0, 0, 16);
+          camera.lookAt(0, 0, 0);
           return;
         }
-        const xs = nodes.map((node) => Number(node.position.x ?? 0));
-        const ys = nodes.map((node) => Number(node.position.y ?? 0));
-        const minX = Math.min(...xs);
-        const maxX = Math.max(...xs);
-        const minY = Math.min(...ys);
-        const maxY = Math.max(...ys);
-        const spanX = Math.max(6, maxX - minX);
-        const spanY = Math.max(4, maxY - minY);
-        const centerX = (minX + maxX) / 2;
-        const centerY = (minY + maxY) / 2;
-        const targetZ = Math.max(12, Math.min(26, Math.max(spanX * 1.4, spanY * 2.1)));
-        camera.position.set(centerX * 0.08, centerY * 0.08, targetZ);
-        camera.lookAt(centerX * 0.1, centerY * 0.1, 0);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const targetZ = Math.max(11, Math.min(30, Math.max(size.x * 1.3, size.y * 2.2)));
+        camera.position.set(center.x * 0.2, center.y * 0.2, targetZ);
+        camera.lookAt(center.x * 0.2, center.y * 0.2, 0);
       };
 
       const applyStep = (index: number) => {
         const step = steps[index];
         rootGroup.clear();
-        objectMap = new Map<string, any>();
-        movementRuntimes = [];
-        connectionRuntimes = [];
-        labelRuntimes = [];
-        const occupiedLabelSpots: Array<{ x: number; y: number }> = [];
-        const pickClearLabelPosition = (target: any, rank: number) => {
-          const side = rank % 2 === 0 ? 1 : -1;
-          const lane = Math.floor(rank / 2);
-          const baseOffset = new THREE.Vector3(side * (1.7 + lane * 0.2), 1 + lane * 0.42, 0);
-          const preferred = target.position.clone().add(baseOffset);
-          const candidate = clampPosition(preferred);
-          while (
-            occupiedLabelSpots.some(
-              (spot) => Math.abs(spot.x - candidate.x) < 1.15 && Math.abs(spot.y - candidate.y) < 0.52
-            )
-          ) {
-            candidate.y = Math.min(4.7, candidate.y + 0.42);
-            candidate.x = Math.max(-8.4, Math.min(8.4, candidate.x + side * 0.28));
-          }
-          occupiedLabelSpots.push({ x: candidate.x, y: candidate.y });
-          return {
-            position: new THREE.Vector3(candidate.x, candidate.y, candidate.z),
-            offset: new THREE.Vector3(candidate.x - target.position.x, candidate.y - target.position.y, candidate.z - target.position.z)
-          };
-        };
+        runtimes = [];
+        labels = [];
+        const elements = step.canvas_instructions?.elements ?? [];
+        const maxAnimationDuration = elements.reduce(
+          (maxValue, element) => Math.max(maxValue, Math.max(700, element.animation?.duration ?? 700)),
+          700
+        );
+        currentStepDurationMs = Math.max(3200, maxAnimationDuration + 900);
 
-        step.objects.forEach((obj, objIndex) => {
-          const mesh = createObjectMesh(obj);
-          rootGroup.add(mesh);
-          objectMap.set(obj.id, mesh);
-
-          const labelText = obj.label ?? "";
-          if (labelText) {
-            const label = createTextSprite(labelText, "#202a37");
-            if (label) {
-              const placed = pickClearLabelPosition(mesh, objIndex);
-              label.position.copy(placed.position);
-              rootGroup.add(label);
-              const connector = new THREE.BufferGeometry().setFromPoints([
-                mesh.position.clone(),
-                label.position.clone()
-              ]);
-              const connectorLine = new THREE.Line(
-                connector,
-                new THREE.LineBasicMaterial({ color: "#2c3d5a", opacity: 0.45, transparent: true })
-              );
-              rootGroup.add(connectorLine);
-              labelRuntimes.push({
-                sprite: label,
-                target: mesh,
-                offset: placed.offset,
-                line: connectorLine
-              });
-            }
-          }
-        });
-
-        step.labels.forEach((label, labelIndex) => {
-          const sprite = createTextSprite(label.text, label.color ?? "#1f2937");
-          if (!sprite) {
+        elements.forEach((element) => {
+          const runtime = buildElementNode(element);
+          if (!runtime) {
             return;
           }
-          let connectorFrom: any | null = null;
-          if (label.objectId && objectMap.has(label.objectId)) {
-            const target = objectMap.get(label.objectId)!;
-            connectorFrom = target;
-            const placed = pickClearLabelPosition(target, step.objects.length + labelIndex);
-            sprite.position.copy(placed.position);
-          } else if (label.position) {
-            const safe = clampPosition(label.position);
-            sprite.position.set(safe.x, safe.y, safe.z);
-          } else {
-            const topSafe = clampPosition({ x: 0, y: 4.4 - labelIndex * 0.4, z: 0 });
-            sprite.position.set(topSafe.x, topSafe.y, topSafe.z);
-          }
-          rootGroup.add(sprite);
-          if (connectorFrom) {
-            const connector = new THREE.BufferGeometry().setFromPoints([
-              connectorFrom.position.clone(),
-              sprite.position.clone()
-            ]);
-            const connectorLine = new THREE.Line(
-              connector,
-              new THREE.LineBasicMaterial({ color: "#3b4a63", opacity: 0.5, transparent: true })
+          rootGroup.add(runtime.node);
+          runtimes.push(runtime);
+        });
+
+        setStepNarration(step, index);
+        fitCameraToScene();
+        updateAnchoredLabels();
+      };
+
+      const updateAnimations = (elapsed: number) => {
+        runtimes.forEach((runtime) => {
+          const duration = Math.max(200, runtime.animation.duration);
+          const phase = (elapsed % duration) / duration;
+          const sinWave = Math.sin(phase * Math.PI * 2);
+          runtime.node.position.copy(runtime.basePosition);
+          runtime.node.rotation.copy(runtime.baseRotation);
+          runtime.node.scale.copy(runtime.baseScale);
+
+          if (runtime.animation.type === "fade_in") {
+            const opacity = Math.max(0.08, Math.min(1, phase * 1.4));
+            runtime.materials.forEach((material) => {
+              material.transparent = true;
+              material.opacity = opacity;
+            });
+          } else if (runtime.animation.type === "move") {
+            const direction = directionVector(runtime.animation.direction);
+            const amplitude = Math.max(0.25, Math.min(2.2, Math.max(runtime.size.w, runtime.size.h) * 0.32));
+            runtime.node.position.add(direction.multiplyScalar(amplitude * sinWave));
+          } else if (runtime.animation.type === "draw") {
+            const drawProgress = Math.max(0.03, phase);
+            if (runtime.drawAxis === "x") {
+              runtime.node.scale.set(runtime.baseScale.x * drawProgress, runtime.baseScale.y, runtime.baseScale.z);
+            } else {
+              runtime.node.scale.set(runtime.baseScale.x, runtime.baseScale.y * drawProgress, runtime.baseScale.z);
+            }
+          } else if (runtime.animation.type === "pulse") {
+            const pulse = 1 + 0.15 * sinWave;
+            runtime.node.scale.set(
+              runtime.baseScale.x * pulse,
+              runtime.baseScale.y * pulse,
+              runtime.baseScale.z * pulse
             );
-            rootGroup.add(connectorLine);
-            labelRuntimes.push({
-              sprite,
-              target: connectorFrom,
-              offset: new THREE.Vector3(
-                sprite.position.x - connectorFrom.position.x,
-                sprite.position.y - connectorFrom.position.y,
-                sprite.position.z - connectorFrom.position.z
-              ),
-              line: connectorLine
+          } else if (runtime.animation.type === "rotate") {
+            const clockwise = runtime.animation.direction.toLowerCase().includes("clockwise");
+            const directionSign = clockwise ? -1 : 1;
+            runtime.node.rotation.z = runtime.baseRotation.z + directionSign * phase * Math.PI * 2;
+          } else if (runtime.animation.type === "scale") {
+            const scaleFactor = 0.85 + 0.25 * (sinWave + 1) * 0.5;
+            runtime.node.scale.set(
+              runtime.baseScale.x * scaleFactor,
+              runtime.baseScale.y * scaleFactor,
+              runtime.baseScale.z
+            );
+          } else if (runtime.animation.type === "highlight") {
+            const intensity = 0.15 + 0.45 * (sinWave + 1) * 0.5;
+            runtime.materials.forEach((material) => {
+              if ("emissiveIntensity" in material) {
+                material.emissiveIntensity = intensity;
+              }
             });
           }
         });
-
-        step.movements.forEach((movement) => {
-          const object = objectMap.get(movement.objectId);
-          if (!object) {
-            return;
-          }
-          movementRuntimes.push({
-            object,
-            type: movement.type,
-            fromPosition: object.position.clone(),
-            fromRotation: object.rotation.clone(),
-            fromScale: object.scale.clone(),
-            toPosition: movement.to
-              ? (() => {
-                  const safe = clampPosition(movement.to);
-                  return new THREE.Vector3(safe.x, safe.y, safe.z);
-                })()
-              : undefined,
-            axis: movement.axis ? new THREE.Vector3(movement.axis.x, movement.axis.y, movement.axis.z) : undefined,
-            durationMs: movement.durationMs,
-            repeat: movement.repeat ?? 0
-          });
-        });
-
-        const explicitLinks =
-          step.connections?.filter(
-            (link) => objectMap.has(link.fromId) && objectMap.has(link.toId)
-          ) ?? [];
-
-        const linksToRender =
-          explicitLinks.length > 0
-            ? explicitLinks.map((link) => ({
-                fromId: link.fromId,
-                toId: link.toId,
-                color: link.color ?? "#2a3a4f",
-                label: link.label
-              }))
-            : buildAutoConnections(step.objects).map((link) => ({
-                ...link,
-                color: "#2a3a4f",
-                label: undefined as string | undefined
-              }));
-
-        linksToRender.forEach((link) => {
-          const fromObject = objectMap.get(link.fromId);
-          const toObject = objectMap.get(link.toId);
-          if (!fromObject || !toObject) {
-            return;
-          }
-          renderConnection(fromObject, toObject, link.color);
-          if (link.label) {
-            const sprite = createTextSprite(link.label, "#d6e8ff");
-            if (sprite) {
-              const midpoint = fromObject.position.clone().lerp(toObject.position, 0.5);
-              const safe = clampPosition(midpoint.add(new THREE.Vector3(0, 0.45, 0)));
-              sprite.position.set(safe.x, safe.y, safe.z);
-              rootGroup.add(sprite);
-            }
-          }
-        });
-        updateConnections();
-        fitCameraToObjects();
-
-        if (step.graph && step.graph.x.length === step.graph.y.length && step.graph.x.length > 1) {
-          const graphGroup = new THREE.Group();
-          const maxX = Math.max(...step.graph.x);
-          const minX = Math.min(...step.graph.x);
-          const maxY = Math.max(...step.graph.y);
-          const minY = Math.min(...step.graph.y);
-          const spanX = Math.max(1e-3, maxX - minX);
-          const spanY = Math.max(1e-3, maxY - minY);
-          const plotW = 6.4;
-          const plotH = 3.4;
-          const origin = new THREE.Vector3(-3.2, -2.2, 0);
-
-          const points = step.graph.x.map((value, pointIndex) => {
-            const normalizedX = ((value - minX) / spanX) * plotW;
-            const normalizedY = ((step.graph!.y[pointIndex] - minY) / spanY) * plotH;
-            return new THREE.Vector3(origin.x + normalizedX, origin.y + normalizedY, 0);
-          });
-
-          const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
-          graphGroup.add(new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ color: "#1f5fd6" })));
-          points.forEach((point) => {
-            const marker = new THREE.Mesh(
-              new THREE.SphereGeometry(0.09, 14, 14),
-              new THREE.MeshStandardMaterial({ color: "#4db1ff", emissive: "#1c4f8f", emissiveIntensity: 0.55 })
-            );
-            marker.position.copy(point);
-            graphGroup.add(marker);
-          });
-          rootGroup.add(graphGroup);
-        }
-
-        setStepNarration(step, index);
-      };
-
-      const updateMovements = (elapsed: number) => {
-        movementRuntimes.forEach((item) => {
-          const cycleDuration = Math.max(300, item.durationMs);
-          const totalCycles = Math.max(1, item.repeat + 1);
-          const cappedElapsed = Math.min(elapsed, cycleDuration * totalCycles);
-          const currentCycleProgress = Math.min(1, (cappedElapsed % cycleDuration) / cycleDuration);
-          const progress = cappedElapsed >= cycleDuration * totalCycles ? 1 : currentCycleProgress;
-
-          if (item.type === "translate" && item.toPosition) {
-            item.object.position.lerpVectors(item.fromPosition, item.toPosition, progress);
-            const clamped = clampPosition(item.object.position);
-            item.object.position.set(clamped.x, clamped.y, clamped.z);
-          } else if (item.type === "rotate") {
-            const axis = item.axis ?? new THREE.Vector3(0, 1, 0);
-            item.object.rotation.set(
-              item.fromRotation.x + axis.x * progress * Math.PI * 2,
-              item.fromRotation.y + axis.y * progress * Math.PI * 2,
-              item.fromRotation.z + axis.z * progress * Math.PI * 2
-            );
-          } else if (item.type === "scale") {
-            const axis = item.axis ?? new THREE.Vector3(0.45, 0.45, 0.45);
-            const target = item.fromScale.clone().add(axis);
-            item.object.scale.lerpVectors(item.fromScale, target, progress);
-          } else if (item.type === "pulse") {
-            const pulse = 1 + 0.18 * Math.sin(progress * Math.PI * 2);
-            item.object.scale.set(item.fromScale.x * pulse, item.fromScale.y * pulse, item.fromScale.z * pulse);
-          }
-        });
-        updateConnections();
         updateAnchoredLabels();
       };
 
@@ -1982,8 +1924,8 @@ export default function App(): JSX.Element {
 
         if (!simulationPaused && !document.hidden) {
           stepElapsedMs += delta;
-          updateMovements(stepElapsedMs);
-          if (stepElapsedMs >= stepDurationMs) {
+          updateAnimations(stepElapsedMs);
+          if (stepElapsedMs >= currentStepDurationMs) {
             stepElapsedMs = 0;
             simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
             applyStep(simulationStepRef.current);
@@ -2022,7 +1964,6 @@ export default function App(): JSX.Element {
     subtitlesEnabled,
     voiceNarrationEnabled
   ]);
-
   useEffect(() => {
     if (appView === "simulation") {
       return;
