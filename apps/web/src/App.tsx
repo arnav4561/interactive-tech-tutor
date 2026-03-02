@@ -95,7 +95,7 @@ export default function App(): JSX.Element {
   const [sessionBootstrapping, setSessionBootstrapping] = useState(false);
   const [appView, setAppView] = useState<AppView>("home");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [chatPanelOpen, setChatPanelOpen] = useState(true);
+  const [chatPanelOpen, setChatPanelOpen] = useState(false);
   const [toolsPanelOpen, setToolsPanelOpen] = useState(false);
   const [simulationPaused, setSimulationPaused] = useState(false);
   const [listening, setListening] = useState(false);
@@ -114,6 +114,7 @@ export default function App(): JSX.Element {
   const [voiceNarrationEnabled, setVoiceNarrationEnabled] = useState(false);
   const [topicListening, setTopicListening] = useState(false);
   const [simulationRendererLoading, setSimulationRendererLoading] = useState(false);
+  const [simulationLoadingTopic, setSimulationLoadingTopic] = useState("");
   const [voiceCommandFlash, setVoiceCommandFlash] = useState("");
 
   const simulationHostRef = useRef<HTMLDivElement | null>(null);
@@ -122,6 +123,7 @@ export default function App(): JSX.Element {
   const recognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionActiveRef = useRef(false);
+  const topicSilenceTimerRef = useRef<number | null>(null);
   const narrationTimersRef = useRef<number[]>([]);
   const subtitleTimerRef = useRef<number | null>(null);
   const voiceCaptureDesiredRef = useRef(false);
@@ -487,8 +489,9 @@ export default function App(): JSX.Element {
     setGeneratedProblemSets({});
     setGeneratedSimulations({});
     setCustomTopicInput("");
+    setSimulationLoadingTopic("");
     setSelectedHistoryId("");
-    setChatPanelOpen(true);
+    setChatPanelOpen(false);
     setToolsPanelOpen(false);
     setSimulationPaused(false);
     clearNarrationTimers();
@@ -519,13 +522,17 @@ export default function App(): JSX.Element {
     if (existingTopic && generatedSimulations[existingTopic.id]) {
       setSelectedTopicId(existingTopic.id);
       setAppView("simulation");
+      setChatPanelOpen(false);
       setSimulationPaused(false);
-      setStatusMessage(`Loaded cached simulation for ${existingTopic.title}.`);
+      setSimulationLoadingTopic(existingTopic.title);
+      setStatusMessage("Simulation ready.");
       return;
     }
 
     setAppView("simulation");
     setSelectedTopicId("");
+    setChatPanelOpen(false);
+    setSimulationLoadingTopic(requestedTopic);
     setCurrentStepText("Generating simulation plan...");
     setSimulationRendererLoading(true);
     setMenuOpen(false);
@@ -560,8 +567,7 @@ export default function App(): JSX.Element {
       if (subtitlesEnabled) {
         setSubtitle(response.openingMessage);
       }
-      const source = response.generationSource === "gemini" ? "Gemini" : "template";
-      setStatusMessage(`Generated simulation for ${response.topic.title} (${source}).`);
+      setStatusMessage("Simulation ready.");
       setCustomTopicInput("");
     } catch (error) {
       setAppView("home");
@@ -569,6 +575,7 @@ export default function App(): JSX.Element {
     } finally {
       setGeneratingTopic(false);
       setSimulationRendererLoading(false);
+      setSimulationLoadingTopic("");
     }
   }, [customTopicInput, generatedSimulations, selectedLevel, subtitlesEnabled, token, topics]);
 
@@ -589,6 +596,10 @@ export default function App(): JSX.Element {
       } catch (_error) {
         // no-op
       }
+      if (topicSilenceTimerRef.current !== null) {
+        window.clearTimeout(topicSilenceTimerRef.current);
+        topicSilenceTimerRef.current = null;
+      }
       return;
     }
 
@@ -602,7 +613,24 @@ export default function App(): JSX.Element {
 
     const recognition = topicRecognitionRef.current;
     let finalizedTranscript = "";
+    const resetSilenceTimer = () => {
+      if (topicSilenceTimerRef.current !== null) {
+        window.clearTimeout(topicSilenceTimerRef.current);
+      }
+      topicSilenceTimerRef.current = window.setTimeout(() => {
+        if (topicRecognitionActiveRef.current) {
+          try {
+            recognition.stop();
+          } catch (_error) {
+            topicRecognitionActiveRef.current = false;
+            setTopicListening(false);
+          }
+        }
+      }, 2000);
+    };
+
     recognition.onresult = (event: any) => {
+      resetSilenceTimer();
       let interimTranscript = "";
       const resultStart = typeof event.resultIndex === "number" ? event.resultIndex : 0;
       for (let index = resultStart; index < event.results.length; index += 1) {
@@ -625,11 +653,19 @@ export default function App(): JSX.Element {
     recognition.onerror = (event) => {
       topicRecognitionActiveRef.current = false;
       setTopicListening(false);
+      if (topicSilenceTimerRef.current !== null) {
+        window.clearTimeout(topicSilenceTimerRef.current);
+        topicSilenceTimerRef.current = null;
+      }
       setStatusMessage(`Voice input error: ${event.error}`);
     };
     recognition.onend = () => {
       topicRecognitionActiveRef.current = false;
       setTopicListening(false);
+      if (topicSilenceTimerRef.current !== null) {
+        window.clearTimeout(topicSilenceTimerRef.current);
+        topicSilenceTimerRef.current = null;
+      }
     };
 
     try {
@@ -639,9 +675,14 @@ export default function App(): JSX.Element {
       setTopicListening(true);
       topicRecognitionActiveRef.current = true;
       recognition.start();
+      resetSilenceTimer();
     } catch (error) {
       topicRecognitionActiveRef.current = false;
       setTopicListening(false);
+      if (topicSilenceTimerRef.current !== null) {
+        window.clearTimeout(topicSilenceTimerRef.current);
+        topicSilenceTimerRef.current = null;
+      }
       setStatusMessage(`Unable to start topic voice input: ${(error as Error).message}`);
     }
   }, [topicListening]);
@@ -1068,28 +1109,32 @@ export default function App(): JSX.Element {
     setStatusMessage("Viewing topic progress.");
   }, []);
 
+  const goHomeDirect = useCallback(() => {
+    setMenuOpen(false);
+    setToolsPanelOpen(false);
+    setAppView("home");
+    setStatusMessage("Home.");
+  }, []);
+
   const navigateBack = useCallback(() => {
     if (appView === "history-detail") {
       setAppView("history-list");
       return;
     }
     if (appView === "history-list") {
-      setAppView("home");
-      setStatusMessage("Returned to home.");
+      goHomeDirect();
       return;
     }
     if (appView === "progress-list") {
-      setAppView("home");
-      setStatusMessage("Returned to home.");
+      goHomeDirect();
       return;
     }
     if (appView === "simulation") {
       setSimulationPaused(true);
       setToolsPanelOpen(false);
-      setAppView("home");
-      setStatusMessage("Returned to home.");
+      goHomeDirect();
     }
-  }, [appView]);
+  }, [appView, goHomeDirect]);
 
   useEffect(() => {
     if (token) {
@@ -1546,6 +1591,26 @@ export default function App(): JSX.Element {
         });
       };
 
+      const fitCameraToObjects = () => {
+        const nodes = Array.from(objectMap.values());
+        if (nodes.length === 0) {
+          return;
+        }
+        const xs = nodes.map((node) => Number(node.position.x ?? 0));
+        const ys = nodes.map((node) => Number(node.position.y ?? 0));
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        const spanX = Math.max(6, maxX - minX);
+        const spanY = Math.max(4, maxY - minY);
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const targetZ = Math.max(12, Math.min(26, Math.max(spanX * 1.4, spanY * 2.1)));
+        camera.position.set(centerX * 0.08, centerY * 0.08, targetZ);
+        camera.lookAt(centerX * 0.1, centerY * 0.1, 0);
+      };
+
       const applyStep = (index: number) => {
         const step = steps[index];
         rootGroup.clear();
@@ -1553,8 +1618,29 @@ export default function App(): JSX.Element {
         movementRuntimes = [];
         connectionRuntimes = [];
         labelRuntimes = [];
+        const occupiedLabelSpots: Array<{ x: number; y: number }> = [];
+        const pickClearLabelPosition = (target: any, rank: number) => {
+          const side = rank % 2 === 0 ? 1 : -1;
+          const lane = Math.floor(rank / 2);
+          const baseOffset = new THREE.Vector3(side * (1.7 + lane * 0.2), 1 + lane * 0.42, 0);
+          const preferred = target.position.clone().add(baseOffset);
+          const candidate = clampPosition(preferred);
+          while (
+            occupiedLabelSpots.some(
+              (spot) => Math.abs(spot.x - candidate.x) < 1.15 && Math.abs(spot.y - candidate.y) < 0.52
+            )
+          ) {
+            candidate.y = Math.min(4.7, candidate.y + 0.42);
+            candidate.x = Math.max(-8.4, Math.min(8.4, candidate.x + side * 0.28));
+          }
+          occupiedLabelSpots.push({ x: candidate.x, y: candidate.y });
+          return {
+            position: new THREE.Vector3(candidate.x, candidate.y, candidate.z),
+            offset: new THREE.Vector3(candidate.x - target.position.x, candidate.y - target.position.y, candidate.z - target.position.z)
+          };
+        };
 
-        step.objects.forEach((obj) => {
+        step.objects.forEach((obj, objIndex) => {
           const mesh = createObjectMesh(obj);
           rootGroup.add(mesh);
           objectMap.set(obj.id, mesh);
@@ -1563,10 +1649,8 @@ export default function App(): JSX.Element {
           if (labelText) {
             const label = createTextSprite(labelText, "#202a37");
             if (label) {
-              const offset = new THREE.Vector3(0, Math.max(0.8, obj.size.y / 1.8 + 0.8), 0);
-              const raw = mesh.position.clone().add(offset);
-              const safe = clampPosition(raw);
-              label.position.set(safe.x, safe.y, safe.z);
+              const placed = pickClearLabelPosition(mesh, objIndex);
+              label.position.copy(placed.position);
               rootGroup.add(label);
               const connector = new THREE.BufferGeometry().setFromPoints([
                 mesh.position.clone(),
@@ -1580,14 +1664,14 @@ export default function App(): JSX.Element {
               labelRuntimes.push({
                 sprite: label,
                 target: mesh,
-                offset,
+                offset: placed.offset,
                 line: connectorLine
               });
             }
           }
         });
 
-        step.labels.forEach((label) => {
+        step.labels.forEach((label, labelIndex) => {
           const sprite = createTextSprite(label.text, label.color ?? "#1f2937");
           if (!sprite) {
             return;
@@ -1596,14 +1680,14 @@ export default function App(): JSX.Element {
           if (label.objectId && objectMap.has(label.objectId)) {
             const target = objectMap.get(label.objectId)!;
             connectorFrom = target;
-            const raw = target.position.clone().add(new THREE.Vector3(0, 1.8, 0));
-            const safe = clampPosition(raw);
-            sprite.position.set(safe.x, safe.y, safe.z);
+            const placed = pickClearLabelPosition(target, step.objects.length + labelIndex);
+            sprite.position.copy(placed.position);
           } else if (label.position) {
             const safe = clampPosition(label.position);
             sprite.position.set(safe.x, safe.y, safe.z);
           } else {
-            sprite.position.set(0, 4.4, 0);
+            const topSafe = clampPosition({ x: 0, y: 4.4 - labelIndex * 0.4, z: 0 });
+            sprite.position.set(topSafe.x, topSafe.y, topSafe.z);
           }
           rootGroup.add(sprite);
           if (connectorFrom) {
@@ -1619,7 +1703,11 @@ export default function App(): JSX.Element {
             labelRuntimes.push({
               sprite,
               target: connectorFrom,
-              offset: new THREE.Vector3(0, 1.8, 0),
+              offset: new THREE.Vector3(
+                sprite.position.x - connectorFrom.position.x,
+                sprite.position.y - connectorFrom.position.y,
+                sprite.position.z - connectorFrom.position.z
+              ),
               line: connectorLine
             });
           }
@@ -1685,6 +1773,7 @@ export default function App(): JSX.Element {
           }
         });
         updateConnections();
+        fitCameraToObjects();
 
         if (step.graph && step.graph.x.length === step.graph.y.length && step.graph.x.length > 1) {
           const graphGroup = new THREE.Group();
@@ -2015,6 +2104,9 @@ export default function App(): JSX.Element {
       if (topicRecognitionRef.current) {
         topicRecognitionRef.current.stop();
       }
+      if (topicSilenceTimerRef.current !== null) {
+        window.clearTimeout(topicSilenceTimerRef.current);
+      }
       clearNarrationTimers();
     };
   }, [clearNarrationTimers]);
@@ -2023,26 +2115,45 @@ export default function App(): JSX.Element {
     <>
       {menuOpen ? <button className="menu-backdrop" onClick={() => setMenuOpen(false)} aria-label="Close menu" /> : null}
       <aside className={menuOpen ? "side-menu open" : "side-menu"}>
-        <section className="side-menu-section">
+        <nav className="side-menu-nav">
+          <button className="ghost menu-option" onClick={goHomeDirect}>
+            Home
+          </button>
           <button className="ghost menu-option" onClick={openProgressPage}>
             Topic Progress
           </button>
-        </section>
-        <section className="side-menu-section">
           <button className="ghost menu-option" onClick={() => void openHistoryPage()}>
             Interaction History
           </button>
-        </section>
-        <section className="side-menu-section">
-          <button
-            className="ghost menu-option"
-            onClick={handleLogout}
-          >
+          <button className="ghost menu-option" onClick={handleLogout}>
             Logout
           </button>
-        </section>
+        </nav>
       </aside>
     </>
+  );
+
+  const quickNavTabs = (
+    <div className="quick-nav-tabs" role="tablist" aria-label="Section navigation">
+      <button
+        className={appView === "home" ? "quick-tab active" : "quick-tab"}
+        onClick={goHomeDirect}
+      >
+        Home
+      </button>
+      <button
+        className={appView === "history-list" || appView === "history-detail" ? "quick-tab active" : "quick-tab"}
+        onClick={() => void openHistoryPage()}
+      >
+        Interaction History
+      </button>
+      <button
+        className={appView === "progress-list" ? "quick-tab active" : "quick-tab"}
+        onClick={openProgressPage}
+      >
+        Topic Progress
+      </button>
+    </div>
   );
 
   const floatingMenuButton = (
@@ -2138,6 +2249,12 @@ export default function App(): JSX.Element {
                 className="topic-input"
                 value={customTopicInput}
                 onChange={(event) => setCustomTopicInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !generatingTopic && customTopicInput.trim()) {
+                    event.preventDefault();
+                    void generateCustomSimulation();
+                  }
+                }}
                 placeholder="e.g. Event sourcing, OAuth 2.0, CPU scheduling"
               />
               <div className="mic-wrap">
@@ -2183,11 +2300,14 @@ export default function App(): JSX.Element {
         {menuPanel}
         <div className="history-content">
           <header className="page-header">
-            <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
-              {"<"}
+            <button className="back-arrow" onClick={navigateBack} aria-label="Go back" title="Go back">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14.7 5.3a1 1 0 0 1 0 1.4L10.41 11H20a1 1 0 1 1 0 2h-9.59l4.3 4.3a1 1 0 0 1-1.42 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.41 0Z" />
+              </svg>
             </button>
             <h1>Interaction History</h1>
           </header>
+          {quickNavTabs}
           <p className="history-description">Select a previous chat to view full details.</p>
           {historyLoading ? <p>Loading interaction history...</p> : null}
           {!historyLoading && chatHistory.length === 0 ? (
@@ -2229,11 +2349,14 @@ export default function App(): JSX.Element {
         {menuPanel}
         <div className="history-content">
           <header className="page-header">
-            <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
-              {"<"}
+            <button className="back-arrow" onClick={navigateBack} aria-label="Go back" title="Go back">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14.7 5.3a1 1 0 0 1 0 1.4L10.41 11H20a1 1 0 1 1 0 2h-9.59l4.3 4.3a1 1 0 0 1-1.42 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.41 0Z" />
+              </svg>
             </button>
             <h1>Chat Detail</h1>
           </header>
+          {quickNavTabs}
           {!selectedHistoryItem ? (
             <div className="history-empty">
               This interaction is no longer available.
@@ -2266,11 +2389,14 @@ export default function App(): JSX.Element {
         {menuPanel}
         <div className="history-content">
           <header className="page-header">
-            <button className="back-arrow" onClick={navigateBack} aria-label="Go back">
-              {"<"}
+            <button className="back-arrow" onClick={navigateBack} aria-label="Go back" title="Go back">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14.7 5.3a1 1 0 0 1 0 1.4L10.41 11H20a1 1 0 1 1 0 2h-9.59l4.3 4.3a1 1 0 0 1-1.42 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.41 0Z" />
+              </svg>
             </button>
             <h1>Topic Progress</h1>
           </header>
+          {quickNavTabs}
           {sortedProgress.length === 0 ? (
             <div className="history-empty">No progress yet. Complete a simulation to track progress.</div>
           ) : (
@@ -2316,6 +2442,16 @@ export default function App(): JSX.Element {
           </div>
           <div className="navbar-actions">
             <button
+              className="nav-icon-btn"
+              onClick={goHomeDirect}
+              aria-label="Go to home"
+              title="Home"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3.2 3 10v10a1 1 0 0 0 1 1h5.5a1 1 0 0 0 1-1v-4h3v4a1 1 0 0 0 1 1H20a1 1 0 0 0 1-1V10L12 3.2ZM5 10.9l7-5.3 7 5.3V19h-3.5v-4a1 1 0 0 0-1-1h-5a1 1 0 0 0-1 1v4H5v-8.1Z" />
+              </svg>
+            </button>
+            <button
               className={chatPanelOpen ? "active nav-icon-btn" : "nav-icon-btn"}
               onClick={() => setChatPanelOpen((value) => !value)}
               aria-label={chatPanelOpen ? "Hide chat panel" : "Show chat panel"}
@@ -2354,8 +2490,15 @@ export default function App(): JSX.Element {
           </div>
           {simulationRendererLoading || generatingTopic ? (
             <div className="simulation-skeleton">
-              <div className="skeleton-line lg" />
-              <div className="skeleton-line md" />
+              <div className="sim-skeleton-shell">
+                <div className="skeleton-line lg" />
+                <div className="skeleton-line md" />
+                <div className="skeleton-box" />
+                <p className="sim-skeleton-text">
+                  Generating your simulation for {simulationLoadingTopic || customTopicInput || "this topic"}... this
+                  may take a few seconds.
+                </p>
+              </div>
             </div>
           ) : null}
           <div className="sim-voice-corner">
@@ -2511,7 +2654,6 @@ export default function App(): JSX.Element {
           </section>
         </aside>
       ) : null}
-      <div className="status-bar">{loading ? "Loading..." : statusMessage}</div>
     </div>
   );
 }

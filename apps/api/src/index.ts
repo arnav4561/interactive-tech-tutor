@@ -22,6 +22,7 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() ?? "";
 const GEMINI_BASE_URL = (
   process.env.GEMINI_BASE_URL?.trim() ?? "https://generativelanguage.googleapis.com/v1beta"
 ).replace(/\/$/, "");
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS ?? 14000);
 const configuredOrigins = (process.env.FRONTEND_ORIGINS ?? "")
   .split(",")
   .map((origin) => origin.trim())
@@ -197,7 +198,7 @@ const llmSimulationSchema = z.object({
   narration: z.array(z.string().min(8).max(700)).min(3).max(14),
   openingMessage: z.string().min(20).max(700),
   explanation_script: z.string().min(40).max(2800),
-  simulation_steps: z.array(simStepSchema).min(6).max(12),
+  simulation_steps: z.array(simStepSchema).length(8),
   problemSets: generatedProblemSetsSchema.optional()
 });
 
@@ -817,7 +818,22 @@ function buildTemplateSimulationSteps(topic: Topic): SimStep[] {
   const palette = paletteByDomain[domain];
 
   const blueprints = stageBlueprints(domain, topic.title, keywords, mathTopic, graphTopic).slice(0, 8);
-  return blueprints.map((stage, stageIndex) => {
+  while (blueprints.length < 8) {
+    const nextIndex = blueprints.length + 1;
+    blueprints.push({
+      concept: `Advanced insight ${nextIndex}`,
+      annotation: `Step ${nextIndex} deepens ${topic.title} with an advanced practical perspective.`,
+      labels: [
+        keywords[(nextIndex + 1) % keywords.length] ?? "signal",
+        keywords[(nextIndex + 2) % keywords.length] ?? "control",
+        keywords[(nextIndex + 3) % keywords.length] ?? "output",
+        `insight-${nextIndex}`
+      ],
+      layout: nextIndex % 2 === 0 ? "layered" : "pipeline"
+    });
+  }
+
+  return blueprints.slice(0, 8).map((stage, stageIndex) => {
     const positions = layoutPositions(stage.layout, stage.labels.length);
     const objects: SimObject[] = stage.labels.map((label, index) => {
       const type = pickObjectType(label, stageIndex + index + seed);
@@ -929,13 +945,13 @@ function normalizeSimulationSteps(rawSteps: SimStep[], fallback: SimStep[], topi
   );
   const domainTerms = DOMAIN_TERMS[domain];
 
-  const base = rawSteps.length > 0 ? rawSteps.slice(0, 12) : fallback.slice(0, 12);
+  const base = rawSteps.length > 0 ? rawSteps.slice(0, 8) : fallback.slice(0, 8);
   const expanded = [...base];
-  while (expanded.length < 6) {
+  while (expanded.length < 8) {
     expanded.push(fallback[expanded.length % fallback.length]);
   }
 
-  return expanded.map((step, index) => {
+  return expanded.slice(0, 8).map((step, index) => {
     const fallbackStep = fallback[index % fallback.length];
     const chosen = stepSpecificityScore(step, topicTerms, domainTerms) >= 3 ? step : fallbackStep;
     const objectIds = new Set(chosen.objects.map((item) => item.id));
@@ -1035,10 +1051,10 @@ async function generateSimulationFromGemini(
   const systemPrompt =
     "You are an expert technical tutor and simulation planner. Return only valid JSON.";
   const userPrompt = `
-You are an expert educator and visualization designer.
-For the topic "${topic}", generate a step by step simulation plan in JSON format.
-Start from the absolute basics a beginner would need to know, and progressively build to a thorough understanding.
-Generate minimum 6 steps.
+You are a world class educator and data visualization expert.
+Explain "${topic}" through a precise step-by-step animated simulation.
+Start from fundamentals for a beginner and build to advanced understanding.
+Generate exactly 8 steps.
 
 Return only valid JSON with this exact top-level structure:
 {
@@ -1060,51 +1076,58 @@ Return only valid JSON with this exact top-level structure:
   "problemSets": [...]
 }
 
-For each simulation step specify:
-- concept being explained
-- exact objects to draw (shape, color, size, position)
-- exact animations (what moves, how, speed, direction)
-- labels with positions
-- explicit connections between objects (fromId, toId, connection type)
-- one sentence annotation
-
 Constraints:
-- Make each step visually distinct and directly illustrative of one concept only.
-- Treat this as a real technical simulation, not abstract art.
-- Use topic-specific labels and ids (avoid generic ids like obj-1, obj-2 unless unavoidable).
-- Ensure visual topology is coherent: connected systems must show connected lines/branches.
-- Keep objects and labels readable and non-overlapping in a bounded scene.
-- Keep all object positions in a coherent bounded scene.
-- Include graph only when topic truly requires data plot representation.
-- Include mathExpressions only when mathematically necessary.
-- problems must match ${level} depth and remain practical.
-- return JSON only, no markdown.
+- Each step teaches exactly one concept and must look visually distinct.
+- For each object provide exact shape, color, size, and position.
+- Position each element as if mapped from canvas percentages and convert to coherent scene coordinates.
+- For each animation provide target object, type, direction, and duration.
+- Labels must be explicitly placed, non-overlapping, and linked to targets.
+- Include explicit connections (fromId,toId,type) for the visual topology.
+- Use specific technical terms for this topic; avoid generic placeholder names.
+- Keep visuals bounded, legible, and professionally organized.
+- Include graph/mathExpressions only when genuinely needed.
+- Problem sets must match ${level} difficulty.
+- Output JSON only, no markdown and no extra text.
 `.trim();
 
-  const response = await fetch(
-    `${GEMINI_BASE_URL}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-    {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      systemInstruction: {
-        parts: [{ text: systemPrompt }]
-      },
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: userPrompt }]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.7,
-        responseMimeType: "application/json"
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(
+      `${GEMINI_BASE_URL}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: systemPrompt }]
+          },
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: userPrompt }]
+            }
+          ],
+          generationConfig: {
+            temperature: 0.45,
+            maxOutputTokens: 4800,
+            responseMimeType: "application/json"
+          }
+        })
       }
-    })
+    );
+  } catch (error) {
+    if ((error as Error).name === "AbortError") {
+      return null;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  );
 
   if (!response.ok) {
     const body = await response.text();
@@ -1181,7 +1204,7 @@ Constraints:
       .map((step) => simStepSchema.safeParse(step))
       .filter((result): result is z.SafeParseSuccess<z.infer<typeof simStepSchema>> => result.success)
       .map((result) => result.data)
-      .slice(0, 12);
+      .slice(0, 8);
     if (validSteps.length > 0) {
       partial.simulation_steps = validSteps;
     }
@@ -1609,37 +1632,31 @@ app.post(
   let openingMessage = `Generated a live simulation plan for ${topic.title}.`;
   let generationSource: "template" | "gemini" = "template";
   const llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
-  if (!llmGenerated) {
-    res.status(503).json({
-      error:
-        "Gemini simulation generation is unavailable. Configure GEMINI_API_KEY and GEMINI_MODEL on the API service."
-    });
-    return;
-  }
-
-  if (llmGenerated.description?.trim()) {
-    topic.description = llmGenerated.description.trim().slice(0, 1400);
-  }
-  const narration = normalizeNarration(llmGenerated.narration ?? []);
-  if (narration.length >= 3) {
-    topic.narration = narration;
-  }
-  if (llmGenerated.explanation_script?.trim()) {
-    explanationScript = llmGenerated.explanation_script.trim().slice(0, 2800);
-  }
-  if ((llmGenerated.simulation_steps ?? []).length > 0) {
-    simulationSteps = normalizeSimulationSteps(
-      llmGenerated.simulation_steps ?? [],
-      fallbackSimulationSteps,
-      requestedTopic
-    );
-  }
-  problemSets = normalizeProblemSets(topic, llmGenerated.problemSets);
-  if (llmGenerated.openingMessage?.trim()) {
-    openingMessage = llmGenerated.openingMessage.trim().slice(0, 700);
-  }
-  if ((llmGenerated.simulation_steps ?? []).length > 0) {
-    generationSource = "gemini";
+  if (llmGenerated) {
+    if (llmGenerated.description?.trim()) {
+      topic.description = llmGenerated.description.trim().slice(0, 1400);
+    }
+    const narration = normalizeNarration(llmGenerated.narration ?? []);
+    if (narration.length >= 3) {
+      topic.narration = narration;
+    }
+    if (llmGenerated.explanation_script?.trim()) {
+      explanationScript = llmGenerated.explanation_script.trim().slice(0, 2800);
+    }
+    if ((llmGenerated.simulation_steps ?? []).length > 0) {
+      simulationSteps = normalizeSimulationSteps(
+        llmGenerated.simulation_steps ?? [],
+        fallbackSimulationSteps,
+        requestedTopic
+      );
+    }
+    problemSets = normalizeProblemSets(topic, llmGenerated.problemSets);
+    if (llmGenerated.openingMessage?.trim()) {
+      openingMessage = llmGenerated.openingMessage.trim().slice(0, 700);
+    }
+    if ((llmGenerated.simulation_steps ?? []).length > 0) {
+      generationSource = "gemini";
+    }
   }
 
   const interaction: InteractionRecord = {
