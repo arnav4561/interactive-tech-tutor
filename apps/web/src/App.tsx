@@ -1237,6 +1237,29 @@ export default function App(): JSX.Element {
   }, [appView, startListening, stopListening, token, voiceCaptureEnabled]);
 
   useEffect(() => {
+    if (appView !== "home") {
+      return;
+    }
+    const onEnterGenerate = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "TEXTAREA" || (target as HTMLInputElement).type === "file")) {
+        return;
+      }
+      if (generatingTopic || !customTopicInput.trim()) {
+        return;
+      }
+      event.preventDefault();
+      void generateCustomSimulation();
+    };
+
+    window.addEventListener("keydown", onEnterGenerate);
+    return () => window.removeEventListener("keydown", onEnterGenerate);
+  }, [appView, customTopicInput, generateCustomSimulation, generatingTopic]);
+
+  useEffect(() => {
     if (!("speechSynthesis" in window)) {
       return;
     }
