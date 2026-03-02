@@ -170,6 +170,7 @@ export default function App(): JSX.Element {
   const [simulationRendererLoading, setSimulationRendererLoading] = useState(false);
   const [simulationLoadingTopic, setSimulationLoadingTopic] = useState("");
   const [simulationLoadingPhase, setSimulationLoadingPhase] = useState(0);
+  const [simulationError, setSimulationError] = useState("");
   const [voiceCommandFlash, setVoiceCommandFlash] = useState("");
 
   const simulationHostRef = useRef<HTMLDivElement | null>(null);
@@ -494,8 +495,9 @@ export default function App(): JSX.Element {
           const localName = localStorage.getItem("itt_name") ?? "";
           setUserName(localName.trim() || localEmail.split("@")[0] || "Learner");
         }
-        setAppView("home");
-        setStatusMessage("Session restored.");
+        if (appViewRef.current !== "simulation") {
+          setStatusMessage("Session restored.");
+        }
       } catch (error) {
         setStatusMessage((error as Error).message);
       } finally {
@@ -573,6 +575,8 @@ export default function App(): JSX.Element {
     if (!token || !requestedTopic) {
       return;
     }
+    pendingSimulationCommandRef.current = null;
+    setSimulationError("");
     if (topicRecognitionRef.current && topicRecognitionActiveRef.current) {
       try {
         topicRecognitionRef.current.stop();
@@ -627,9 +631,12 @@ export default function App(): JSX.Element {
       }
       setStatusMessage("Simulation ready.");
       setCustomTopicInput("");
+      setSimulationError("");
     } catch (error) {
-      setAppView("home");
-      setStatusMessage((error as Error).message);
+      const message = (error as Error).message;
+      setSimulationError(message);
+      setCurrentStepText(`Simulation generation failed: ${message}`);
+      setStatusMessage(message);
     } finally {
       setGeneratingTopic(false);
       const elapsed = Date.now() - simulationLoadStartedAtRef.current;
@@ -964,7 +971,7 @@ export default function App(): JSX.Element {
         return true;
       }
 
-      if (command.includes("go back")) {
+      if (/^go back( home)?$/.test(command.trim())) {
         enqueueSimulationCommand("go-home", "Go Home");
         setStatusMessage("Moved back.");
         return true;
@@ -1006,6 +1013,9 @@ export default function App(): JSX.Element {
     }
 
     recognitionRef.current.onresult = (event: any) => {
+      if (simulationRendererLoading || generatingTopic || !selectedTopicId) {
+        return;
+      }
       const result = event.results[event.results.length - 1];
       const transcript = result?.[0]?.transcript?.trim();
       const confidence = Number(result?.[0]?.confidence ?? 0);
@@ -1075,7 +1085,7 @@ export default function App(): JSX.Element {
       recognitionActiveRef.current = false;
       setStatusMessage(`Unable to start voice capture: ${(error as Error).message}`);
     }
-  }, [appView, flashVoiceCommand, processVoiceCommand, runActionFeedback]);
+  }, [appView, flashVoiceCommand, generatingTopic, processVoiceCommand, runActionFeedback, selectedTopicId, simulationRendererLoading]);
 
   const stopListening = useCallback(() => {
     voiceCaptureDesiredRef.current = false;
@@ -1287,7 +1297,14 @@ export default function App(): JSX.Element {
     if (!token) {
       return;
     }
-    if (appView !== "simulation" || !voiceCaptureEnabled) {
+    if (
+      appView !== "simulation" ||
+      !voiceCaptureEnabled ||
+      simulationRendererLoading ||
+      generatingTopic ||
+      !selectedTopicId ||
+      Boolean(simulationError)
+    ) {
       stopListening();
       return;
     }
@@ -1295,7 +1312,17 @@ export default function App(): JSX.Element {
     return () => {
       stopListening();
     };
-  }, [appView, startListening, stopListening, token, voiceCaptureEnabled]);
+  }, [
+    appView,
+    generatingTopic,
+    selectedTopicId,
+    simulationError,
+    simulationRendererLoading,
+    startListening,
+    stopListening,
+    token,
+    voiceCaptureEnabled
+  ]);
 
   useEffect(() => {
     if (appView !== "simulation" || (!simulationRendererLoading && !generatingTopic)) {
@@ -2557,6 +2584,35 @@ export default function App(): JSX.Element {
                   ))}
                 </div>
               </div>
+            </div>
+          ) : null}
+          {simulationError ? (
+            <div
+              style={{
+                position: "absolute",
+                top: "18px",
+                left: "18px",
+                right: "18px",
+                zIndex: 25,
+                background: "rgba(140, 32, 32, 0.88)",
+                border: "1px solid rgba(255, 205, 205, 0.65)",
+                borderRadius: "12px",
+                padding: "14px 16px",
+                color: "#fff4f4",
+                display: "flex",
+                flexDirection: "column",
+                gap: "10px"
+              }}
+            >
+              <strong>Simulation Generation Failed</strong>
+              <span>{simulationError}</span>
+              <button
+                className="chat-send-btn"
+                onClick={() => void generateCustomSimulation()}
+                style={{ alignSelf: "flex-start" }}
+              >
+                Retry Generation
+              </button>
             </div>
           ) : null}
           <div className="sim-voice-corner">

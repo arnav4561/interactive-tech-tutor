@@ -1248,6 +1248,7 @@ Make colors bright and distinct. Make every animation meaningful and directly il
       }
       throw new Error("Gemini response was empty.");
     }
+    console.log("[Gemini simulation] raw response:", content);
     return extractJsonObject(content);
   };
 
@@ -1273,26 +1274,58 @@ Make colors bright and distinct. Make every animation meaningful and directly il
     return payload;
   };
 
-  const initialPayload = await requestGeminiJson(simulationFormatPrompt);
-  if (!initialPayload) {
-    return null;
+  let rawSteps: unknown[] = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const initialPayload = await requestGeminiJson(simulationFormatPrompt);
+      if (!initialPayload) {
+        return null;
+      }
+
+      const strict = llmSimulationSchema.safeParse(initialPayload);
+      console.log(
+        `[Gemini simulation] top-level JSON parse ${strict.success ? "succeeded" : "failed"} on attempt ${attempt}`
+      );
+      if (!strict.success) {
+        console.log(
+          `[Gemini simulation] top-level parse issue: ${strict.error.issues[0]?.message ?? "Unknown issue"}`
+        );
+      }
+
+      rawSteps = strict.success
+        ? strict.data.steps
+        : Array.isArray((initialPayload as { steps?: unknown[] }).steps)
+          ? (initialPayload as { steps: unknown[] }).steps
+          : [];
+
+      if (rawSteps.length === 0) {
+        throw new Error(
+          `Gemini JSON validation failed: ${strict.success ? "Missing steps" : strict.error.issues[0]?.message}`
+        );
+      }
+      break;
+    } catch (error) {
+      const message = (error as Error).message;
+      if (attempt >= 2) {
+        throw error;
+      }
+      console.warn(
+        `[Gemini simulation] invalid or unparsable JSON on attempt ${attempt}. Retrying once. Reason: ${message}`
+      );
+    }
   }
 
-  const strict = llmSimulationSchema.safeParse(initialPayload);
-  const rawSteps: unknown[] = strict.success
-    ? strict.data.steps
-    : Array.isArray((initialPayload as { steps?: unknown[] }).steps)
-      ? (initialPayload as { steps: unknown[] }).steps
-      : [];
-
   if (rawSteps.length === 0) {
-    throw new Error(`Gemini JSON validation failed: ${strict.success ? "Missing steps" : strict.error.issues[0]?.message}`);
+    throw new Error("Gemini JSON validation failed: Missing steps");
   }
 
   const validSteps: GeminiCanvasStep[] = [];
   for (let index = 0; index < rawSteps.length; index += 1) {
     let stepCandidate: unknown = rawSteps[index];
     let parsedStep = simCanvasStepSchema.safeParse(stepCandidate);
+    console.log(
+      `[Gemini simulation] step ${index + 1} parse ${parsedStep.success ? "succeeded" : "failed"}`
+    );
 
     let retryCount = 0;
     while (!parsedStep.success && retryCount < 2) {
@@ -1304,6 +1337,9 @@ Make colors bright and distinct. Make every animation meaningful and directly il
       }
       stepCandidate = pickRetryStepPayload(retryPayload, index + 1);
       parsedStep = simCanvasStepSchema.safeParse(stepCandidate);
+      console.log(
+        `[Gemini simulation] step ${index + 1} parse retry ${retryCount} ${parsedStep.success ? "succeeded" : "failed"}`
+      );
     }
 
     if (parsedStep.success) {
@@ -1719,7 +1755,15 @@ app.post(
   let simulationSteps: GeminiCanvasStep[] = [];
   let openingMessage = `Generated a live simulation plan for ${topic.title}.`;
   let generationSource: "template" | "gemini" = "gemini";
-  const llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
+  let llmGenerated: GeminiSimulationPayload | null = null;
+  try {
+    llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
+  } catch (error) {
+    res.status(502).json({
+      error: `Gemini simulation error: ${(error as Error).message}`
+    });
+    return;
+  }
   if (!llmGenerated || llmGenerated.steps.length === 0) {
     res.status(502).json({ error: "Simulation generation failed. Gemini did not return valid steps." });
     return;
