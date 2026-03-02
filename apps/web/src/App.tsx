@@ -115,6 +115,7 @@ export default function App(): JSX.Element {
   const [topicListening, setTopicListening] = useState(false);
   const [simulationRendererLoading, setSimulationRendererLoading] = useState(false);
   const [simulationLoadingTopic, setSimulationLoadingTopic] = useState("");
+  const [simulationLoadingPhase, setSimulationLoadingPhase] = useState(0);
   const [voiceCommandFlash, setVoiceCommandFlash] = useState("");
 
   const simulationHostRef = useRef<HTMLDivElement | null>(null);
@@ -185,6 +186,11 @@ export default function App(): JSX.Element {
     }
     return generatedSimulations[selectedTopic.id] ?? null;
   }, [generatedSimulations, selectedTopic]);
+
+  const simulationLoadingSteps = useMemo(
+    () => ["Collecting topic context", "Planning simulation steps", "Rendering scene and labels", "Finalizing interactions"],
+    []
+  );
 
   const sortedProgress = useMemo(
     () =>
@@ -1235,6 +1241,17 @@ export default function App(): JSX.Element {
       stopListening();
     };
   }, [appView, startListening, stopListening, token, voiceCaptureEnabled]);
+
+  useEffect(() => {
+    if (appView !== "simulation" || (!simulationRendererLoading && !generatingTopic)) {
+      setSimulationLoadingPhase(0);
+      return;
+    }
+    const timerId = window.setInterval(() => {
+      setSimulationLoadingPhase((current) => (current + 1) % simulationLoadingSteps.length);
+    }, 1200);
+    return () => window.clearInterval(timerId);
+  }, [appView, generatingTopic, simulationLoadingSteps.length, simulationRendererLoading]);
 
   useEffect(() => {
     if (appView !== "home") {
@@ -2544,6 +2561,16 @@ export default function App(): JSX.Element {
           {simulationRendererLoading || generatingTopic ? (
             <div className="simulation-skeleton">
               <div className="sim-skeleton-shell">
+                <div className="sim-buffering-row">
+                  <div className="sim-buffer-ring" aria-hidden="true">
+                    <div className="sim-buffer-core" />
+                  </div>
+                  <div className="sim-buffer-dots" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </div>
                 <div className="skeleton-line lg" />
                 <div className="skeleton-line md" />
                 <div className="skeleton-box" />
@@ -2551,6 +2578,16 @@ export default function App(): JSX.Element {
                   Generating your simulation for {simulationLoadingTopic || customTopicInput || "this topic"}... this
                   may take a few seconds.
                 </p>
+                <div className="sim-loading-steps">
+                  {simulationLoadingSteps.map((step, index) => (
+                    <div
+                      key={step}
+                      className={index <= simulationLoadingPhase ? "sim-loading-step active" : "sim-loading-step"}
+                    >
+                      {step}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           ) : null}

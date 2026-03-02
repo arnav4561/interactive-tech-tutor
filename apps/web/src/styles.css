@@ -979,6 +979,74 @@ textarea {
   letter-spacing: 0.2px;
 }
 
+.sim-buffering-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.sim-buffer-ring {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 3px solid rgba(117, 169, 255, 0.35);
+  border-top-color: #00d4ff;
+  animation: bufferSpin 1s linear infinite;
+  display: grid;
+  place-items: center;
+}
+
+.sim-buffer-core {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #00d4ff, #8b5cf6);
+  box-shadow: 0 0 14px rgba(72, 170, 255, 0.6);
+}
+
+.sim-buffer-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sim-buffer-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9dc7ff;
+  animation: dotPulse 1.1s ease-in-out infinite;
+}
+
+.sim-buffer-dots span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.sim-buffer-dots span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+.sim-loading-steps {
+  display: grid;
+  gap: 7px;
+}
+
+.sim-loading-step {
+  border: 1px solid rgba(154, 188, 245, 0.24);
+  border-radius: 10px;
+  color: #a5c3eb;
+  font-size: 0.86rem;
+  padding: 7px 10px;
+  background: rgba(29, 44, 72, 0.5);
+}
+
+.sim-loading-step.active {
+  color: #e5f2ff;
+  border-color: rgba(0, 212, 255, 0.45);
+  background: linear-gradient(145deg, rgba(20, 52, 90, 0.72), rgba(50, 35, 98, 0.6));
+}
+
 .status-bar {
   display: none !important;
 }
@@ -1069,6 +1137,26 @@ textarea {
   }
   50% {
     transform: scale(1.01);
+    opacity: 1;
+  }
+}
+
+@keyframes bufferSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes dotPulse {
+  0%, 100% {
+    transform: scale(0.75);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.05);
     opacity: 1;
   }
 }
