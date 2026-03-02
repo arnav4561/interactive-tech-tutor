@@ -22,7 +22,7 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() ?? "";
 const GEMINI_BASE_URL = (
   process.env.GEMINI_BASE_URL?.trim() ?? "https://generativelanguage.googleapis.com/v1beta"
 ).replace(/\/$/, "");
-const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS ?? 14000);
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS ?? 30000);
 const configuredOrigins = (process.env.FRONTEND_ORIGINS ?? "")
   .split(",")
   .map((origin) => origin.trim())
@@ -263,6 +263,9 @@ type GeminiSimulationPayload = {
 
 type SimStep = z.infer<typeof simStepSchema>;
 type GeminiCanvasStep = z.infer<typeof simCanvasStepSchema>;
+type GeminiCanvasElement = z.infer<typeof simCanvasElementSchema>;
+type CanvasElementType = z.infer<typeof simCanvasElementTypeSchema>;
+type CanvasAnimationType = z.infer<typeof simCanvasAnimationTypeSchema>;
 type SimObject = z.infer<typeof simObjectSchema>;
 type SimConnection = z.infer<typeof simConnectionSchema>;
 type SceneLayout = "pipeline" | "tree" | "layered" | "hub" | "timeline";
@@ -409,6 +412,343 @@ function extractJsonObject(raw: string): unknown {
     }
     return JSON.parse(fenced.slice(firstBrace, lastBrace + 1)) as unknown;
   }
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asText(value: unknown): string {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "";
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function toPercent(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return clamp(value, 0, 100);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value.replace("%", "").trim());
+    if (Number.isFinite(parsed)) {
+      return clamp(parsed, 0, 100);
+    }
+  }
+  return clamp(fallback, 0, 100);
+}
+
+function toDurationMs(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return clamp(Math.round(value), 100, 10000);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value.trim());
+    if (Number.isFinite(parsed)) {
+      return clamp(Math.round(parsed), 100, 10000);
+    }
+  }
+  return clamp(Math.round(fallback), 100, 10000);
+}
+
+const NAMED_COLOR_MAP: Record<string, string> = {
+  red: "#ef4444",
+  blue: "#3b82f6",
+  green: "#22c55e",
+  yellow: "#eab308",
+  orange: "#f97316",
+  purple: "#8b5cf6",
+  pink: "#ec4899",
+  cyan: "#06b6d4",
+  white: "#ffffff",
+  black: "#111827",
+  gray: "#9ca3af",
+  grey: "#9ca3af"
+};
+
+function normalizeHexColor(value: unknown, fallback: string): string {
+  const text = asText(value).toLowerCase();
+  if (!text) {
+    return fallback;
+  }
+  if (/^#[0-9a-f]{6}$/.test(text)) {
+    return text;
+  }
+  if (/^#[0-9a-f]{3}$/.test(text)) {
+    const expanded = text
+      .slice(1)
+      .split("")
+      .map((char) => `${char}${char}`)
+      .join("");
+    return `#${expanded}`;
+  }
+  if (text in NAMED_COLOR_MAP) {
+    return NAMED_COLOR_MAP[text];
+  }
+  return fallback;
+}
+
+function normalizeLabelPosition(value: unknown): "above" | "below" | "left" | "right" {
+  const normalized = asText(value).toLowerCase();
+  if (normalized === "below" || normalized === "left" || normalized === "right") {
+    return normalized;
+  }
+  return "above";
+}
+
+const ELEMENT_TYPE_ALIASES: Record<string, CanvasElementType> = {
+  rectangle: "rectangle",
+  rect: "rectangle",
+  box: "rectangle",
+  square: "rectangle",
+  circle: "circle",
+  node: "circle",
+  ellipse: "ellipse",
+  oval: "ellipse",
+  triangle: "triangle",
+  arrow: "arrow",
+  "curved arrow": "curved arrow",
+  "curved-arrow": "curved arrow",
+  curved_arrow: "curved arrow",
+  line: "line",
+  "dashed line": "dashed line",
+  "dashed-line": "dashed line",
+  dashed_line: "dashed line",
+  text: "text",
+  label: "text",
+  path: "path",
+  polygon: "polygon",
+  grid: "grid",
+  axis: "axis",
+  axes: "axis",
+  "plot point": "plot point",
+  "plot-point": "plot point",
+  plot_point: "plot point",
+  point: "plot point",
+  wave: "wave",
+  pulse: "pulse",
+  "highlight box": "highlight box",
+  "highlight-box": "highlight box",
+  highlight_box: "highlight box"
+};
+
+function normalizeElementType(value: unknown): CanvasElementType {
+  const normalized = asText(value).toLowerCase().replace(/\s+/g, " ").trim();
+  if (normalized in ELEMENT_TYPE_ALIASES) {
+    return ELEMENT_TYPE_ALIASES[normalized];
+  }
+  return "rectangle";
+}
+
+const ANIMATION_TYPE_ALIASES: Record<string, CanvasAnimationType> = {
+  fade_in: "fade_in",
+  fadein: "fade_in",
+  move: "move",
+  draw: "draw",
+  pulse: "pulse",
+  rotate: "rotate",
+  spin: "rotate",
+  scale: "scale",
+  highlight: "highlight",
+  none: "none"
+};
+
+function normalizeAnimationType(value: unknown): CanvasAnimationType {
+  const normalized = asText(value).toLowerCase().replace(/\s+/g, "_");
+  if (normalized in ANIMATION_TYPE_ALIASES) {
+    return ANIMATION_TYPE_ALIASES[normalized];
+  }
+  return "none";
+}
+
+function defaultElementSize(type: CanvasElementType): { width: number; height: number } {
+  if (type === "line" || type === "dashed line" || type === "arrow" || type === "curved arrow") {
+    return { width: 18, height: 2 };
+  }
+  if (type === "text") {
+    return { width: 24, height: 4 };
+  }
+  if (type === "axis" || type === "path" || type === "wave") {
+    return { width: 26, height: 8 };
+  }
+  if (type === "grid") {
+    return { width: 38, height: 28 };
+  }
+  if (type === "plot point" || type === "pulse") {
+    return { width: 4, height: 4 };
+  }
+  return { width: 12, height: 10 };
+}
+
+function normalizeCanvasElement(
+  candidate: unknown,
+  index: number,
+  fallbackText: string
+): GeminiCanvasElement | null {
+  if (typeof candidate === "string") {
+    const label = candidate.trim().slice(0, 180);
+    if (!label) {
+      return null;
+    }
+    return {
+      type: "text",
+      x: 50,
+      y: clamp(20 + index * 8, 8, 92),
+      width: 30,
+      height: 4,
+      color: "#00d4ff",
+      label,
+      label_position: "above",
+      animation: {
+        type: "fade_in",
+        duration: 800,
+        direction: "none",
+        represents: fallbackText.slice(0, 240)
+      }
+    };
+  }
+
+  const raw = asObject(candidate);
+  if (!raw) {
+    return null;
+  }
+
+  const type = normalizeElementType(raw.type);
+  const sizeDefaults = defaultElementSize(type);
+  const label = (
+    asText(raw.label) ||
+    asText(raw.text) ||
+    asText(raw.name) ||
+    `${type.replace(/\s+/g, " ")} ${index + 1}`
+  )
+    .trim()
+    .slice(0, 180);
+  const rawAnimation = asObject(raw.animation) ?? {};
+  const animationType = normalizeAnimationType(rawAnimation.type);
+  const animationDirection = asText(rawAnimation.direction) || "none";
+  const animationRepresents =
+    asText(rawAnimation.represents) ||
+    asText(rawAnimation.description) ||
+    `${label} appearing to explain ${fallbackText}`.slice(0, 240);
+
+  return {
+    type,
+    x: toPercent(raw.x ?? raw.cx ?? raw.left, 50),
+    y: toPercent(raw.y ?? raw.cy ?? raw.top, 50),
+    width: toPercent(raw.width ?? raw.w, sizeDefaults.width),
+    height: toPercent(raw.height ?? raw.h, sizeDefaults.height),
+    color: normalizeHexColor(raw.color, "#00d4ff"),
+    label: label || `Element ${index + 1}`,
+    label_position: normalizeLabelPosition(raw.label_position ?? raw.labelPosition),
+    animation: {
+      type: animationType,
+      duration: toDurationMs(rawAnimation.duration, 1000),
+      direction: animationDirection.slice(0, 80),
+      represents: animationRepresents.slice(0, 240)
+    }
+  };
+}
+
+function extractStepCandidates(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  const root = asObject(payload);
+  if (!root) {
+    return [];
+  }
+  const direct = root.steps ?? root.simulation_steps ?? root.simulationSteps ?? root.data;
+  if (Array.isArray(direct)) {
+    return direct;
+  }
+  const directObject = asObject(direct);
+  if (directObject && Array.isArray(directObject.steps)) {
+    return directObject.steps;
+  }
+  if (Array.isArray(root.plan)) {
+    return root.plan;
+  }
+  const planObject = asObject(root.plan);
+  if (planObject && Array.isArray(planObject.steps)) {
+    return planObject.steps;
+  }
+  if (typeof root.step === "number") {
+    return [root];
+  }
+  return [];
+}
+
+function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasStep | null {
+  const raw = asObject(candidate);
+  if (!raw) {
+    return null;
+  }
+
+  const stepValue = Number.parseInt(asText(raw.step), 10);
+  const step = Number.isFinite(stepValue) ? clamp(stepValue, 1, 120) : clamp(index + 1, 1, 120);
+  const concept = (asText(raw.concept) || asText(raw.title) || `Step ${step}`).slice(0, 220);
+  const subtitle = (
+    asText(raw.subtitle) ||
+    asText(raw.annotation) ||
+    asText(raw.explanation) ||
+    `Explaining ${concept}.`
+  ).slice(0, 400);
+
+  const canvasInstructions = asObject(raw.canvas_instructions) ?? asObject(raw.canvasInstructions);
+  const elementsSource =
+    (canvasInstructions && Array.isArray(canvasInstructions.elements) ? canvasInstructions.elements : null) ??
+    (Array.isArray(raw.elements) ? raw.elements : null) ??
+    (Array.isArray(raw.objects) ? raw.objects : null) ??
+    [];
+
+  const elements = elementsSource
+    .map((item, itemIndex) => normalizeCanvasElement(item, itemIndex, subtitle))
+    .filter((item): item is GeminiCanvasElement => Boolean(item));
+
+  if (elements.length === 0) {
+    const fallback = normalizeCanvasElement(
+      {
+        type: "text",
+        x: 50,
+        y: 50,
+        width: 34,
+        height: 6,
+        color: "#8b5cf6",
+        label: subtitle.slice(0, 120),
+        label_position: "above",
+        animation: {
+          type: "fade_in",
+          duration: 900,
+          direction: "none",
+          represents: subtitle
+        }
+      },
+      0,
+      subtitle
+    );
+    if (fallback) {
+      elements.push(fallback);
+    }
+  }
+
+  return {
+    step,
+    concept,
+    subtitle,
+    canvas_instructions: {
+      elements
+    }
+  };
 }
 
 function normalizeNarration(lines: string[]): string[] {
@@ -1094,9 +1434,9 @@ function normalizeProblemSets(
 async function generateSimulationFromGemini(
   topic: string,
   level: DifficultyLevel
-): Promise<GeminiSimulationPayload | null> {
+): Promise<GeminiSimulationPayload> {
   if (!GEMINI_API_KEY || !GEMINI_MODEL) {
-    return null;
+    throw new Error("Gemini is not configured. Missing GEMINI_API_KEY or GEMINI_MODEL.");
   }
 
   void level;
@@ -1219,7 +1559,7 @@ Make colors bright and distinct. Make every animation meaningful and directly il
       );
     } catch (error) {
       if ((error as Error).name === "AbortError") {
-        return null;
+        throw new Error(`Gemini request timed out after ${GEMINI_TIMEOUT_MS}ms.`);
       }
       throw error;
     } finally {
@@ -1278,10 +1618,6 @@ Make colors bright and distinct. Make every animation meaningful and directly il
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
       const initialPayload = await requestGeminiJson(simulationFormatPrompt);
-      if (!initialPayload) {
-        return null;
-      }
-
       const strict = llmSimulationSchema.safeParse(initialPayload);
       console.log(
         `[Gemini simulation] top-level JSON parse ${strict.success ? "succeeded" : "failed"} on attempt ${attempt}`
@@ -1292,11 +1628,7 @@ Make colors bright and distinct. Make every animation meaningful and directly il
         );
       }
 
-      rawSteps = strict.success
-        ? strict.data.steps
-        : Array.isArray((initialPayload as { steps?: unknown[] }).steps)
-          ? (initialPayload as { steps: unknown[] }).steps
-          : [];
+      rawSteps = strict.success ? strict.data.steps : extractStepCandidates(initialPayload);
 
       if (rawSteps.length === 0) {
         throw new Error(
@@ -1322,7 +1654,7 @@ Make colors bright and distinct. Make every animation meaningful and directly il
   const validSteps: GeminiCanvasStep[] = [];
   for (let index = 0; index < rawSteps.length; index += 1) {
     let stepCandidate: unknown = rawSteps[index];
-    let parsedStep = simCanvasStepSchema.safeParse(stepCandidate);
+    let parsedStep = simCanvasStepSchema.safeParse(normalizeCanvasStep(stepCandidate, index));
     console.log(
       `[Gemini simulation] step ${index + 1} parse ${parsedStep.success ? "succeeded" : "failed"}`
     );
@@ -1332,11 +1664,8 @@ Make colors bright and distinct. Make every animation meaningful and directly il
       retryCount += 1;
       const retryPrompt = `Your previous response for step [${index + 1}] was incomplete. Please regenerate only that step with complete valid JSON following the same format.`;
       const retryPayload = await requestGeminiJson(retryPrompt);
-      if (!retryPayload) {
-        break;
-      }
       stepCandidate = pickRetryStepPayload(retryPayload, index + 1);
-      parsedStep = simCanvasStepSchema.safeParse(stepCandidate);
+      parsedStep = simCanvasStepSchema.safeParse(normalizeCanvasStep(stepCandidate, index));
       console.log(
         `[Gemini simulation] step ${index + 1} parse retry ${retryCount} ${parsedStep.success ? "succeeded" : "failed"}`
       );
@@ -1352,6 +1681,180 @@ Make colors bright and distinct. Make every animation meaningful and directly il
   }
 
   return { steps: validSteps };
+}
+
+function toCanvasPercentX(x: number): number {
+  return clamp(((x + 8) / 16) * 100, 6, 94);
+}
+
+function toCanvasPercentY(y: number): number {
+  return clamp(((5 - y) / 10) * 100, 8, 92);
+}
+
+function mapObjectTypeToCanvasType(type: SimObject["type"]): CanvasElementType {
+  if (type === "box" || type === "plane") {
+    return "rectangle";
+  }
+  if (type === "sphere") {
+    return "circle";
+  }
+  if (type === "cylinder") {
+    return "ellipse";
+  }
+  if (type === "cone") {
+    return "triangle";
+  }
+  if (type === "line") {
+    return "line";
+  }
+  if (type === "arrow") {
+    return "arrow";
+  }
+  if (type === "text") {
+    return "text";
+  }
+  return "pulse";
+}
+
+function mapMovementToAnimation(movement: SimStep["movements"][number] | undefined): GeminiCanvasElement["animation"] {
+  if (!movement) {
+    return {
+      type: "fade_in",
+      duration: 900,
+      direction: "none",
+      represents: "introduces this concept element"
+    };
+  }
+  if (movement.type === "translate") {
+    return {
+      type: "move",
+      duration: clamp(Math.round(movement.durationMs ?? 1100), 200, 10000),
+      direction: "left_to_right",
+      represents: "shows state progression through the process"
+    };
+  }
+  if (movement.type === "rotate") {
+    return {
+      type: "rotate",
+      duration: clamp(Math.round(movement.durationMs ?? 1300), 200, 10000),
+      direction: "clockwise",
+      represents: "shows iterative transformation"
+    };
+  }
+  if (movement.type === "scale") {
+    return {
+      type: "scale",
+      duration: clamp(Math.round(movement.durationMs ?? 1000), 200, 10000),
+      direction: "outward",
+      represents: "shows magnitude change"
+    };
+  }
+  if (movement.type === "pulse") {
+    return {
+      type: "pulse",
+      duration: clamp(Math.round(movement.durationMs ?? 900), 200, 10000),
+      direction: "none",
+      represents: "highlights an active step"
+    };
+  }
+  return {
+    type: "fade_in",
+    duration: 900,
+    direction: "none",
+    represents: "introduces this concept element"
+  };
+}
+
+function convertTemplateToCanvasSteps(topic: Topic): GeminiCanvasStep[] {
+  const templateBase = buildTemplateSimulationSteps(topic);
+  const templateSteps = normalizeSimulationSteps(templateBase, templateBase, topic.title);
+
+  return templateSteps.map((step, stepIndex) => {
+    const movementByObject = new Map(step.movements.map((movement) => [movement.objectId, movement]));
+    const objectById = new Map(step.objects.map((item) => [item.id, item]));
+
+    const elements: GeminiCanvasElement[] = step.objects.map((object, objectIndex) => {
+      const movement = movementByObject.get(object.id);
+      return {
+        type: mapObjectTypeToCanvasType(object.type),
+        x: toCanvasPercentX(object.position.x),
+        y: toCanvasPercentY(object.position.y),
+        width: clamp(Math.round(object.size.x * 8), 4, 24),
+        height: clamp(Math.round(object.size.y * 8), 3, 24),
+        color: normalizeHexColor(object.color, "#00d4ff"),
+        label: (object.label || object.id || `Element ${objectIndex + 1}`).slice(0, 180),
+        label_position: "above",
+        animation: mapMovementToAnimation(movement)
+      };
+    });
+
+    step.connections.forEach((connection, connectionIndex) => {
+      const from = objectById.get(connection.fromId);
+      const to = objectById.get(connection.toId);
+      if (!from || !to) {
+        return;
+      }
+      const x1 = toCanvasPercentX(from.position.x);
+      const y1 = toCanvasPercentY(from.position.y);
+      const x2 = toCanvasPercentX(to.position.x);
+      const y2 = toCanvasPercentY(to.position.y);
+      elements.push({
+        type: connection.type === "dashed" ? "dashed line" : connection.type === "arrow" ? "arrow" : "line",
+        x: Number(((x1 + x2) / 2).toFixed(2)),
+        y: Number(((y1 + y2) / 2).toFixed(2)),
+        width: clamp(Math.abs(x2 - x1), 4, 50),
+        height: clamp(Math.abs(y2 - y1) || 1.4, 1, 24),
+        color: normalizeHexColor(connection.color, "#93c5fd"),
+        label: (connection.label || `Flow ${connectionIndex + 1}`).slice(0, 180),
+        label_position: "above",
+        animation: {
+          type: "draw",
+          duration: 900 + connectionIndex * 110,
+          direction: "left_to_right",
+          represents: "shows relation between connected elements"
+        }
+      });
+    });
+
+    const normalizedStep = simCanvasStepSchema.safeParse({
+      step: stepIndex + 1,
+      concept: step.concept || `Step ${stepIndex + 1}`,
+      subtitle: step.annotation,
+      canvas_instructions: {
+        elements: elements.slice(0, 220)
+      }
+    });
+
+    if (normalizedStep.success) {
+      return normalizedStep.data;
+    }
+
+    return {
+      step: stepIndex + 1,
+      concept: (step.concept || `Step ${stepIndex + 1}`).slice(0, 220),
+      subtitle: step.annotation.slice(0, 400),
+      canvas_instructions: {
+        elements: [
+          {
+            type: "text",
+            x: 50,
+            y: 50,
+            width: 30,
+            height: 6,
+            color: "#00d4ff",
+            label: step.annotation.slice(0, 160),
+            label_position: "above",
+            animation: {
+              type: "fade_in",
+              duration: 900,
+              direction: "none",
+              represents: "fallback annotation display"
+            }
+          }
+        ]
+      }
+    };
+  });
 }
 
 async function generateChatReplyFromGemini(
@@ -1755,20 +2258,21 @@ app.post(
   let simulationSteps: GeminiCanvasStep[] = [];
   let openingMessage = `Generated a live simulation plan for ${topic.title}.`;
   let generationSource: "template" | "gemini" = "gemini";
-  let llmGenerated: GeminiSimulationPayload | null = null;
+  let geminiError = "";
   try {
-    llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
+    const llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
+    simulationSteps = llmGenerated.steps;
   } catch (error) {
-    res.status(502).json({
-      error: `Gemini simulation error: ${(error as Error).message}`
-    });
-    return;
+    geminiError = (error as Error).message;
+    console.error("[Simulation] Gemini generation failed, falling back to template:", geminiError);
   }
-  if (!llmGenerated || llmGenerated.steps.length === 0) {
-    res.status(502).json({ error: "Simulation generation failed. Gemini did not return valid steps." });
-    return;
+  if (simulationSteps.length === 0) {
+    generationSource = "template";
+    simulationSteps = convertTemplateToCanvasSteps(topic);
+    openingMessage = geminiError
+      ? `Generated with template fallback because Gemini failed: ${geminiError.slice(0, 120)}`
+      : `Generated with template fallback for ${topic.title}.`;
   }
-  simulationSteps = llmGenerated.steps;
   const narration = normalizeNarration(simulationSteps.map((step) => step.subtitle));
   if (narration.length > 0) {
     topic.narration = narration;
