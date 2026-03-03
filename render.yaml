@@ -24,3 +24,13 @@ services:
         fromDatabase:
           name: interactive-tech-tutor-db
           property: connectionString
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_BEDROCK_REGION
+        value: us-west-2
+      - key: AWS_S3_BUCKET
+        value: interactive-tech-tutor-cache
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false

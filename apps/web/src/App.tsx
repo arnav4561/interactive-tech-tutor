@@ -114,7 +114,7 @@ interface SimulationGenerationApiResponse {
   topic: Topic;
   problemSets: ProblemSet[];
   openingMessage: string;
-  generationSource?: "template" | "gemini";
+  generationSource?: "template" | "bedrock";
   explanation_script: string;
   simulation_steps: SimulationCanvasStep[];
 }
@@ -122,7 +122,7 @@ interface SimulationGenerationApiResponse {
 interface GeneratedSimulation {
   explanationScript: string;
   steps: SimulationCanvasStep[];
-  generationSource: "template" | "gemini";
+  generationSource: "template" | "bedrock";
 }
 
 function defaultPreferences(): UserPreferences {
@@ -641,7 +641,7 @@ export default function App(): JSX.Element {
         [response.topic.id]: {
           explanationScript: response.explanation_script,
           steps: response.simulation_steps,
-          generationSource: response.generationSource === "gemini" ? "gemini" : "template"
+          generationSource: response.generationSource === "template" ? "template" : "bedrock"
         }
       }));
       console.log(

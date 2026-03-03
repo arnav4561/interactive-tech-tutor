@@ -1,6 +1,11 @@
+import dotenv from "dotenv";
+dotenv.config();
 import { randomUUID } from "node:crypto";
 import cors from "cors";
 import express from "express";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
+import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { z } from "zod";
 import { authMiddleware, AuthenticatedRequest, createToken, hashPassword } from "./auth.js";
 import { LEVELS, PROBLEM_SETS, TOPICS } from "./seed.js";
@@ -36,6 +41,28 @@ const allowedOrigins = new Set([
 ]);
 const SIMULATION_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const SIMULATION_CACHE_SCHEMA_VERSION = "canvas-json-v3";
+const bedrockRegion = process.env.AWS_BEDROCK_REGION?.trim() || process.env.AWS_REGION?.trim() || "us-west-2";
+const bedrockClient = new BedrockRuntimeClient({
+  region: bedrockRegion,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!
+  },
+  requestHandler: new NodeHttpHandler({
+    connectionTimeout: 60000,
+    requestTimeout: 60000
+  })
+});
+
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION || "us-east-1",
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!
+  }
+});
+
+const S3_BUCKET = process.env.AWS_S3_BUCKET || "interactive-tech-tutor-cache";
 const simulationResponseCache = new Map<
   string,
   {
@@ -44,7 +71,7 @@ const simulationResponseCache = new Map<
       topic: Topic;
       problemSets: ProblemSet[];
       openingMessage: string;
-      generationSource: "template" | "gemini";
+      generationSource: "template" | "bedrock";
       explanation_script: string;
       simulation_steps: unknown[];
     };
@@ -74,6 +101,78 @@ function asyncHandler(
   return (req, res, next) => {
     void handler(req, res, next).catch(next);
   };
+}
+
+async function requestBedrockJson(prompt: string, topicKey?: string) {
+  // Check S3 cache first if topic key provided
+  if (topicKey) {
+    try {
+      const cacheKey = `simulations/${topicKey.toLowerCase().replace(/\s+/g, "-")}.json`;
+      const s3Response = await s3Client.send(
+        new GetObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: cacheKey
+        })
+      );
+      const cached = await s3Response.Body?.transformToString();
+      if (cached) {
+        console.log(`Cache hit for topic: ${topicKey}`);
+        return JSON.parse(cached);
+      }
+    } catch (_error) {
+      console.log("No cache found, calling Bedrock...");
+    }
+  }
+
+  // Call Bedrock
+  const body = JSON.stringify({
+    anthropic_version: "bedrock-2023-05-31",
+    max_tokens: 4000,
+    messages: [{ role: "user", content: prompt }]
+  });
+  const command = new InvokeModelCommand({
+    modelId: "anthropic.claude-3-sonnet-20240229-v1:0",
+    contentType: "application/json",
+    accept: "application/json",
+    body
+  });
+
+  let response;
+  try {
+    response = await bedrockClient.send(command);
+  } catch (error) {
+    console.error("[Bedrock invoke failed]", {
+      region: bedrockRegion,
+      modelId: "anthropic.claude-3-sonnet-20240229-v1:0",
+      error
+    });
+    throw error;
+  }
+  const responseBody = JSON.parse(new TextDecoder().decode(response.body as Uint8Array));
+  const text = responseBody.content?.[0]?.text ?? "";
+  console.log("[Bedrock raw response text]", text);
+  const clean = String(text).replace(/```json|```/g, "").trim();
+  const parsed = JSON.parse(clean);
+
+  // Save to S3 cache if topic key provided
+  if (topicKey) {
+    try {
+      const cacheKey = `simulations/${topicKey.toLowerCase().replace(/\s+/g, "-")}.json`;
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: cacheKey,
+          Body: JSON.stringify(parsed),
+          ContentType: "application/json"
+        })
+      );
+      console.log(`Cached simulation for topic: ${topicKey}`);
+    } catch (e) {
+      console.log("S3 cache save failed, continuing anyway:", e);
+    }
+  }
+
+  return parsed;
 }
 
 const registerSchema = z.object({
@@ -1498,8 +1597,10 @@ async function generateSimulationFromGemini(
   topic: string,
   level: DifficultyLevel
 ): Promise<GeminiSimulationPayload> {
-  if (!GEMINI_API_KEY || !GEMINI_MODEL) {
-    throw new Error("Gemini is not configured. Missing GEMINI_API_KEY or GEMINI_MODEL.");
+  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+    throw new Error(
+      "Bedrock is not configured. Missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY."
+    );
   }
 
   void level;
@@ -1548,69 +1649,8 @@ Choose element types that are semantically correct for the topic — a confusion
   const systemPrompt = "Return only valid JSON with no markdown and no prose.";
 
   const requestGeminiJson = async (prompt: string): Promise<unknown> => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
-    let response: Response;
-    try {
-      response = await fetch(
-        `${GEMINI_BASE_URL}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: systemPrompt }]
-            },
-            contents: [
-              {
-                role: "user",
-                parts: [{ text: prompt }]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.25,
-              maxOutputTokens: 2600,
-              responseMimeType: "application/json"
-            }
-          })
-        }
-      );
-    } catch (error) {
-      if ((error as Error).name === "AbortError") {
-        throw new Error(`Gemini request timed out after ${GEMINI_TIMEOUT_MS}ms.`);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Gemini request failed (${response.status}): ${body.slice(0, 200)}`);
-    }
-
-    const payload = (await response.json()) as {
-      promptFeedback?: {
-        blockReason?: string;
-      };
-      candidates?: Array<{
-        content?: {
-          parts?: Array<{ text?: string }>;
-        };
-      }>;
-    };
-    const content = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("\n");
-    if (!content) {
-      if (payload.promptFeedback?.blockReason) {
-        throw new Error(`Gemini blocked output: ${payload.promptFeedback.blockReason}`);
-      }
-      throw new Error("Gemini response was empty.");
-    }
-    console.log("[Gemini simulation] raw response:", content);
-    return extractJsonObject(content);
+    void systemPrompt;
+    return requestBedrockJson(prompt, topic);
   };
 
   let rawSteps: unknown[] = [];
@@ -1849,9 +1889,8 @@ async function generateChatReplyFromGemini(
   message: string,
   mode: "voice" | "text"
 ): Promise<string | null> {
-  if (!GEMINI_API_KEY || !GEMINI_MODEL) {
-    return null;
-  }
+  void GEMINI_API_KEY;
+  void GEMINI_MODEL;
 
   const prompt = `
 You are a precise technical tutor helping with topic "${topicTitle}".
@@ -1865,40 +1904,23 @@ Reply with:
 - no markdown
 `.trim();
 
-  const response = await fetch(
-    `${GEMINI_BASE_URL}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.5
-        }
-      })
-    }
-  );
+  const body = JSON.stringify({
+    anthropic_version: "bedrock-2023-05-31",
+    max_tokens: 1200,
+    messages: [{ role: "user", content: prompt }]
+  });
+  const command = new InvokeModelCommand({
+    modelId: "anthropic.claude-3-sonnet-20240229-v1:0",
+    contentType: "application/json",
+    accept: "application/json",
+    body
+  });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Gemini chat failed (${response.status}): ${body.slice(0, 200)}`);
-  }
-
-  const payload = (await response.json()) as {
-    candidates?: Array<{
-      content?: {
-        parts?: Array<{ text?: string }>;
-      };
-    }>;
+  const response = await bedrockClient.send(command);
+  const responseBody = JSON.parse(new TextDecoder().decode(response.body as Uint8Array)) as {
+    content?: Array<{ text?: string }>;
   };
-  const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join(" ").trim();
+  const text = responseBody.content?.map((part) => part.text ?? "").join(" ").trim();
   if (!text) {
     return null;
   }
@@ -2244,7 +2266,7 @@ app.post(
   let explanationScript = "";
   let simulationSteps: GeminiCanvasStep[] = [];
   let openingMessage = `Generated a live simulation plan for ${topic.title}.`;
-  let generationSource: "template" | "gemini" = "gemini";
+  let generationSource: "template" | "bedrock" = "bedrock";
   let geminiError = "";
   try {
     const llmGenerated = await generateSimulationFromGemini(requestedTopic, level);
