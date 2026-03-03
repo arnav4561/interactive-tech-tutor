@@ -126,12 +126,14 @@ async function requestBedrockJson(prompt: string, topicKey?: string) {
 
   // Call Bedrock
   const body = JSON.stringify({
-    anthropic_version: "bedrock-2023-05-31",
-    max_tokens: 4000,
-    messages: [{ role: "user", content: prompt }]
+    messages: [{ role: "user", content: [{ text: prompt }] }],
+    inferenceConfig: {
+      maxTokens: 4000,
+      temperature: 0.3
+    }
   });
   const command = new InvokeModelCommand({
-    modelId: "anthropic.claude-3-sonnet-20240229-v1:0",
+    modelId: "amazon.nova-pro-v1:0",
     contentType: "application/json",
     accept: "application/json",
     body
@@ -143,13 +145,13 @@ async function requestBedrockJson(prompt: string, topicKey?: string) {
   } catch (error) {
     console.error("[Bedrock invoke failed]", {
       region: bedrockRegion,
-      modelId: "anthropic.claude-3-sonnet-20240229-v1:0",
+      modelId: "amazon.nova-pro-v1:0",
       error
     });
     throw error;
   }
   const responseBody = JSON.parse(new TextDecoder().decode(response.body as Uint8Array));
-  const text = responseBody.content?.[0]?.text ?? "";
+  const text = responseBody.output?.message?.content?.[0]?.text ?? "";
   console.log("[Bedrock raw response text FULL]", JSON.stringify(text, null, 2));
   const clean = String(text).replace(/```json|```/g, "").trim();
   const parsed = JSON.parse(clean);
@@ -1906,12 +1908,14 @@ Reply with:
 `.trim();
 
   const body = JSON.stringify({
-    anthropic_version: "bedrock-2023-05-31",
-    max_tokens: 1200,
-    messages: [{ role: "user", content: prompt }]
+    messages: [{ role: "user", content: [{ text: prompt }] }],
+    inferenceConfig: {
+      maxTokens: 1200,
+      temperature: 0.3
+    }
   });
   const command = new InvokeModelCommand({
-    modelId: "anthropic.claude-3-sonnet-20240229-v1:0",
+    modelId: "amazon.nova-pro-v1:0",
     contentType: "application/json",
     accept: "application/json",
     body
@@ -1919,9 +1923,13 @@ Reply with:
 
   const response = await bedrockClient.send(command);
   const responseBody = JSON.parse(new TextDecoder().decode(response.body as Uint8Array)) as {
-    content?: Array<{ text?: string }>;
+    output?: {
+      message?: {
+        content?: Array<{ text?: string }>;
+      };
+    };
   };
-  const text = responseBody.content?.map((part) => part.text ?? "").join(" ").trim();
+  const text = responseBody.output?.message?.content?.map((part) => part.text ?? "").join(" ").trim();
   if (!text) {
     return null;
   }
