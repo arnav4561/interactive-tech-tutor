@@ -196,21 +196,27 @@ const generatedProblemSetsSchema = z.array(generatedProblemSetSchema).min(3).max
 
 const simCanvasAnimationTypeSchema = z.enum([
   "fade_in",
+  "fade_out",
   "move",
   "draw",
   "pulse",
   "rotate",
+  "scale_up",
+  "scale_down",
   "scale",
   "highlight",
+  "bounce",
+  "follow_path",
+  "typewriter",
   "none"
 ]);
 
 const simCanvasAnimationSchema = z.object({
   type: simCanvasAnimationTypeSchema,
-  duration: z.number().int().min(100).max(10000),
-  direction: z.string().min(1).max(80),
-  represents: z.string().min(3).max(240)
-});
+  duration: z.number().int().min(100).max(10000).default(900),
+  direction: z.string().min(1).max(80).default("none"),
+  represents: z.string().min(3).max(240).default("animation step")
+}).passthrough();
 
 const simCanvasElementTypeSchema = z.enum([
   "rectangle",
@@ -218,31 +224,51 @@ const simCanvasElementTypeSchema = z.enum([
   "ellipse",
   "triangle",
   "arrow",
+  "curved_arrow",
   "curved arrow",
   "line",
+  "dashed_line",
   "dashed line",
   "text",
   "path",
   "polygon",
   "grid",
   "axis",
+  "plot_point",
   "plot point",
   "wave",
   "pulse",
+  "highlight_box",
   "highlight box"
+  ,
+  "bar",
+  "matrix",
+  "number_line",
+  "table",
+  "stack",
+  "queue",
+  "flowchart_diamond",
+  "neural_layer",
+  "tree_node"
 ]);
 
 const simCanvasElementSchema = z.object({
   type: simCanvasElementTypeSchema,
-  x: z.number().min(0).max(100),
-  y: z.number().min(0).max(100),
-  width: z.number().min(0).max(100),
-  height: z.number().min(0).max(100),
-  color: z.string().regex(/^#([0-9a-fA-F]{6})$/),
-  label: z.string().min(1).max(180),
-  label_position: z.enum(["above", "below", "left", "right"]),
-  animation: simCanvasAnimationSchema
-});
+  x: z.number().min(0).max(100).optional(),
+  y: z.number().min(0).max(100).optional(),
+  x1: z.number().min(0).max(100).optional(),
+  y1: z.number().min(0).max(100).optional(),
+  x2: z.number().min(0).max(100).optional(),
+  y2: z.number().min(0).max(100).optional(),
+  cx: z.number().min(0).max(100).optional(),
+  cy: z.number().min(0).max(100).optional(),
+  width: z.number().min(0).max(100).optional(),
+  height: z.number().min(0).max(100).optional(),
+  color: z.string().regex(/^#([0-9a-fA-F]{6})$/).optional(),
+  label: z.string().min(1).max(180).optional(),
+  label_position: z.enum(["above", "below", "left", "right"]).optional(),
+  animation: simCanvasAnimationSchema.optional()
+}).passthrough();
 
 const simCanvasStepSchema = z.object({
   step: z.number().int().min(1).max(120),
@@ -517,13 +543,13 @@ const ELEMENT_TYPE_ALIASES: Record<string, CanvasElementType> = {
   oval: "ellipse",
   triangle: "triangle",
   arrow: "arrow",
-  "curved arrow": "curved arrow",
-  "curved-arrow": "curved arrow",
-  curved_arrow: "curved arrow",
+  "curved arrow": "curved_arrow",
+  "curved-arrow": "curved_arrow",
+  curved_arrow: "curved_arrow",
   line: "line",
-  "dashed line": "dashed line",
-  "dashed-line": "dashed line",
-  dashed_line: "dashed line",
+  "dashed line": "dashed_line",
+  "dashed-line": "dashed_line",
+  dashed_line: "dashed_line",
   text: "text",
   label: "text",
   path: "path",
@@ -531,15 +557,28 @@ const ELEMENT_TYPE_ALIASES: Record<string, CanvasElementType> = {
   grid: "grid",
   axis: "axis",
   axes: "axis",
-  "plot point": "plot point",
-  "plot-point": "plot point",
-  plot_point: "plot point",
-  point: "plot point",
+  "plot point": "plot_point",
+  "plot-point": "plot_point",
+  plot_point: "plot_point",
+  point: "plot_point",
   wave: "wave",
   pulse: "pulse",
-  "highlight box": "highlight box",
-  "highlight-box": "highlight box",
-  highlight_box: "highlight box"
+  "highlight box": "highlight_box",
+  "highlight-box": "highlight_box",
+  highlight_box: "highlight_box",
+  bar: "bar",
+  matrix: "matrix",
+  number_line: "number_line",
+  "number line": "number_line",
+  table: "table",
+  stack: "stack",
+  queue: "queue",
+  flowchart_diamond: "flowchart_diamond",
+  "flowchart diamond": "flowchart_diamond",
+  neural_layer: "neural_layer",
+  "neural layer": "neural_layer",
+  tree_node: "tree_node",
+  "tree node": "tree_node"
 };
 
 function normalizeElementType(value: unknown): CanvasElementType {
@@ -552,14 +591,20 @@ function normalizeElementType(value: unknown): CanvasElementType {
 
 const ANIMATION_TYPE_ALIASES: Record<string, CanvasAnimationType> = {
   fade_in: "fade_in",
+  fade_out: "fade_out",
   fadein: "fade_in",
   move: "move",
   draw: "draw",
   pulse: "pulse",
   rotate: "rotate",
   spin: "rotate",
+  scale_up: "scale_up",
+  scale_down: "scale_down",
   scale: "scale",
   highlight: "highlight",
+  bounce: "bounce",
+  follow_path: "follow_path",
+  typewriter: "typewriter",
   none: "none"
 };
 
@@ -572,7 +617,7 @@ function normalizeAnimationType(value: unknown): CanvasAnimationType {
 }
 
 function defaultElementSize(type: CanvasElementType): { width: number; height: number } {
-  if (type === "line" || type === "dashed line" || type === "arrow" || type === "curved arrow") {
+  if (type === "line" || type === "dashed_line" || type === "arrow" || type === "curved_arrow") {
     return { width: 18, height: 2 };
   }
   if (type === "text") {
@@ -640,17 +685,35 @@ function normalizeCanvasElement(
     asText(rawAnimation.represents) ||
     asText(rawAnimation.description) ||
     `${label} appearing to explain ${fallbackText}`.slice(0, 240);
+  const passthrough = { ...raw };
+  delete passthrough.type;
+  delete passthrough.x;
+  delete passthrough.y;
+  delete passthrough.width;
+  delete passthrough.height;
+  delete passthrough.color;
+  delete passthrough.label;
+  delete passthrough.label_position;
+  delete passthrough.animation;
 
   return {
+    ...passthrough,
     type,
     x: toPercent(raw.x ?? raw.cx ?? raw.left, 50),
     y: toPercent(raw.y ?? raw.cy ?? raw.top, 50),
+    x1: raw.x1 !== undefined ? toPercent(raw.x1, 50) : undefined,
+    y1: raw.y1 !== undefined ? toPercent(raw.y1, 50) : undefined,
+    x2: raw.x2 !== undefined ? toPercent(raw.x2, 50) : undefined,
+    y2: raw.y2 !== undefined ? toPercent(raw.y2, 50) : undefined,
+    cx: raw.cx !== undefined ? toPercent(raw.cx, 50) : undefined,
+    cy: raw.cy !== undefined ? toPercent(raw.cy, 50) : undefined,
     width: toPercent(raw.width ?? raw.w, sizeDefaults.width),
     height: toPercent(raw.height ?? raw.h, sizeDefaults.height),
     color: normalizeHexColor(raw.color, "#00d4ff"),
     label: label || `Element ${index + 1}`,
     label_position: normalizeLabelPosition(raw.label_position ?? raw.labelPosition),
     animation: {
+      ...rawAnimation,
       type: animationType,
       duration: toDurationMs(rawAnimation.duration, 1000),
       direction: animationDirection.slice(0, 80),
@@ -1478,6 +1541,8 @@ Rules:
 - At least 3 elements per step.
 - No markdown, no prose, no comments.
 - Every step must be visually distinct and topic-specific.
+You have access to these element types and must choose whichever ones best represent the concept visually: rectangle, circle, ellipse, triangle, arrow, curved_arrow, line, dashed_line, text, polygon, grid, axis, plot_point, wave, pulse, highlight_box, bar, matrix, number_line, table, stack, queue, flowchart_diamond, neural_layer, tree_node.
+Choose element types that are semantically correct for the topic — a confusion matrix topic must use the matrix element, a sorting algorithm must use bar elements, a neural network must use neural_layer and arrow elements, a binary tree must use tree_node elements, a signal processing topic must use wave elements, a statistics topic must use axis, plot_point and bar elements. Never default to generic rectangles and lines when a more specific element type exists.
 `.trim();
 
   const systemPrompt = "Return only valid JSON with no markdown and no prose.";

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut, prewarmApi } from "./api";
+import { SimulationCanvasRenderer, SimulationCanvasStepLike } from "./SimulationCanvasRenderer";
 import {
   ChatMessage,
   DifficultyLevel,
@@ -41,36 +42,62 @@ type SimulationElementType =
   | "ellipse"
   | "triangle"
   | "arrow"
-  | "curved arrow"
+  | "curved_arrow"
   | "line"
-  | "dashed line"
+  | "dashed_line"
   | "text"
   | "path"
   | "polygon"
   | "grid"
   | "axis"
-  | "plot point"
+  | "plot_point"
   | "wave"
   | "pulse"
-  | "highlight box";
+  | "highlight_box"
+  | "bar"
+  | "matrix"
+  | "number_line"
+  | "table"
+  | "stack"
+  | "queue"
+  | "flowchart_diamond"
+  | "neural_layer"
+  | "tree_node"
+  | string;
 
 interface SimulationElementAnimation {
-  type: "fade_in" | "move" | "draw" | "pulse" | "rotate" | "scale" | "highlight" | "none";
-  duration: number;
-  direction: string;
-  represents: string;
+  type:
+    | "fade_in"
+    | "fade_out"
+    | "move"
+    | "scale_up"
+    | "scale_down"
+    | "pulse"
+    | "rotate"
+    | "highlight"
+    | "draw"
+    | "bounce"
+    | "follow_path"
+    | "typewriter"
+    | "none"
+    | string;
+  duration?: number;
+  direction?: string;
+  represents?: string;
+  [key: string]: unknown;
 }
 
 interface SimulationCanvasElement {
   type: SimulationElementType;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  color: string;
-  label: string;
-  label_position: "above" | "below" | "left" | "right";
-  animation: SimulationElementAnimation;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  color?: string;
+  label?: string;
+  label_position?: "above" | "below" | "left" | "right";
+  animation?: SimulationElementAnimation;
+  [key: string]: unknown;
 }
 
 interface SimulationCanvasStep {
@@ -80,6 +107,7 @@ interface SimulationCanvasStep {
   canvas_instructions: {
     elements: SimulationCanvasElement[];
   };
+  [key: string]: unknown;
 }
 
 interface SimulationGenerationApiResponse {
@@ -190,6 +218,7 @@ export default function App(): JSX.Element {
   const lastNarratedTopicRef = useRef("");
   const isNarratingRef = useRef(false);
   const simulationStepRef = useRef(0);
+  const simulationPausedRef = useRef(false);
   const spokenStepRef = useRef(-1);
   const recognitionStartingRef = useRef(false);
   const recognitionActiveRef = useRef(false);
@@ -1260,6 +1289,10 @@ export default function App(): JSX.Element {
   }, [appView]);
 
   useEffect(() => {
+    simulationPausedRef.current = simulationPaused;
+  }, [simulationPaused]);
+
+  useEffect(() => {
     if (!token) {
       setSessionBootstrapping(false);
       return;
@@ -1451,580 +1484,133 @@ export default function App(): JSX.Element {
 
     setSimulationRendererLoading(true);
     let disposed = false;
-    let cleanup = () => undefined;
+    let frameId = 0;
+    let stepElapsedMs = 0;
+    let currentStepDurationMs = 3200;
+    let lastFrame = performance.now();
+    let lastProcessedCommandId = 0;
+    let renderer: SimulationCanvasRenderer | null = null;
+    let resizeObserver: ResizeObserver | null = null;
 
-    const run = async () => {
-      const THREE = await loadThreeLib();
-      if (disposed) {
-        return;
+    const setStepNarration = (step: SimulationCanvasStep, index: number) => {
+      setCurrentStepText(`Step ${index + 1}: ${step.concept}`);
+      if (subtitlesEnabled) {
+        setSubtitle(step.subtitle);
+      } else {
+        setSubtitle("");
       }
+      setMathOverlayLines([]);
 
-      host.innerHTML = "";
-      const scene = new THREE.Scene();
-      scene.background = new THREE.Color("#12172a");
-
-      const camera = new THREE.PerspectiveCamera(52, 1, 0.1, 220);
-      camera.position.set(0, 0, 16);
-      camera.lookAt(0, 0, 0);
-
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-      renderer.setPixelRatio(window.devicePixelRatio || 1);
-      host.appendChild(renderer.domElement);
-
-      const ambient = new THREE.AmbientLight(0xffffff, 0.8);
-      const directional = new THREE.DirectionalLight(0xffffff, 0.7);
-      directional.position.set(8, 10, 12);
-      scene.add(ambient);
-      scene.add(directional);
-
-      const rootGroup = new THREE.Group();
-      scene.add(rootGroup);
-
-      const WORLD_WIDTH = 18;
-      const WORLD_HEIGHT = 10;
-
-      type ElementRuntime = {
-        node: any;
-        animation: SimulationElementAnimation;
-        basePosition: any;
-        baseRotation: any;
-        baseScale: any;
-        size: { w: number; h: number };
-        drawAxis: "x" | "y";
-        materials: any[];
-      };
-
-      type LabelRuntime = {
-        sprite: any;
-        target: any;
-        offset: any;
-      };
-
-      let runtimes: ElementRuntime[] = [];
-      let labels: LabelRuntime[] = [];
-      let frameId = 0;
-      let lastTime = performance.now();
-      let stepElapsedMs = 0;
-      let currentStepDurationMs = 4200;
-
-      const createTextSprite = (text: string, color = "#111827") => {
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          return null;
-        }
-        canvas.width = 1024;
-        canvas.height = 192;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = "rgba(255,255,255,0.94)";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.font = "700 58px Trebuchet MS";
-        ctx.fillStyle = color;
-        ctx.fillText(text.slice(0, 90), 24, 120);
-        const texture = new THREE.CanvasTexture(canvas);
-        const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
-        const sprite = new THREE.Sprite(material);
-        sprite.scale.set(4.8, 0.9, 1);
-        return sprite;
-      };
-
-      const percentToWorld = (x: number, y: number) =>
-        new THREE.Vector3((x / 100 - 0.5) * WORLD_WIDTH, (0.5 - y / 100) * WORLD_HEIGHT, 0);
-
-      const percentToSize = (width: number, height: number) => ({
-        w: Math.max(0.25, (width / 100) * WORLD_WIDTH),
-        h: Math.max(0.25, (height / 100) * WORLD_HEIGHT)
-      });
-
-      const labelOffsetFor = (labelPosition: SimulationCanvasElement["label_position"], size: { w: number; h: number }) => {
-        const offsetGap = 0.55;
-        if (labelPosition === "above") {
-          return new THREE.Vector3(0, size.h / 2 + offsetGap, 0);
-        }
-        if (labelPosition === "below") {
-          return new THREE.Vector3(0, -(size.h / 2 + offsetGap), 0);
-        }
-        if (labelPosition === "left") {
-          return new THREE.Vector3(-(size.w / 2 + offsetGap), 0, 0);
-        }
-        return new THREE.Vector3(size.w / 2 + offsetGap, 0, 0);
-      };
-
-      const directionVector = (direction: string) => {
-        const normalized = direction.toLowerCase();
-        if (normalized.includes("left_to_right") || normalized === "right") {
-          return new THREE.Vector3(1, 0, 0);
-        }
-        if (normalized.includes("right_to_left") || normalized === "left") {
-          return new THREE.Vector3(-1, 0, 0);
-        }
-        if (normalized.includes("top_to_bottom") || normalized === "down" || normalized === "bottom") {
-          return new THREE.Vector3(0, -1, 0);
-        }
-        if (normalized.includes("bottom_to_top") || normalized === "up" || normalized === "top") {
-          return new THREE.Vector3(0, 1, 0);
-        }
-        return new THREE.Vector3(0, 0, 0);
-      };
-
-      const rotationFromDirection = (direction: string) => {
-        const normalized = direction.toLowerCase();
-        if (normalized.includes("top_to_bottom") || normalized === "down" || normalized === "bottom") {
-          return -Math.PI / 2;
-        }
-        if (normalized.includes("bottom_to_top") || normalized === "up" || normalized === "top") {
-          return Math.PI / 2;
-        }
-        if (normalized.includes("right_to_left") || normalized === "left") {
-          return Math.PI;
-        }
-        return 0;
-      };
-
-      const collectMaterials = (node: any): any[] => {
-        const materials: any[] = [];
-        node.traverse((child: any) => {
-          if (!child.material) {
-            return;
-          }
-          if (Array.isArray(child.material)) {
-            child.material.forEach((material: any) => materials.push(material));
-          } else {
-            materials.push(child.material);
-          }
-        });
-        return materials;
-      };
-
-      const makeLine = (start: any, end: any, color: string, dashed = false) => {
-        const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
-        const material = dashed
-          ? new THREE.LineDashedMaterial({ color, dashSize: 0.22, gapSize: 0.15, transparent: true, opacity: 0.95 })
-          : new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 });
-        const line = new THREE.Line(geometry, material);
-        if (dashed) {
-          line.computeLineDistances();
-        }
-        return line;
-      };
-
-      const makeArrow = (size: { w: number; h: number }, color: string, curved = false) => {
-        const group = new THREE.Group();
-        if (curved) {
-          const curve = new THREE.QuadraticBezierCurve3(
-            new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
-            new THREE.Vector3(0, size.h / 2, 0),
-            new THREE.Vector3(size.w / 2, 0, 0)
-          );
-          const points = curve.getPoints(40);
-          const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
-          const line = new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.96 }));
-          group.add(line);
-          const head = new THREE.Mesh(
-            new THREE.ConeGeometry(0.16, 0.42, 16),
-            new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.24 })
-          );
-          head.position.copy(points[points.length - 1]);
-          head.rotation.z = -Math.PI / 2;
-          group.add(head);
-        } else {
-          const line = makeLine(new THREE.Vector3(-size.w / 2, 0, 0), new THREE.Vector3(size.w / 2, 0, 0), color);
-          group.add(line);
-          const head = new THREE.Mesh(
-            new THREE.ConeGeometry(0.16, 0.4, 16),
-            new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.22 })
-          );
-          head.position.set(size.w / 2, 0, 0);
-          head.rotation.z = -Math.PI / 2;
-          group.add(head);
-        }
-        return group;
-      };
-
-      const endpointsFromSizeAndDirection = (size: { w: number; h: number }, direction: string) => {
-        const normalized = direction.toLowerCase();
-        if (normalized.includes("top_to_bottom") || normalized.includes("bottom_to_top")) {
-          return {
-            start: new THREE.Vector3(0, -size.h / 2, 0),
-            end: new THREE.Vector3(0, size.h / 2, 0),
-            axis: "y" as const
-          };
-        }
-        if (normalized.includes("diagonal")) {
-          return {
-            start: new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
-            end: new THREE.Vector3(size.w / 2, size.h / 2, 0),
-            axis: "x" as const
-          };
-        }
-        return {
-          start: new THREE.Vector3(-size.w / 2, 0, 0),
-          end: new THREE.Vector3(size.w / 2, 0, 0),
-          axis: "x" as const
-        };
-      };
-
-      const buildElementNode = (element: SimulationCanvasElement): ElementRuntime | null => {
-        const size = percentToSize(element.width, element.height);
-        const position = percentToWorld(element.x, element.y);
-        const color = element.color;
-        const meshMaterial = new THREE.MeshStandardMaterial({
-          color,
-          metalness: 0.2,
-          roughness: 0.4
-        });
-        const lineMaterial = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.96 });
-        const node = new THREE.Group();
-        let drawAxis: "x" | "y" = "x";
-        let drawable: any | null = null;
-
-        if (element.type === "rectangle") {
-          drawable = new THREE.Mesh(new THREE.PlaneGeometry(size.w, size.h), meshMaterial);
-        } else if (element.type === "circle") {
-          drawable = new THREE.Mesh(new THREE.CircleGeometry(Math.max(0.14, Math.min(size.w, size.h) / 2), 48), meshMaterial);
-        } else if (element.type === "ellipse") {
-          drawable = new THREE.Mesh(new THREE.CircleGeometry(0.5, 48), meshMaterial);
-          drawable.scale.set(size.w, size.h, 1);
-        } else if (element.type === "triangle") {
-          const shape = new THREE.Shape();
-          shape.moveTo(0, size.h / 2);
-          shape.lineTo(-size.w / 2, -size.h / 2);
-          shape.lineTo(size.w / 2, -size.h / 2);
-          shape.closePath();
-          drawable = new THREE.Mesh(new THREE.ShapeGeometry(shape), meshMaterial);
-        } else if (element.type === "arrow") {
-          drawable = makeArrow(size, color, false);
-          drawable.rotation.z = rotationFromDirection(element.animation.direction);
-        } else if (element.type === "curved arrow") {
-          drawable = makeArrow(size, color, true);
-          drawable.rotation.z = rotationFromDirection(element.animation.direction);
-        } else if (element.type === "line") {
-          const segment = endpointsFromSizeAndDirection(size, element.animation.direction);
-          drawable = makeLine(
-            segment.start,
-            segment.end,
-            color,
-            false
-          );
-          drawAxis = segment.axis;
-        } else if (element.type === "dashed line") {
-          const segment = endpointsFromSizeAndDirection(size, element.animation.direction);
-          drawable = makeLine(
-            segment.start,
-            segment.end,
-            color,
-            true
-          );
-          drawAxis = segment.axis;
-        } else if (element.type === "text") {
-          drawable = createTextSprite(element.label, color);
-          if (drawable) {
-            drawable.scale.set(Math.max(2, size.w), Math.max(0.8, size.h), 1);
-          }
-        } else if (element.type === "path") {
-          const curve = new THREE.QuadraticBezierCurve3(
-            new THREE.Vector3(-size.w / 2, -size.h / 2, 0),
-            new THREE.Vector3(0, size.h / 2, 0),
-            new THREE.Vector3(size.w / 2, size.h / 4, 0)
-          );
-          const points = curve.getPoints(40);
-          drawable = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial);
-        } else if (element.type === "polygon") {
-          const sides = Math.max(5, Math.min(10, Math.round((size.w + size.h) * 1.4)));
-          drawable = new THREE.Mesh(new THREE.CircleGeometry(Math.max(0.16, Math.min(size.w, size.h) / 2), sides), meshMaterial);
-        } else if (element.type === "grid") {
-          const divisions = Math.max(4, Math.min(24, Math.round((size.w + size.h) * 1.9)));
-          drawable = new THREE.GridHelper(Math.max(size.w, size.h), divisions, color, "#344861");
-          drawable.rotation.x = Math.PI / 2;
-        } else if (element.type === "axis") {
-          const axisGroup = new THREE.Group();
-          axisGroup.add(makeLine(new THREE.Vector3(-size.w / 2, 0, 0), new THREE.Vector3(size.w / 2, 0, 0), color));
-          axisGroup.add(makeLine(new THREE.Vector3(0, -size.h / 2, 0), new THREE.Vector3(0, size.h / 2, 0), color));
-          axisGroup.add(makeArrow({ w: size.w * 0.2, h: size.h * 0.1 }, color));
-          drawable = axisGroup;
-        } else if (element.type === "plot point") {
-          drawable = new THREE.Mesh(
-            new THREE.SphereGeometry(Math.max(0.1, Math.min(size.w, size.h) / 2), 20, 20),
-            meshMaterial
-          );
-        } else if (element.type === "wave") {
-          const points: any[] = [];
-          const segments = 60;
-          const amplitude = Math.max(0.16, size.h / 2);
-          for (let i = 0; i <= segments; i += 1) {
-            const t = i / segments;
-            const x = -size.w / 2 + t * size.w;
-            const y = Math.sin(t * Math.PI * 2) * amplitude;
-            points.push(new THREE.Vector3(x, y, 0));
-          }
-          drawable = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial);
-        } else if (element.type === "pulse") {
-          drawable = new THREE.Mesh(
-            new THREE.TorusGeometry(Math.max(0.16, Math.min(size.w, size.h) / 2), 0.06, 16, 48),
-            meshMaterial
-          );
-        } else if (element.type === "highlight box") {
-          const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(size.w, size.h, 0.18));
-          drawable = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 }));
-        } else {
-          return null;
-        }
-
-        if (!drawable) {
-          return null;
-        }
-
-        node.add(drawable);
-        node.position.copy(position);
-
-        const labelSprite = createTextSprite(element.label, "#0b1220");
-        if (labelSprite) {
-          const offset = labelOffsetFor(element.label_position, size);
-          labelSprite.position.copy(position.clone().add(offset));
-          rootGroup.add(labelSprite);
-          labels.push({
-            sprite: labelSprite,
-            target: node,
-            offset
-          });
-        }
-
-        return {
-          node,
-          animation: element.animation,
-          basePosition: node.position.clone(),
-          baseRotation: node.rotation.clone(),
-          baseScale: node.scale.clone(),
-          size,
-          drawAxis,
-          materials: collectMaterials(node)
-        };
-      };
-
-      const updateAnchoredLabels = () => {
-        labels.forEach((item) => {
-          item.sprite.position.copy(item.target.position.clone().add(item.offset));
-        });
-      };
-
-      const setStepNarration = (step: SimulationCanvasStep, index: number) => {
-        setCurrentStepText(`Step ${index + 1}: ${step.concept}`);
-        if (subtitlesEnabled) {
-          setSubtitle(step.subtitle);
-        } else {
-          setSubtitle("");
-        }
-        setMathOverlayLines([]);
-
-        if (voiceNarrationEnabled && appViewRef.current === "simulation") {
-          if ("speechSynthesis" in window && spokenStepRef.current !== index) {
-            spokenStepRef.current = index;
-            window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(step.subtitle);
-            utterance.rate = 1;
-            window.speechSynthesis.speak(utterance);
-          }
-        } else if ("speechSynthesis" in window) {
+      if (voiceNarrationEnabled && appViewRef.current === "simulation") {
+        if ("speechSynthesis" in window && spokenStepRef.current !== index) {
+          spokenStepRef.current = index;
           window.speechSynthesis.cancel();
+          const utterance = new SpeechSynthesisUtterance(step.subtitle);
+          utterance.rate = 1;
+          window.speechSynthesis.speak(utterance);
         }
-      };
-
-      const fitCameraToScene = () => {
-        const box = new THREE.Box3().setFromObject(rootGroup);
-        if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) {
-          camera.position.set(0, 0, 16);
-          camera.lookAt(0, 0, 0);
-          return;
-        }
-        const size = box.getSize(new THREE.Vector3());
-        const center = box.getCenter(new THREE.Vector3());
-        const targetZ = Math.max(11, Math.min(30, Math.max(size.x * 1.3, size.y * 2.2)));
-        camera.position.set(center.x * 0.2, center.y * 0.2, targetZ);
-        camera.lookAt(center.x * 0.2, center.y * 0.2, 0);
-      };
-
-      const applyStep = (index: number) => {
-        const step = steps[index];
-        rootGroup.clear();
-        runtimes = [];
-        labels = [];
-        const elements = step.canvas_instructions?.elements ?? [];
-        console.log(
-          `[Simulation] step=${index + 1} elementTypes=`,
-          elements.map((element) => element.type)
-        );
-        const maxAnimationDuration = elements.reduce(
-          (maxValue, element) => Math.max(maxValue, Math.max(700, element.animation?.duration ?? 700)),
-          700
-        );
-        currentStepDurationMs = Math.max(3200, maxAnimationDuration + 900);
-
-        elements.forEach((element) => {
-          const runtime = buildElementNode(element);
-          if (!runtime) {
-            return;
-          }
-          rootGroup.add(runtime.node);
-          runtimes.push(runtime);
-        });
-
-        setStepNarration(step, index);
-        fitCameraToScene();
-        updateAnchoredLabels();
-      };
-
-      const updateAnimations = (elapsed: number) => {
-        runtimes.forEach((runtime) => {
-          const duration = Math.max(200, runtime.animation.duration);
-          const phase = (elapsed % duration) / duration;
-          const sinWave = Math.sin(phase * Math.PI * 2);
-          runtime.node.position.copy(runtime.basePosition);
-          runtime.node.rotation.copy(runtime.baseRotation);
-          runtime.node.scale.copy(runtime.baseScale);
-
-          if (runtime.animation.type === "fade_in") {
-            const opacity = Math.max(0.08, Math.min(1, phase * 1.4));
-            runtime.materials.forEach((material) => {
-              material.transparent = true;
-              material.opacity = opacity;
-            });
-          } else if (runtime.animation.type === "move") {
-            const direction = directionVector(runtime.animation.direction);
-            const amplitude = Math.max(0.25, Math.min(2.2, Math.max(runtime.size.w, runtime.size.h) * 0.32));
-            runtime.node.position.add(direction.multiplyScalar(amplitude * sinWave));
-          } else if (runtime.animation.type === "draw") {
-            const drawProgress = Math.max(0.03, phase);
-            if (runtime.drawAxis === "x") {
-              runtime.node.scale.set(runtime.baseScale.x * drawProgress, runtime.baseScale.y, runtime.baseScale.z);
-            } else {
-              runtime.node.scale.set(runtime.baseScale.x, runtime.baseScale.y * drawProgress, runtime.baseScale.z);
-            }
-          } else if (runtime.animation.type === "pulse") {
-            const pulse = 1 + 0.15 * sinWave;
-            runtime.node.scale.set(
-              runtime.baseScale.x * pulse,
-              runtime.baseScale.y * pulse,
-              runtime.baseScale.z * pulse
-            );
-          } else if (runtime.animation.type === "rotate") {
-            const clockwise = runtime.animation.direction.toLowerCase().includes("clockwise");
-            const directionSign = clockwise ? -1 : 1;
-            runtime.node.rotation.z = runtime.baseRotation.z + directionSign * phase * Math.PI * 2;
-          } else if (runtime.animation.type === "scale") {
-            const scaleFactor = 0.85 + 0.25 * (sinWave + 1) * 0.5;
-            runtime.node.scale.set(
-              runtime.baseScale.x * scaleFactor,
-              runtime.baseScale.y * scaleFactor,
-              runtime.baseScale.z
-            );
-          } else if (runtime.animation.type === "highlight") {
-            const intensity = 0.15 + 0.45 * (sinWave + 1) * 0.5;
-            runtime.materials.forEach((material) => {
-              if ("emissiveIntensity" in material) {
-                material.emissiveIntensity = intensity;
-              }
-            });
-          }
-        });
-        updateAnchoredLabels();
-      };
-
-      const onResize = () => {
-        const width = host.clientWidth || 800;
-        const height = host.clientHeight || 450;
-        camera.aspect = width / Math.max(1, height);
-        camera.updateProjectionMatrix();
-        renderer.setSize(width, height, false);
-        fitCameraToScene();
-      };
-
-      onResize();
-      window.addEventListener("resize", onResize);
-      let resizeObserver: ResizeObserver | null = null;
-      if (typeof ResizeObserver !== "undefined") {
-        resizeObserver = new ResizeObserver(() => {
-          onResize();
-          renderer.render(scene, camera);
-        });
-        resizeObserver.observe(host);
+      } else if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
       }
-
-      if (simulationStepRef.current >= steps.length) {
-        simulationStepRef.current = 0;
-      }
-      applyStep(simulationStepRef.current);
-      let lastProcessedCommandId = 0;
-      renderer.render(scene, camera);
-      setSimulationRendererLoading(false);
-
-      const animate = (now: number) => {
-        const delta = Math.min(50, now - lastTime);
-        lastTime = now;
-
-        const pendingCommand = pendingSimulationCommandRef.current;
-        if (pendingCommand && pendingCommand.id > lastProcessedCommandId) {
-          lastProcessedCommandId = pendingCommand.id;
-          if (pendingCommand.action === "next-step") {
-            simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
-            stepElapsedMs = 0;
-            applyStep(simulationStepRef.current);
-          } else if (pendingCommand.action === "previous-step") {
-            simulationStepRef.current = (simulationStepRef.current - 1 + steps.length) % steps.length;
-            stepElapsedMs = 0;
-            applyStep(simulationStepRef.current);
-          } else if (pendingCommand.action === "pause") {
-            setSimulationPaused(true);
-          } else if (pendingCommand.action === "play") {
-            setSimulationPaused(false);
-          } else if (pendingCommand.action === "toggle-chat") {
-            setChatPanelOpen((value) => !value);
-          } else if (pendingCommand.action === "toggle-controls") {
-            setToolsPanelOpen((value) => !value);
-          } else if (pendingCommand.action === "go-home") {
-            setAppView("home");
-          }
-          pendingSimulationCommandRef.current = null;
-        }
-
-        if (!simulationPaused && !document.hidden) {
-          stepElapsedMs += delta;
-          updateAnimations(stepElapsedMs);
-          if (stepElapsedMs >= currentStepDurationMs) {
-            stepElapsedMs = 0;
-            simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
-            applyStep(simulationStepRef.current);
-          }
-        }
-
-        renderer.render(scene, camera);
-        frameId = window.requestAnimationFrame(animate);
-      };
-
-      frameId = window.requestAnimationFrame(animate);
-
-      cleanup = () => {
-        window.cancelAnimationFrame(frameId);
-        window.removeEventListener("resize", onResize);
-        resizeObserver?.disconnect();
-        if ("speechSynthesis" in window) {
-          window.speechSynthesis.cancel();
-        }
-        renderer.dispose();
-        host.innerHTML = "";
-        setSimulationRendererLoading(false);
-      };
     };
 
-    void run();
+    const applyStep = (index: number) => {
+      if (!renderer) {
+        return;
+      }
+      const step = steps[index];
+      renderer.setStep(step as SimulationCanvasStepLike);
+      console.log(`[Simulation] step=${index + 1} elementTypes=`, renderer.getElementTypes());
+      currentStepDurationMs = renderer.getSuggestedDurationMs();
+      setStepNarration(step, index);
+      renderer.render(performance.now());
+      setSimulationRendererLoading(false);
+    };
+
+    const onResize = () => {
+      renderer?.resize();
+      renderer?.render(performance.now());
+    };
+
+    renderer = new SimulationCanvasRenderer(host);
+    renderer.resize();
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(onResize);
+      resizeObserver.observe(host);
+    }
+    window.addEventListener("resize", onResize);
+
+    if (simulationStepRef.current >= steps.length) {
+      simulationStepRef.current = 0;
+    }
+    applyStep(simulationStepRef.current);
+
+    const tick = (now: number) => {
+      if (disposed || !renderer) {
+        return;
+      }
+      const delta = Math.min(50, now - lastFrame);
+      lastFrame = now;
+
+      const pendingCommand = pendingSimulationCommandRef.current;
+      if (pendingCommand && pendingCommand.id > lastProcessedCommandId) {
+        lastProcessedCommandId = pendingCommand.id;
+        if (pendingCommand.action === "next-step") {
+          simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
+          stepElapsedMs = 0;
+          applyStep(simulationStepRef.current);
+        } else if (pendingCommand.action === "previous-step") {
+          simulationStepRef.current = (simulationStepRef.current - 1 + steps.length) % steps.length;
+          stepElapsedMs = 0;
+          applyStep(simulationStepRef.current);
+        } else if (pendingCommand.action === "pause") {
+          simulationPausedRef.current = true;
+          setSimulationPaused(true);
+        } else if (pendingCommand.action === "play") {
+          simulationPausedRef.current = false;
+          setSimulationPaused(false);
+        } else if (pendingCommand.action === "toggle-chat") {
+          setChatPanelOpen((value) => !value);
+        } else if (pendingCommand.action === "toggle-controls") {
+          setToolsPanelOpen((value) => !value);
+        } else if (pendingCommand.action === "go-home") {
+          setAppView("home");
+        }
+        pendingSimulationCommandRef.current = null;
+      }
+
+      const pausedNow = simulationPausedRef.current || document.hidden;
+      renderer.setPaused(pausedNow, now);
+      if (!pausedNow) {
+        stepElapsedMs += delta;
+        if (stepElapsedMs >= currentStepDurationMs) {
+          stepElapsedMs = 0;
+          simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
+          applyStep(simulationStepRef.current);
+        }
+      }
+
+      renderer.render(now);
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    frameId = window.requestAnimationFrame(tick);
+
     return () => {
       disposed = true;
-      cleanup();
+      window.cancelAnimationFrame(frameId);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", onResize);
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      renderer?.dispose();
+      setSimulationRendererLoading(false);
     };
   }, [
     appView,
     selectedSimulation,
     selectedTopic,
-    simulationPaused,
     subtitlesEnabled,
     voiceNarrationEnabled
   ]);
