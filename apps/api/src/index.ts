@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-dotenv.config();
+dotenv.config({ override: false });
 import { randomUUID } from "node:crypto";
 import cors from "cors";
 import express from "express";
