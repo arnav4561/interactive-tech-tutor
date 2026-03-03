@@ -28,8 +28,30 @@ const API_BASE_URLS = (() => {
 
 const HEALTH_URLS = API_BASE_URLS.map((baseUrl) => baseUrl.replace(/\/api$/, "/health"));
 let prewarmPromise: Promise<void> | null = null;
+export const FORCE_LOGOUT_EVENT = "itt-force-logout";
 
 type Method = "GET" | "POST" | "PUT" | "DELETE";
+
+function shouldForceLogout(status: number, errorText: string): boolean {
+  if (status === 401) {
+    return true;
+  }
+  const normalized = errorText.toLowerCase();
+  return (
+    normalized.includes("history_user_id_fkey") ||
+    normalized.includes("violates foreign key constraint") ||
+    normalized.includes("23503")
+  );
+}
+
+function notifyForceLogout(reason: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  localStorage.removeItem("itt_token");
+  localStorage.removeItem("itt_email");
+  window.dispatchEvent(new CustomEvent(FORCE_LOGOUT_EVENT, { detail: { reason } }));
+}
 
 async function request<T>(method: Method, path: string, body?: unknown, token?: string): Promise<T> {
   let lastNetworkError: unknown;
@@ -61,7 +83,11 @@ async function request<T>(method: Method, path: string, body?: unknown, token?: 
     }
 
     if (!response.ok) {
-      throw new Error(String(payload.error ?? `Request failed (${response.status}).`));
+      const errorText = String(payload.error ?? `Request failed (${response.status}).`);
+      if (shouldForceLogout(response.status, errorText)) {
+        notifyForceLogout(errorText);
+      }
+      throw new Error(errorText);
     }
     return payload as T;
   }

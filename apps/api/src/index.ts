@@ -103,6 +103,26 @@ function asyncHandler(
   };
 }
 
+async function appendHistorySafely(interaction: InteractionRecord): Promise<void> {
+  try {
+    await updateStore((store) => {
+      store.history.push(interaction);
+    });
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    const message = error instanceof Error ? error.message : "";
+    const isMissingUserFk =
+      code === "23503" ||
+      message.includes("history_user_id_fkey") ||
+      message.includes("violates foreign key constraint");
+    if (isMissingUserFk) {
+      console.warn("[History] Skipping write because user no longer exists in database.");
+      return;
+    }
+    throw error;
+  }
+}
+
 async function requestBedrockJson(prompt: string, topicKey?: string) {
   // Check S3 cache first if topic key provided
   if (topicKey) {
@@ -2243,9 +2263,7 @@ app.post(
     meta: payload.meta
   };
 
-  await updateStore((store) => {
-    store.history.push(interaction);
-  });
+  await appendHistorySafely(interaction);
 
   res.status(201).json({ interaction });
   })
@@ -2316,9 +2334,7 @@ app.post(
     meta: { source: "simulation-generator", level, generationSource }
   };
 
-  await updateStore((store) => {
-    store.history.push(interaction);
-  });
+  await appendHistorySafely(interaction);
 
   const responsePayload = {
     topic,
@@ -2380,9 +2396,7 @@ app.post(
     meta: { source: "chat" }
   };
 
-  await updateStore((store) => {
-    store.history.push(interaction);
-  });
+  await appendHistorySafely(interaction);
 
   res.json({ response: responseText });
   })
@@ -2427,9 +2441,7 @@ app.post(
     meta: { source: "feedback" }
   };
 
-  await updateStore((store) => {
-    store.history.push(interaction);
-  });
+  await appendHistorySafely(interaction);
 
   res.json({ response: responseText });
   })
@@ -2465,9 +2477,7 @@ app.post(
     meta: { fileType, size }
   };
 
-  await updateStore((store) => {
-    store.history.push(interaction);
-  });
+  await appendHistorySafely(interaction);
 
   res.json({ response: summary });
   })

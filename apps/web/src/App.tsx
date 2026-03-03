@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { apiDelete, apiGet, apiPost, apiPut, prewarmApi } from "./api";
+import { FORCE_LOGOUT_EVENT, apiDelete, apiGet, apiPost, apiPut, prewarmApi } from "./api";
 import { SimulationCanvasRenderer, SimulationCanvasStepLike } from "./SimulationCanvasRenderer";
 import {
   ChatMessage,
@@ -592,6 +592,20 @@ export default function App(): JSX.Element {
     localStorage.removeItem("itt_subtitles");
     setStatusMessage("Logged out.");
   }, [clearNarrationTimers]);
+
+  useEffect(() => {
+    const onForceLogout = (event: Event) => {
+      const custom = event as CustomEvent<{ reason?: string }>;
+      handleLogout();
+      if (custom.detail?.reason) {
+        setStatusMessage(`Session reset: ${custom.detail.reason}`);
+      }
+    };
+    window.addEventListener(FORCE_LOGOUT_EVENT, onForceLogout as EventListener);
+    return () => {
+      window.removeEventListener(FORCE_LOGOUT_EVENT, onForceLogout as EventListener);
+    };
+  }, [handleLogout]);
 
   const generateCustomSimulation = useCallback(async () => {
     const requestedTopic = customTopicInput.trim();
