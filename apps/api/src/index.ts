@@ -150,9 +150,10 @@ async function requestBedrockJson(prompt: string, topicKey?: string) {
   }
   const responseBody = JSON.parse(new TextDecoder().decode(response.body as Uint8Array));
   const text = responseBody.content?.[0]?.text ?? "";
-  console.log("[Bedrock raw response text]", text);
+  console.log("[Bedrock raw response text FULL]", JSON.stringify(text, null, 2));
   const clean = String(text).replace(/```json|```/g, "").trim();
   const parsed = JSON.parse(clean);
+  console.log("[Bedrock parsed object FULL]", JSON.stringify(parsed, null, 2));
 
   // Save to S3 cache if topic key provided
   if (topicKey) {
