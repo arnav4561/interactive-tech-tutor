@@ -336,6 +336,7 @@ const simCanvasAnimationTypeSchema = z.enum([
 const simCanvasAnimationSchema = z.object({
   type: simCanvasAnimationTypeSchema,
   duration: z.number().int().min(100).max(10000).default(900),
+  delay: z.number().int().min(0).max(60000).optional(),
   direction: z.string().min(1).max(80).default("none"),
   represents: z.string().min(3).max(240).default("animation step")
 }).passthrough();
@@ -371,6 +372,8 @@ const simCanvasElementTypeSchema = z.enum([
   "queue",
   "flowchart_diamond",
   "neural_layer",
+  "neural_network",
+  "neural network",
   "tree_node"
 ]);
 
@@ -1629,44 +1632,7 @@ async function generateSimulationFromGemini(
   void level;
 
   const simulationFormatPrompt = `
-Topic: ${topic}
-Generate ONLY valid JSON with this shape:
-{
-  "steps": [
-    {
-      "step": 1,
-      "concept": "string",
-      "subtitle": "string",
-      "canvas_instructions": {
-        "elements": [
-          {
-            "type": "rectangle|circle|ellipse|triangle|arrow|curved arrow|line|dashed line|text|path|polygon|grid|axis|plot point|wave|pulse|highlight box",
-            "x": 0-100,
-            "y": 0-100,
-            "width": 0-100,
-            "height": 0-100,
-            "color": "#RRGGBB",
-            "label": "string",
-            "label_position": "above|below|left|right",
-            "animation": {
-              "type": "fade_in|move|draw|pulse|rotate|scale|highlight|none",
-              "duration": 100-10000,
-              "direction": "left_to_right|right_to_left|top_to_bottom|bottom_to_top|clockwise|counterclockwise|none",
-              "represents": "what this teaches"
-            }
-          }
-        ]
-      }
-    }
-  ]
-}
-Rules:
-- 6 to 8 steps.
-- At least 3 elements per step.
-- No markdown, no prose, no comments.
-- Every step must be visually distinct and topic-specific.
-You have access to these element types and must choose whichever ones best represent the concept visually: rectangle, circle, ellipse, triangle, arrow, curved_arrow, line, dashed_line, text, polygon, grid, axis, plot_point, wave, pulse, highlight_box, bar, matrix, number_line, table, stack, queue, flowchart_diamond, neural_layer, tree_node.
-Choose element types that are semantically correct for the topic — a confusion matrix topic must use the matrix element, a sorting algorithm must use bar elements, a neural network must use neural_layer and arrow elements, a binary tree must use tree_node elements, a signal processing topic must use wave elements, a statistics topic must use axis, plot_point and bar elements. Never default to generic rectangles and lines when a more specific element type exists.
+You are a world class educator and visualization expert with complete knowledge of every technical field. Explain ${topic} completely from absolute basics to advanced level. Cover: what it is, why it exists and matters, how it works step by step, worked examples with real numbers, edge cases, common mistakes, and real world applications. Generate as many steps as the topic genuinely needs for making understand to a beginner, decide wisely of how to handle simple topics and complex topics. Never stop early. Every step must teach exactly one concept clearly. Every step must have a completely unique visual layout different from all previous steps. Choose the most appropriate visual representation for each concept — use bars for comparisons, matrices for grids, trees for hierarchical data, neural_network for AI concepts, wave for signals, axis and plot_point for mathematical functions, flowchart_diamond for decisions, stack and queue for data structures, and so on. Never default to generic boxes and lines when a more specific element type exists. Output only valid JSON.
 `.trim();
 
   const systemPrompt = "Return only valid JSON with no markdown and no prose.";
@@ -1954,6 +1920,57 @@ Reply with:
     return null;
   }
   return text.slice(0, 900);
+}
+
+async function analyzeVoiceActionWithNova(
+  topicTitle: string,
+  userSpeech: string,
+  stepConcept: string,
+  stepNumber: number
+): Promise<{
+  action_type: string;
+  action_params: Record<string, unknown>;
+  spoken_response: string;
+  feedback: string;
+  requires_animation: boolean;
+}> {
+  const prompt = `
+You are an intelligent assistant controlling an interactive technical simulation. The user said: ${userSpeech}. The current topic is ${topicTitle} and the current simulation step is ${stepConcept} and the current step number is ${stepNumber}. Analyze what the user wants and respond with ONLY a valid JSON object containing these fields: action_type (must be exactly one of: answer_question, move_element, modify_element, play, pause, next_step, previous_step, restart, open_menu, close_menu, toggle_subtitles, toggle_voice, not_possible, general_answer), action_params (object containing any parameters needed to execute the action — for move_element include element_label and target_x and target_y as canvas percentages, for modify_element include element_label and what property to change and new value), spoken_response (a clear conversational English sentence or two that the system will speak aloud to the user as its reply), feedback (only for move_element and modify_element actions — explain whether this change is correct or incorrect for understanding the topic and exactly why, give a brief educational explanation), requires_animation (true or false indicating whether a canvas animation should play). Output only valid JSON with no extra text.
+`.trim();
+
+  const body = JSON.stringify({
+    messages: [{ role: "user", content: [{ text: prompt }] }],
+    inferenceConfig: {
+      maxTokens: 300,
+      temperature: 0.2
+    }
+  });
+  const command = new InvokeModelCommand({
+    modelId: "us.amazon.nova-pro-v1:0",
+    contentType: "application/json",
+    accept: "application/json",
+    body
+  });
+
+  const response = await bedrockClient.send(command);
+  const responseBody = JSON.parse(new TextDecoder().decode(response.body as Uint8Array));
+  const text = responseBody.output?.message?.content?.[0]?.text ?? "";
+  const clean = String(text).replace(/```json|```/g, "").trim();
+  const parsed = extractJsonObject(clean) as Record<string, unknown>;
+
+  return {
+    action_type: typeof parsed.action_type === "string" ? parsed.action_type : "general_answer",
+    action_params:
+      parsed.action_params && typeof parsed.action_params === "object" && !Array.isArray(parsed.action_params)
+        ? (parsed.action_params as Record<string, unknown>)
+        : {},
+    spoken_response:
+      typeof parsed.spoken_response === "string" && parsed.spoken_response.trim().length > 0
+        ? parsed.spoken_response.trim()
+        : "I heard you. I will adjust the simulation accordingly.",
+    feedback: typeof parsed.feedback === "string" ? parsed.feedback : "",
+    requires_animation: Boolean(parsed.requires_animation)
+  };
 }
 
 function defaultVoiceSettings(): VoiceSettings {
@@ -2399,6 +2416,42 @@ app.post(
   await appendHistorySafely(interaction);
 
   res.json({ response: responseText });
+  })
+);
+
+app.post(
+  "/api/ai/voice-action",
+  authMiddleware,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+  const schema = z.object({
+    topicId: z.string().min(1),
+    userSpeech: z.string().min(1),
+    stepConcept: z.string().min(1).default("Current step"),
+    stepNumber: z.number().int().min(1).default(1)
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid voice action payload." });
+    return;
+  }
+
+  const { topicId, userSpeech, stepConcept, stepNumber } = parsed.data;
+  const topic = TOPICS.find((item) => item.id === topicId);
+  const topicTitle = topic?.title ?? topicId;
+
+  try {
+    const action = await analyzeVoiceActionWithNova(topicTitle, userSpeech, stepConcept, stepNumber);
+    res.json(action);
+  } catch (error) {
+    console.error("Voice action fallback:", error);
+    res.json({
+      action_type: "general_answer",
+      action_params: {},
+      spoken_response: "I heard you. Please try again in a moment.",
+      feedback: "",
+      requires_animation: false
+    });
+  }
   })
 );
 

@@ -1926,3 +1926,107 @@ textarea {
     height: 44vh;
   }
 }
+
+/* Simulation cards + voice states */
+.canvas-wrapper {
+  display: flex !important;
+  flex-direction: column;
+  gap: 8px !important;
+  border-radius: 12px !important;
+  overflow: hidden;
+  position: relative;
+}
+
+.sim-canvas {
+  position: relative;
+  flex: 1 1 auto;
+  border-radius: 12px !important;
+  overflow: hidden;
+  border: 1px solid rgba(115, 144, 193, 0.28);
+}
+
+.sim-canvas canvas {
+  border-radius: 12px !important;
+}
+
+.sim-canvas-3d-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 60px;
+  pointer-events: none;
+  z-index: 7;
+}
+
+.sim-bottom-bar {
+  position: static !important;
+  display: grid !important;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.sim-play-toggle {
+  width: 56px !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(99, 133, 195, 0.45) !important;
+  background: linear-gradient(145deg, rgba(0, 212, 255, 0.25), rgba(139, 92, 246, 0.24)) !important;
+}
+
+.subtitle-bar {
+  border-radius: 12px !important;
+  border: 1px solid rgba(99, 133, 195, 0.45) !important;
+  min-height: 52px;
+}
+
+.sim-interim-bubble {
+  max-width: 260px;
+  font-size: 0.76rem;
+  color: #f4f8ff;
+  background: rgba(12, 18, 30, 0.84);
+  border: 1px solid rgba(154, 184, 232, 0.42);
+  border-radius: 10px;
+  padding: 6px 9px;
+  line-height: 1.35;
+}
+
+.sim-mic-btn.state-idle {
+  border-color: rgba(123, 150, 190, 0.48);
+}
+
+.sim-mic-btn.state-listening {
+  border-color: rgba(255, 88, 88, 0.95);
+  box-shadow: 0 0 0 0 rgba(255, 88, 88, 0.48);
+  animation: micPulseRed 1.15s ease-in-out infinite;
+}
+
+.sim-mic-btn.state-processing {
+  border-color: rgba(53, 162, 255, 0.95);
+  animation: micSpinBlue 0.95s linear infinite;
+}
+
+.sim-mic-btn.state-speaking {
+  border-color: rgba(70, 224, 140, 0.95);
+  box-shadow: 0 0 0 0 rgba(70, 224, 140, 0.42);
+  animation: micPulseGreen 1.15s ease-in-out infinite;
+}
+
+.voice-command-flash {
+  top: auto !important;
+  bottom: 90px !important;
+  left: 62px !important;
+  transform: none !important;
+}
+
+@keyframes micSpinBlue {
+  from { box-shadow: 0 0 0 0 rgba(53, 162, 255, 0.45); transform: rotate(0deg); }
+  to { box-shadow: 0 0 0 10px rgba(53, 162, 255, 0); transform: rotate(360deg); }
+}
+
+@keyframes micPulseGreen {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(70, 224, 140, 0.42); }
+  50% { box-shadow: 0 0 0 13px rgba(70, 224, 140, 0); }
+}

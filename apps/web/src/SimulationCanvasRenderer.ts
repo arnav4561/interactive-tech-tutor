@@ -30,6 +30,7 @@ export class SimulationCanvasRenderer {
   private pauseStartedAt = 0;
   private pausedMs = 0;
   private paused = false;
+  private labelBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
 
   constructor(host: HTMLDivElement) {
     this.host = host;
@@ -92,9 +93,68 @@ export class SimulationCanvasRenderer {
     return Math.max(2600, maxDuration + 800);
   }
 
+  getCurrentStep(): SimulationCanvasStepLike | null {
+    return this.step;
+  }
+
+  moveElementByLabel(label: string, targetX: number, targetY: number, durationMs = 800): boolean {
+    const normalized = label.trim().toLowerCase();
+    if (!normalized) return false;
+    const elements = this.getElements();
+    const found = elements.find((el) => this.str(el.label).trim().toLowerCase() === normalized);
+    if (!found) return false;
+    const currentX = this.num(found, ["x", "x1"], 50);
+    const currentY = this.num(found, ["y", "y1"], 50);
+    (found as Record<string, unknown>).x = currentX;
+    (found as Record<string, unknown>).y = currentY;
+    (found as Record<string, unknown>).animation = {
+      ...(this.obj(found.animation)),
+      type: "move",
+      target_x: targetX,
+      target_y: targetY,
+      duration: Math.max(120, durationMs)
+    };
+    this.stepStartedAt = performance.now();
+    this.pausedMs = 0;
+    return true;
+  }
+
+  modifyElementByLabel(
+    label: string,
+    property: "color" | "size" | "label",
+    newValue: string | number,
+    durationMs = 800
+  ): boolean {
+    const normalized = label.trim().toLowerCase();
+    if (!normalized) return false;
+    const elements = this.getElements();
+    const found = elements.find((el) => this.str(el.label).trim().toLowerCase() === normalized);
+    if (!found) return false;
+    if (property === "color" && typeof newValue === "string") {
+      (found as Record<string, unknown>).color = newValue;
+    } else if (property === "label" && typeof newValue === "string") {
+      (found as Record<string, unknown>).label = newValue;
+    } else if (property === "size" && typeof newValue === "number" && Number.isFinite(newValue)) {
+      const next = Math.max(2, newValue);
+      (found as Record<string, unknown>).width = next;
+      (found as Record<string, unknown>).height = next;
+    } else {
+      return false;
+    }
+    (found as Record<string, unknown>).animation = {
+      ...(this.obj(found.animation)),
+      type: "highlight",
+      duration: Math.max(120, durationMs)
+    };
+    this.stepStartedAt = performance.now();
+    this.pausedMs = 0;
+    return true;
+  }
+
   render(now = performance.now()): void {
     this.ctx.clearRect(0, 0, this.width, this.height);
     if (!this.step) return;
+    this.labelBoxes = [];
     const elapsed = this.elapsed(now);
     for (const el of this.getElements()) {
       this.draw(el, elapsed);
@@ -197,9 +257,29 @@ export class SimulationCanvasRenderer {
   private state(el: StepElement, elapsed: number): AnimState {
     const a = this.anim(el);
     const type = this.str(a.type, "none").toLowerCase().replace(/\s+/g, "_");
+    const delay = Math.max(0, this.num(a, ["delay", "delayMs"], 0));
     const duration = Math.max(100, this.num(a, ["duration", "durationMs"], 900));
-    const p = ["pulse"].includes(type) ? ((elapsed % duration) + duration) % duration / duration : Math.min(1, elapsed / duration);
+    const localElapsed = Math.max(0, elapsed - delay);
+    const loopPulse = ["pulse"].includes(type);
+    const p = loopPulse
+      ? ((localElapsed % duration) + duration) % duration / duration
+      : Math.min(1, localElapsed / duration);
     const s: AnimState = { alpha: 1, scale: 1, rotation: 0, dx: 0, dy: 0, drawProgress: 1, textProgress: 1, highlight: 0 };
+    const hasAnimation = Object.keys(a).length > 0 && type !== "none";
+    const idleScale = 1 + 0.03 * Math.sin((elapsed / 2000) * Math.PI * 2);
+
+    if (!hasAnimation) {
+      s.scale = idleScale;
+      return s;
+    }
+
+    if (elapsed < delay) {
+      s.drawProgress = 0;
+      s.textProgress = 0;
+      s.alpha = type === "fade_in" ? 0 : 1;
+      return s;
+    }
+
     if (type === "fade_in") s.alpha = p;
     else if (type === "fade_out") s.alpha = 1 - p;
     else if (type === "scale_up") s.scale = p;
@@ -226,6 +306,11 @@ export class SimulationCanvasRenderer {
         s.dy = (ty - sy) * t;
       }
     }
+
+    if (!loopPulse && localElapsed >= duration) {
+      s.scale *= idleScale;
+    }
+
     return s;
   }
 
@@ -240,21 +325,106 @@ export class SimulationCanvasRenderer {
     this.ctx.restore();
   }
 
-  private label(el: StepElement, text: string, x: number, y: number, defaultPos: "above" | "below" | "left" | "right"): void {
+  private isDarkColor(color: string): boolean {
+    if (!/^#[0-9a-f]{6}$/i.test(color)) return false;
+    const r = Number.parseInt(color.slice(1, 3), 16);
+    const g = Number.parseInt(color.slice(3, 5), 16);
+    const b = Number.parseInt(color.slice(5, 7), 16);
+    const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    return luminance < 0.45;
+  }
+
+  private overlap(a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }): boolean {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  private drawTextPill(
+    text: string,
+    x: number,
+    y: number,
+    align: CanvasTextAlign,
+    textColor = "#FFFFFF",
+    font = "600 12px Inter, Segoe UI, sans-serif"
+  ): { x: number; y: number; w: number; h: number } {
+    const box = this.textPillBox(text, x, y, align, font);
+    this.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    this.ctx.fillRect(box.x, box.y, box.w, box.h);
+    this.ctx.fillStyle = this.isDarkColor(textColor) ? "#FFFFFF" : textColor;
+    this.ctx.font = font;
+    this.ctx.textAlign = align;
+    this.ctx.textBaseline = "middle";
+    this.ctx.fillText(text, x, y);
+    return box;
+  }
+
+  private textPillBox(
+    text: string,
+    x: number,
+    y: number,
+    align: CanvasTextAlign,
+    font = "600 12px Inter, Segoe UI, sans-serif"
+  ): { x: number; y: number; w: number; h: number } {
+    this.ctx.font = font;
+    const metrics = this.ctx.measureText(text);
+    const tw = Math.max(8, metrics.width);
+    const th = 16;
+    const padX = 8;
+    const padY = 4;
+    const boxW = tw + padX * 2;
+    const boxH = th + padY * 2;
+    let boxX = x - boxW / 2;
+    if (align === "left") boxX = x - 2;
+    if (align === "right") boxX = x - boxW + 2;
+    const boxY = y - boxH / 2;
+    return { x: boxX, y: boxY, w: boxW, h: boxH };
+  }
+
+  private label(
+    el: StepElement,
+    text: string,
+    x: number,
+    y: number,
+    defaultPos: "above" | "below" | "left" | "right",
+    parentBox?: { x: number; y: number; w: number; h: number }
+  ): void {
     if (!text) return;
+    const safeText = text.slice(0, 80);
     const pos = this.str(el.label_position, defaultPos).toLowerCase();
+    const font = "600 12px Inter, Segoe UI, sans-serif";
     let lx = x;
     let ly = y;
     let align: CanvasTextAlign = "center";
-    if (pos === "above") ly -= 12;
-    else if (pos === "below") ly += 14;
-    else if (pos === "left") { lx -= 10; align = "right"; }
-    else if (pos === "right") { lx += 10; align = "left"; }
-    this.ctx.fillStyle = "#e5efff";
-    this.ctx.font = "600 12px Inter, Segoe UI, sans-serif";
-    this.ctx.textAlign = align;
-    this.ctx.textBaseline = "middle";
-    this.ctx.fillText(text.slice(0, 80), lx, ly);
+    let dx = 0;
+    let dy = 0;
+    if (pos === "above") {
+      ly -= 12;
+      dy = -20;
+    } else if (pos === "below") {
+      ly += 14;
+      dy = 20;
+    } else if (pos === "left") {
+      lx -= 10;
+      align = "right";
+      dx = -20;
+    } else if (pos === "right") {
+      lx += 10;
+      align = "left";
+      dx = 20;
+    }
+
+    let attempts = 0;
+    let box = this.textPillBox(safeText, lx, ly, align, font);
+    while (
+      attempts < 20 &&
+      (this.labelBoxes.some((existing) => this.overlap(existing, box)) || (parentBox ? this.overlap(parentBox, box) : false))
+    ) {
+      lx += dx;
+      ly += dy;
+      box = this.textPillBox(safeText, lx, ly, align, font);
+      attempts += 1;
+    }
+    this.drawTextPill(safeText, lx, ly, align, "#FFFFFF", font);
+    this.labelBoxes.push(box);
   }
 
   private draw(el: StepElement, elapsed: number): void {
@@ -285,27 +455,37 @@ export class SimulationCanvasRenderer {
         } else {
           this.ctx.fill();
         }
-        this.label(el, label, x + w / 2, y, "above");
+        this.label(el, label, x + w / 2, y, "above", { x, y, w, h });
       } else if (t === "bar") {
         const orientation = this.str(el.orientation, "vertical").toLowerCase();
         this.roundRect(x, y, w, h, 6);
         this.ctx.fill();
         const valueLabel = this.str(el.value_label, label);
         if (orientation === "horizontal") {
-          this.label(el, valueLabel, x + w, y + h / 2, "right");
+          this.label(el, valueLabel, x + w, y + h / 2, "right", { x, y, w, h });
         } else {
-          this.label(el, valueLabel, x + w / 2, y, "above");
+          this.label(el, valueLabel, x + w / 2, y, "above", { x, y, w, h });
         }
       } else if (t === "circle" || t === "plot_point") {
         this.ctx.beginPath();
         this.ctx.arc(x, y, Math.max(2, r), 0, Math.PI * 2);
         this.ctx.fill();
-        this.label(el, label, x, y + r, t === "plot_point" ? "right" : "below");
+        this.label(el, label, x, y + r, t === "plot_point" ? "right" : "below", {
+          x: x - Math.max(2, r),
+          y: y - Math.max(2, r),
+          w: Math.max(2, r) * 2,
+          h: Math.max(2, r) * 2
+        });
       } else if (t === "ellipse") {
         this.ctx.beginPath();
         this.ctx.ellipse(x, y, Math.max(2, w / 2), Math.max(2, h / 2), 0, 0, Math.PI * 2);
         this.ctx.fill();
-        this.label(el, label, x + w / 2, y, "right");
+        this.label(el, label, x + w / 2, y, "right", {
+          x: x - Math.max(2, w / 2),
+          y: y - Math.max(2, h / 2),
+          w: Math.max(2, w / 2) * 2,
+          h: Math.max(2, h / 2) * 2
+        });
       } else if (t === "triangle" || t === "flowchart_diamond") {
         this.ctx.beginPath();
         if (t === "flowchart_diamond") {
@@ -320,7 +500,7 @@ export class SimulationCanvasRenderer {
         }
         this.ctx.closePath();
         this.ctx.fill();
-        this.label(el, label, x + w / 2, y, "above");
+        this.label(el, label, x + w / 2, y, "above", { x, y, w, h });
       } else if (t === "line" || t === "dashed_line" || t === "arrow") {
         const x1 = this.x(this.num(el, ["x1"], x));
         const y1 = this.y(this.num(el, ["y1"], y));
@@ -335,7 +515,12 @@ export class SimulationCanvasRenderer {
         this.ctx.stroke();
         this.ctx.restore();
         if (t === "arrow") this.arrowHead(x1, y1, end.x, end.y, c, lineWidth + 2);
-        this.label(el, label, (x1 + x2) / 2, (y1 + y2) / 2, "above");
+        this.label(el, label, (x1 + x2) / 2, (y1 + y2) / 2, "above", {
+          x: Math.min(x1, x2),
+          y: Math.min(y1, y2),
+          w: Math.abs(x2 - x1) || 1,
+          h: Math.abs(y2 - y1) || 1
+        });
       } else if (t === "curved_arrow") {
         const x1 = this.x(this.num(el, ["x1"], x));
         const y1 = this.y(this.num(el, ["y1"], y));
@@ -353,12 +538,16 @@ export class SimulationCanvasRenderer {
       } else if (t === "text") {
         const text = this.str(el.text, label);
         const fontSize = Math.max(10, this.num(el, ["font_size", "fontSize"], 16));
-        this.ctx.font = `600 ${fontSize}px Inter, Segoe UI, sans-serif`;
-        this.ctx.fillStyle = c;
-        this.ctx.textAlign = this.str(el.text_align, "center") as CanvasTextAlign;
-        this.ctx.textBaseline = "middle";
+        const textAlign = this.str(el.text_align, "center") as CanvasTextAlign;
         const visible = text.slice(0, Math.max(0, Math.ceil(text.length * s.textProgress)));
-        this.ctx.fillText(visible, x, y);
+        this.drawTextPill(
+          visible,
+          x,
+          y,
+          textAlign,
+          this.isDarkColor(c) ? "#FFFFFF" : c,
+          `600 ${fontSize}px Inter, Segoe UI, sans-serif`
+        );
       } else if (t === "polygon") {
         const points = this.arr(el.points).map((p) => this.obj(p)).map((p) => ({ x: this.x(this.num(p, ["x"], 0)), y: this.y(this.num(p, ["y"], 0)) }));
         if (points.length >= 3) {
@@ -404,8 +593,10 @@ export class SimulationCanvasRenderer {
         this.queue(el, x, y, w, h, c);
       } else if (t === "neural_layer") {
         this.neuralLayer(el, x, y, w, h, c);
+      } else if (t === "neural_network") {
+        this.neuralNetwork(el, x, y, w, h, c, s.highlight > 0 || s.scale !== 1);
       } else if (t === "tree_node") {
-        this.treeNode(el, x, y, r, c);
+        this.treeNodeRecursive(el, x, y, w, h, r, c);
       }
     });
   }
@@ -645,33 +836,127 @@ export class SimulationCanvasRenderer {
     }
   }
 
-  private treeNode(el: StepElement, x: number, y: number, r: number, c: string): void {
-    const value = this.str(el.value, this.str(el.label, "N"));
-    this.ctx.beginPath();
-    this.ctx.fillStyle = c;
-    this.ctx.arc(x, y, Math.max(8, r), 0, Math.PI * 2);
-    this.ctx.fill();
-    this.ctx.fillStyle = "#f4f8ff";
-    this.ctx.textAlign = "center";
-    this.ctx.textBaseline = "middle";
-    this.ctx.font = "600 11px Inter, Segoe UI, sans-serif";
-    this.ctx.fillText(value.slice(0, 8), x, y);
-    const children = this.arr(el.children).map((cItem) => this.obj(cItem));
-    for (const child of children) {
-      const cx = this.x(this.num(child, ["x"], x));
-      const cy = this.y(this.num(child, ["y"], y + 60));
-      this.ctx.strokeStyle = "#99b7e8";
+  private neuralNetwork(el: StepElement, x: number, y: number, w: number, h: number, c: string, active: boolean): void {
+    const layersRaw = this.arr(el.layers).map((item) => Number(item)).filter((n) => Number.isFinite(n) && n > 0);
+    const layers = layersRaw.length >= 2 ? layersRaw : [3, 4, 4, 2];
+    const layerGap = layers.length > 1 ? w / (layers.length - 1) : 0;
+    const radius = Math.max(5, Math.min(14, Math.min(w, h) / 30));
+    const nodePositions: Array<Array<{ x: number; y: number }>> = [];
+    const activeLayers = new Set(this.arr(el.active_layers).map((v) => Number(v)).filter((n) => Number.isFinite(n)));
+
+    for (let layerIdx = 0; layerIdx < layers.length; layerIdx += 1) {
+      const count = Math.max(1, Math.round(layers[layerIdx]));
+      const xPos = x + layerIdx * layerGap;
+      const layerTop = y + 14;
+      const layerBottom = y + h - 18;
+      const span = Math.max(1, layerBottom - layerTop);
+      const spacing = count === 1 ? 0 : span / (count - 1);
+      const nodes: Array<{ x: number; y: number }> = [];
+      for (let nodeIdx = 0; nodeIdx < count; nodeIdx += 1) {
+        const yPos = count === 1 ? y + h / 2 : layerTop + nodeIdx * spacing;
+        nodes.push({ x: xPos, y: yPos });
+      }
+      nodePositions.push(nodes);
+    }
+
+    this.ctx.strokeStyle = this.alphaColor(c, active ? 0.9 : 0.35);
+    this.ctx.lineWidth = active ? 1.8 : 1.2;
+    for (let i = 0; i < nodePositions.length - 1; i += 1) {
+      for (const from of nodePositions[i]) {
+        for (const to of nodePositions[i + 1]) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(from.x, from.y);
+          this.ctx.lineTo(to.x, to.y);
+          this.ctx.stroke();
+        }
+      }
+    }
+
+    for (let i = 0; i < nodePositions.length; i += 1) {
+      for (const node of nodePositions[i]) {
+        const layerActive = active || activeLayers.has(i);
+        this.ctx.beginPath();
+        this.ctx.fillStyle = layerActive ? this.brighten(c, 0.22) : this.alphaColor(c, 0.82);
+        this.ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.strokeStyle = "#d8e8ff";
+        this.ctx.stroke();
+      }
+      const layerName =
+        i === 0 ? "Input Layer" : i === nodePositions.length - 1 ? "Output Layer" : "Hidden Layer";
+      this.drawTextPill(layerName, x + i * layerGap, y - 12, "center", "#FFFFFF", "600 11px Inter, Segoe UI, sans-serif");
+    }
+  }
+
+  private treeNodeRecursive(el: StepElement, x: number, y: number, w: number, h: number, r: number, c: string): void {
+    const buildNode = (nodeLike: unknown): { value: string; children: Array<any>; x: number; depth: number } => {
+      const o = this.obj(nodeLike);
+      return {
+        value: this.str(o.value, this.str(o.label, "N")),
+        children: this.arr(o.children).map((child) => buildNode(child)),
+        x: 0,
+        depth: 0
+      };
+    };
+
+    const root = buildNode(el);
+    let leaf = 0;
+    const assign = (node: { children: Array<any>; x: number; depth: number }, depth: number): void => {
+      node.depth = depth;
+      if (!node.children.length) {
+        node.x = leaf;
+        leaf += 1;
+        return;
+      }
+      for (const child of node.children) assign(child, depth + 1);
+      node.x = node.children.reduce((sum, child) => sum + child.x, 0) / node.children.length;
+    };
+    assign(root, 0);
+
+    const maxDepth = (node: { children: Array<any>; depth: number }): number =>
+      node.children.length ? Math.max(node.depth, ...node.children.map((child) => maxDepth(child))) : node.depth;
+    const depthMax = Math.max(1, maxDepth(root));
+    const leaves = Math.max(1, leaf - 1);
+    const nodeRadius = Math.max(8, r);
+    const levelHeight = h / depthMax;
+
+    const toScreen = (node: { x: number; depth: number }): { x: number; y: number } => ({
+      x: x + (leaves === 0 ? w / 2 : (node.x / leaves) * w),
+      y: y + (node.depth / depthMax) * h
+    });
+
+    const drawEdges = (node: { children: Array<any>; x: number; depth: number }) => {
+      const parent = toScreen(node);
+      for (const child of node.children) {
+        const childPos = toScreen(child);
+        const midY = parent.y + levelHeight / 2;
+        this.ctx.strokeStyle = "#99b7e8";
+        this.ctx.beginPath();
+        this.ctx.moveTo(parent.x, parent.y + nodeRadius);
+        this.ctx.lineTo(parent.x, midY);
+        this.ctx.lineTo(childPos.x, midY);
+        this.ctx.lineTo(childPos.x, childPos.y - nodeRadius);
+        this.ctx.stroke();
+        drawEdges(child);
+      }
+    };
+
+    const drawNodes = (node: { value: string; children: Array<any>; x: number; depth: number }) => {
+      const p = toScreen(node);
       this.ctx.beginPath();
-      this.ctx.moveTo(x, y + r);
-      this.ctx.lineTo(cx, cy - r);
-      this.ctx.stroke();
-      this.ctx.beginPath();
-      this.ctx.fillStyle = this.alphaColor(c, 0.84);
-      this.ctx.arc(cx, cy, Math.max(7, r * 0.8), 0, Math.PI * 2);
+      this.ctx.fillStyle = c;
+      this.ctx.arc(p.x, p.y, nodeRadius, 0, Math.PI * 2);
       this.ctx.fill();
       this.ctx.fillStyle = "#f4f8ff";
-      this.ctx.fillText(this.str(child.value, this.str(child.label, "C")).slice(0, 8), cx, cy);
-    }
+      this.ctx.textAlign = "center";
+      this.ctx.textBaseline = "middle";
+      this.ctx.font = "600 11px Inter, Segoe UI, sans-serif";
+      this.ctx.fillText(node.value.slice(0, 8), p.x, p.y);
+      for (const child of node.children) drawNodes(child);
+    };
+
+    drawEdges(root);
+    drawNodes(root);
   }
 
   private easeOutBack(t: number): number {
