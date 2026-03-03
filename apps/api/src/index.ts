@@ -5,7 +5,7 @@ import cors from "cors";
 import express from "express";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
-import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { z } from "zod";
 import { authMiddleware, AuthenticatedRequest, createToken, hashPassword } from "./auth.js";
 import { LEVELS, PROBLEM_SETS, TOPICS } from "./seed.js";
@@ -39,8 +39,9 @@ const allowedOrigins = new Set([
   "http://127.0.0.1:4173",
   ...configuredOrigins
 ]);
+const CACHE_VERSION = process.env.CACHE_VERSION?.trim() || "2";
 const SIMULATION_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
-const SIMULATION_CACHE_SCHEMA_VERSION = "canvas-json-v3";
+const SIMULATION_CACHE_SCHEMA_VERSION = `canvas-json-v3::v${CACHE_VERSION}`;
 const bedrockRegion = process.env.AWS_BEDROCK_REGION?.trim() || process.env.AWS_REGION?.trim() || "us-west-2";
 const bedrockClient = new BedrockRuntimeClient({
   region: bedrockRegion,
@@ -77,6 +78,61 @@ const simulationResponseCache = new Map<
     };
   }
 >();
+
+function normalizeTopicCacheSlug(topicKey: string): string {
+  const slug = topicKey
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug || "untitled-topic";
+}
+
+function getSimulationS3CacheKey(topicKey: string): string {
+  return `simulations/v${CACHE_VERSION}/${normalizeTopicCacheSlug(topicKey)}.json`;
+}
+
+async function clearS3CacheBucket(): Promise<void> {
+  let continuationToken: string | undefined;
+  do {
+    const listed = await s3Client.send(
+      new ListObjectsV2Command({
+        Bucket: S3_BUCKET,
+        ContinuationToken: continuationToken
+      })
+    );
+    const keys =
+      listed.Contents?.map((item) => item.Key)
+        .filter((item): item is string => Boolean(item))
+        .map((key) => ({ Key: key })) ?? [];
+    if (keys.length > 0) {
+      await s3Client.send(
+        new DeleteObjectsCommand({
+          Bucket: S3_BUCKET,
+          Delete: {
+            Objects: keys,
+            Quiet: true
+          }
+        })
+      );
+      console.log(`[Cache] Deleted ${keys.length} S3 objects from ${S3_BUCKET}.`);
+    }
+    continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+  } while (continuationToken);
+}
+
+async function initializeCacheState(): Promise<void> {
+  simulationResponseCache.clear();
+  console.log(`[Cache] Cleared in-memory simulation cache. CACHE_VERSION=${CACHE_VERSION}`);
+  try {
+    await clearS3CacheBucket();
+    console.log(`[Cache] Cleared S3 cache bucket ${S3_BUCKET}. CACHE_VERSION=${CACHE_VERSION}`);
+  } catch (error) {
+    console.error(`[Cache] Failed to clear S3 cache bucket ${S3_BUCKET}. Continuing startup.`, error);
+  }
+}
 
 app.use(
   cors({
@@ -127,7 +183,7 @@ async function requestBedrockJson(prompt: string, topicKey?: string) {
   // Check S3 cache first if topic key provided
   if (topicKey) {
     try {
-      const cacheKey = `simulations/${topicKey.toLowerCase().replace(/\s+/g, "-")}.json`;
+      const cacheKey = getSimulationS3CacheKey(topicKey);
       const s3Response = await s3Client.send(
         new GetObjectCommand({
           Bucket: S3_BUCKET,
@@ -180,7 +236,7 @@ async function requestBedrockJson(prompt: string, topicKey?: string) {
   // Save to S3 cache if topic key provided
   if (topicKey) {
     try {
-      const cacheKey = `simulations/${topicKey.toLowerCase().replace(/\s+/g, "-")}.json`;
+      const cacheKey = getSimulationS3CacheKey(topicKey);
       await s3Client.send(
         new PutObjectCommand({
           Bucket: S3_BUCKET,
@@ -1632,8 +1688,9 @@ async function generateSimulationFromGemini(
   void level;
 
   const simulationFormatPrompt = `
-You are a world class educator and visualization expert with complete knowledge of every technical field. Explain ${topic} completely from absolute basics to advanced level. Cover: what it is, why it exists and matters, how it works step by step, worked examples with real numbers, edge cases, common mistakes, and real world applications. Generate as many steps as the topic genuinely needs for making understand to a beginner, decide wisely of how to handle simple topics and complex topics. Never stop early. Every step must teach exactly one concept clearly. Every step must have a completely unique visual layout different from all previous steps. Choose the most appropriate visual representation for each concept — use bars for comparisons, matrices for grids, trees for hierarchical data, neural_network for AI concepts, wave for signals, axis and plot_point for mathematical functions, flowchart_diamond for decisions, stack and queue for data structures, and so on. Never default to generic boxes and lines when a more specific element type exists. Output only valid JSON.
+You are a world class technical educator. The topic is: ${topic}. Generate a simulation that makes absolutely zero sense as a generic flow diagram. You must choose a visualization that is 100% specific to this exact topic and could not possibly be used for any other topic. Rules: if the topic involves a tree data structure use tree_node elements with actual values. If it involves sorting use bar elements with numbers. If it involves a neural network use neural_network element with a layers array. If it involves an algorithm show the actual algorithm executing step by step with real example data. If it involves signals or waves use wave elements. If it involves a matrix or grid use matrix elements. If it involves a graph data structure use circle nodes with arrow connections. NEVER use elements labeled Flow 1, Flow 2, Flow 3. NEVER use generic circles connected by lines. NEVER use triangles and ellipses to represent abstract concepts. Every element must have a label that is a real term from the topic - not Flow 1 or simulation or focused or fundamental. Generate minimum 8 steps. Each step must show something visually different and directly related to the topic concept being taught in that step. Output only valid JSON.
 `.trim();
+
 
   const systemPrompt = "Return only valid JSON with no markdown and no prose.";
 
@@ -1935,14 +1992,28 @@ async function analyzeVoiceActionWithNova(
   requires_animation: boolean;
 }> {
   const prompt = `
-You are an intelligent assistant controlling an interactive technical simulation. The user said: ${userSpeech}. The current topic is ${topicTitle} and the current simulation step is ${stepConcept} and the current step number is ${stepNumber}. Analyze what the user wants and respond with ONLY a valid JSON object containing these fields: action_type (must be exactly one of: answer_question, move_element, modify_element, play, pause, next_step, previous_step, restart, open_menu, close_menu, toggle_subtitles, toggle_voice, not_possible, general_answer), action_params (object containing any parameters needed to execute the action — for move_element include element_label and target_x and target_y as canvas percentages, for modify_element include element_label and what property to change and new value), spoken_response (a clear conversational English sentence or two that the system will speak aloud to the user as its reply), feedback (only for move_element and modify_element actions — explain whether this change is correct or incorrect for understanding the topic and exactly why, give a brief educational explanation), requires_animation (true or false indicating whether a canvas animation should play). Output only valid JSON with no extra text.
+You are an intelligent assistant controlling an interactive technical simulation. The user said: ${userSpeech}. The current topic is ${topicTitle}. The current simulation step is ${stepConcept}. The current step number is ${stepNumber}.
+Map natural language reliably using these examples:
+- next / forward / continue => next_step
+- back / previous / go back => previous_step
+- stop / pause / wait => pause
+- play / resume / start => play
+- what is this / explain / tell me => answer_question
+- move X to Y => move_element
+Respond with ONLY valid JSON containing:
+- action_type (exactly one of: answer_question, move_element, modify_element, play, pause, next_step, previous_step, restart, open_menu, close_menu, toggle_subtitles, toggle_voice, not_possible, general_answer)
+- action_params (object; for move_element include element_label, target_x, target_y as canvas percentages; for modify_element include element_label, property, new_value)
+- spoken_response (brief natural response for the user)
+- feedback (required only for move_element and modify_element; otherwise empty string)
+- requires_animation (boolean)
+Output only valid JSON with no extra text.
 `.trim();
 
   const body = JSON.stringify({
     messages: [{ role: "user", content: [{ text: prompt }] }],
     inferenceConfig: {
-      maxTokens: 300,
-      temperature: 0.2
+      maxTokens: 200,
+      temperature: 0.1
     }
   });
   const command = new InvokeModelCommand({
@@ -2549,6 +2620,14 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(status).json({ error: message });
 });
 
-app.listen(port, () => {
-  console.log(`Interactive Tech Tutor API running on http://localhost:${port}`);
+async function startServer(): Promise<void> {
+  await initializeCacheState();
+  app.listen(port, () => {
+    console.log(`Interactive Tech Tutor API running on http://localhost:${port}`);
+  });
+}
+
+void startServer().catch((error) => {
+  console.error("Failed to start Interactive Tech Tutor API:", error);
+  process.exit(1);
 });

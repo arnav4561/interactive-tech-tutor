@@ -248,6 +248,7 @@ export default function App(): JSX.Element {
   const simulationStepRef = useRef(0);
   const simulationPausedRef = useRef(false);
   const spokenStepRef = useRef(-1);
+  const stepNarrationCompleteRef = useRef(true);
   const recognitionStartingRef = useRef(false);
   const recognitionActiveRef = useRef(false);
   const recognitionStoppingRef = useRef(false);
@@ -1153,6 +1154,8 @@ export default function App(): JSX.Element {
           } else if (action.action_type === "pause") {
             setSimulationPaused(true);
             simulationPausedRef.current = true;
+            stepNarrationCompleteRef.current = true;
+            window.speechSynthesis.cancel();
             toast = "Pausing simulation";
           } else if (action.action_type === "next_step") {
             commandNonceRef.current += 1;
@@ -1486,6 +1489,8 @@ export default function App(): JSX.Element {
     }
     if (appView === "simulation") {
       setSimulationPaused(true);
+      stepNarrationCompleteRef.current = true;
+      window.speechSynthesis.cancel();
       setToolsPanelOpen(false);
       goHomeDirect();
     }
@@ -1742,13 +1747,25 @@ export default function App(): JSX.Element {
       if (voiceNarrationEnabled && appViewRef.current === "simulation") {
         if ("speechSynthesis" in window && spokenStepRef.current !== index) {
           spokenStepRef.current = index;
+          stepNarrationCompleteRef.current = false;
           window.speechSynthesis.cancel();
           const utterance = new SpeechSynthesisUtterance(step.subtitle);
           utterance.rate = 1;
+          utterance.onend = () => {
+            stepNarrationCompleteRef.current = true;
+          };
+          utterance.onerror = () => {
+            stepNarrationCompleteRef.current = true;
+          };
           window.speechSynthesis.speak(utterance);
+        } else {
+          stepNarrationCompleteRef.current = true;
         }
       } else if ("speechSynthesis" in window) {
+        stepNarrationCompleteRef.current = true;
         window.speechSynthesis.cancel();
+      } else {
+        stepNarrationCompleteRef.current = true;
       }
     };
 
@@ -1805,6 +1822,8 @@ export default function App(): JSX.Element {
         } else if (pendingCommand.action === "pause") {
           simulationPausedRef.current = true;
           setSimulationPaused(true);
+          stepNarrationCompleteRef.current = true;
+          window.speechSynthesis.cancel();
         } else if (pendingCommand.action === "play") {
           simulationPausedRef.current = false;
           setSimulationPaused(false);
@@ -1826,7 +1845,7 @@ export default function App(): JSX.Element {
       renderer.setPaused(pausedNow, now);
       if (!pausedNow) {
         stepElapsedMs += delta;
-        if (stepElapsedMs >= currentStepDurationMs) {
+        if (stepElapsedMs >= currentStepDurationMs && stepNarrationCompleteRef.current) {
           stepElapsedMs = 0;
           simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
           applyStep(simulationStepRef.current);
@@ -2620,7 +2639,17 @@ export default function App(): JSX.Element {
           <div className="sim-bottom-bar">
             <button
               className="sim-play-toggle nav-icon-btn"
-              onClick={() => setSimulationPaused((value) => !value)}
+              onClick={() =>
+                setSimulationPaused((value) => {
+                  const next = !value;
+                  simulationPausedRef.current = next;
+                  if (next) {
+                    stepNarrationCompleteRef.current = true;
+                    window.speechSynthesis.cancel();
+                  }
+                  return next;
+                })
+              }
               aria-label={simulationPaused ? "Play simulation" : "Pause simulation"}
               title={simulationPaused ? "Play simulation" : "Pause simulation"}
             >
