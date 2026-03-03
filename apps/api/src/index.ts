@@ -1688,7 +1688,56 @@ async function generateSimulationFromGemini(
   void level;
 
   const simulationFormatPrompt = `
-You are a world class technical educator. The topic is: ${topic}. Generate a simulation that makes absolutely zero sense as a generic flow diagram. You must choose a visualization that is 100% specific to this exact topic and could not possibly be used for any other topic. Rules: if the topic involves a tree data structure use tree_node elements with actual values. If it involves sorting use bar elements with numbers. If it involves a neural network use neural_network element with a layers array. If it involves an algorithm show the actual algorithm executing step by step with real example data. If it involves signals or waves use wave elements. If it involves a matrix or grid use matrix elements. If it involves a graph data structure use circle nodes with arrow connections. NEVER use elements labeled Flow 1, Flow 2, Flow 3. NEVER use generic circles connected by lines. NEVER use triangles and ellipses to represent abstract concepts. Every element must have a label that is a real term from the topic - not Flow 1 or simulation or focused or fundamental. Generate minimum 8 steps. Each step must show something visually different and directly related to the topic concept being taught in that step. Output only valid JSON.
+You are a world class technical educator creating a visual simulation for the topic: ${topic}.
+
+Output ONLY a JSON object in this EXACT schema with no deviations:
+{
+  "steps": [
+    {
+      "step": 1,
+      "concept": "concept_name_no_spaces",
+      "subtitle": "One sentence explaining what this step shows",
+      "canvas_instructions": {
+        "elements": [
+          {
+            "type": "bar",
+            "x": 10,
+            "y": 30,
+            "width": 10,
+            "height": 40,
+            "color": "#4A90E2",
+            "label": "5",
+            "label_position": "above",
+            "animation": {
+              "type": "fade_in",
+              "duration": 800
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+STRICT RULES:
+- The top level key must be exactly "steps" - not "simulation", not "visualization"
+- Every step must have exactly: step (number), concept (string), subtitle (string), canvas_instructions.elements (array)
+- Every element must have: type, x, y, color, label
+- All x and y values are percentages 0-100
+- All color values must be valid hex like #FF5733
+- All numeric values in JSON must be plain numbers like 0.37 not JavaScript expressions like Math.exp(...)
+- Do NOT wrap in markdown code blocks
+- Do NOT add any text before or after the JSON
+TOPIC-SPECIFIC ELEMENT RULES:
+- Binary search tree or any tree: use type "tree_node" with children array containing nested nodes with real numeric values like 10, 5, 15, 3, 7
+- Sorting algorithms: use type "bar" elements with numeric labels showing actual array values being sorted
+- Neural networks: use type "neural_network" with a layers array like [3,4,2]
+- Graphs or networks: use type "circle" nodes with type "arrow" connections and real node labels
+- Mathematical functions: use type "axis" and type "plot_point" elements
+- Queue or stack data structures: use type "queue" or type "stack" elements
+- Signal processing: use type "wave" elements
+- Matrices or grids: use type "matrix" elements
+
+Generate minimum 8 steps. Each step must be visually distinct and teach one specific concept about ${topic}.
 `.trim();
 
 
