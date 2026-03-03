@@ -133,7 +133,7 @@ async function requestBedrockJson(prompt: string, topicKey?: string) {
     }
   });
   const command = new InvokeModelCommand({
-    modelId: "amazon.nova-pro-v1:0",
+    modelId: "us.amazon.nova-pro-v1:0",
     contentType: "application/json",
     accept: "application/json",
     body
@@ -145,7 +145,7 @@ async function requestBedrockJson(prompt: string, topicKey?: string) {
   } catch (error) {
     console.error("[Bedrock invoke failed]", {
       region: bedrockRegion,
-      modelId: "amazon.nova-pro-v1:0",
+      modelId: "us.amazon.nova-pro-v1:0",
       error
     });
     throw error;
@@ -1915,7 +1915,7 @@ Reply with:
     }
   });
   const command = new InvokeModelCommand({
-    modelId: "amazon.nova-pro-v1:0",
+    modelId: "us.amazon.nova-pro-v1:0",
     contentType: "application/json",
     accept: "application/json",
     body
