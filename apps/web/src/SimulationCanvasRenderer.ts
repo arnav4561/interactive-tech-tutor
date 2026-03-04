@@ -159,7 +159,9 @@ export class SimulationCanvasRenderer {
     const elements = this.getElements();
     this.clampElementsForRender(elements);
     for (const el of elements) {
-      if (this.str((el as Record<string, unknown>).render_mode).toLowerCase() === "3d") {
+      const renderMode = this.str((el as Record<string, unknown>).render_mode).toLowerCase();
+      const type = this.type(el);
+      if (renderMode === "3d" && this.isNativeThreeType(type)) {
         continue;
       }
       this.draw(el, elapsed);
@@ -210,6 +212,21 @@ export class SimulationCanvasRenderer {
       .filter((el) => this.type(el) === "bar")
       .map((el) => ({ el: el as Record<string, unknown>, x: this.num(el, ["x"], 50), w: this.num(el, ["width"], 8) }))
       .sort((a, b) => a.x - b.x);
+
+    const verticalBars = bars.filter((bar) => this.str(bar.el.orientation, "vertical").toLowerCase() !== "horizontal");
+    if (verticalBars.length > 0) {
+      const labelValues = verticalBars.map((bar) => Number.parseFloat(this.str(bar.el.label, this.str(bar.el.value_label, ""))));
+      const allLabelsNumeric = labelValues.every((value) => Number.isFinite(value));
+      if (allLabelsNumeric) {
+        const maxLabelValue = Math.max(...labelValues);
+        if (maxLabelValue > 0) {
+          verticalBars.forEach((bar, index) => {
+            const value = labelValues[index];
+            bar.el.height = Math.max(8, (value / maxLabelValue) * 70);
+          });
+        }
+      }
+    }
 
     let hasOverlap = false;
     for (let i = 0; i < bars.length; i += 1) {
@@ -266,6 +283,10 @@ export class SimulationCanvasRenderer {
 
   private type(el: StepElement): string {
     return this.str(el.type, "rectangle").toLowerCase().replace(/\s+/g, "_");
+  }
+
+  private isNativeThreeType(type: string): boolean {
+    return ["sphere", "cube", "cylinder", "cone", "torus"].includes(type);
   }
 
   private anim(el: StepElement): Record<string, unknown> {

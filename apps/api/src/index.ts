@@ -1770,6 +1770,8 @@ TOPIC-SPECIFIC ELEMENT RULES:
 - Never use plain rectangle or circle when a more semantically specific element type exists.
 - For inherently 3D or spatial topics (3D graphics, computer vision, robotics, geometry, physics simulations, molecular structures, architectural visualization), include at least one element per step with render_mode set to 3d using one of: sphere, cube, cylinder, cone, torus.
 - If the topic contains any of these keywords - 3D, rotation, graphics, geometry, spatial, cube, sphere, physics, molecular, crystal, architecture, computer vision - then EVERY step must include at least one element with render_mode set to the string 3d and type set to one of sphere, cube, cylinder, cone, or torus. This is mandatory.
+- When using render_mode 3d, the type field MUST be exactly one of these values: sphere, cube, cylinder, cone, torus.
+- Never set render_mode to 3d for text, rectangle, arrow, circle, or any other type outside sphere, cube, cylinder, cone, torus.
 - For purely algorithmic topics (sorting, searching, etc.), do not force 3D elements.
 
 Generate the minimum number of steps needed to explain ${topic} completely - do not pad with extra steps.

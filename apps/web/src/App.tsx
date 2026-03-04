@@ -2021,11 +2021,12 @@ export default function App(): JSX.Element {
       ...(Array.isArray(step.canvas_instructions?.elements) ? step.canvas_instructions.elements : []),
       ...(Array.isArray((step as any).elements) ? (step as any).elements : [])
     ];
+    const validThreeDTypes = new Set(["sphere", "cube", "cylinder", "cone", "torus"]);
     const threeDElements = rawElements.filter((el) => {
       const renderMode = String((el as Record<string, unknown>).render_mode ?? "");
-      const type = String((el as Record<string, unknown>).type ?? "");
+      const type = String((el as Record<string, unknown>).type ?? "").toLowerCase().replace(/\s+/g, "_");
       console.log("[Three overlay filter] render_mode=", renderMode, "type=", type);
-      return renderMode.toLowerCase() === "3d";
+      return renderMode.toLowerCase() === "3d" && validThreeDTypes.has(type);
     });
     console.log(
       "[Three overlay 3d count] count=",
