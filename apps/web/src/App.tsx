@@ -2016,11 +2016,31 @@ export default function App(): JSX.Element {
       return;
     }
 
-    const step = selectedSimulation.steps[Math.min(selectedSimulation.steps.length - 1, Math.max(0, activeStepIndex))];
-    const elements = [
+    const stepIndex = Math.min(selectedSimulation.steps.length - 1, Math.max(0, activeStepIndex));
+    const step = selectedSimulation.steps[stepIndex];
+    const rawElements = [
       ...(Array.isArray(step.canvas_instructions?.elements) ? step.canvas_instructions.elements : []),
       ...(Array.isArray((step as any).elements) ? (step as any).elements : [])
-    ].filter((element) => String((element as Record<string, unknown>).render_mode ?? "").toLowerCase() === "3d");
+    ];
+    const elements = rawElements.filter((element, index) => {
+      const renderMode = String((element as Record<string, unknown>).render_mode ?? "");
+      const normalizedRenderMode = renderMode.toLowerCase();
+      const include3d = normalizedRenderMode === "3d";
+      console.log("[Three overlay filter]", {
+        stepIndex,
+        elementIndex: index,
+        type: String((element as Record<string, unknown>).type ?? ""),
+        renderMode,
+        normalizedRenderMode,
+        include3d
+      });
+      return include3d;
+    });
+    console.log("[Three overlay 3d count]", {
+      stepIndex,
+      totalElements: rawElements.length,
+      threeDElements: elements.length
+    });
 
     if (!elements.length) {
       host.innerHTML = "";
@@ -2109,8 +2129,15 @@ export default function App(): JSX.Element {
       }
 
       const onResize = () => {
-        const width = host.clientWidth || 200;
-        const height = host.clientHeight || 200;
+        const simHost = simulationHostRef.current;
+        const width = simHost?.clientWidth || host.clientWidth || 200;
+        const height = simHost?.clientHeight || host.clientHeight || 200;
+        const left = simHost?.offsetLeft ?? 0;
+        const top = simHost?.offsetTop ?? 0;
+        host.style.left = `${left}px`;
+        host.style.top = `${top}px`;
+        host.style.width = `${width}px`;
+        host.style.height = `${height}px`;
         camera.aspect = width / Math.max(1, height);
         camera.updateProjectionMatrix();
         renderer.setSize(width, height, false);

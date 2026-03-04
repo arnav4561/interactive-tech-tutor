@@ -159,6 +159,9 @@ export class SimulationCanvasRenderer {
     const elements = this.getElements();
     this.clampElementsForRender(elements);
     for (const el of elements) {
+      if (this.str((el as Record<string, unknown>).render_mode).toLowerCase() === "3d") {
+        continue;
+      }
       this.draw(el, elapsed);
     }
   }
@@ -184,8 +187,11 @@ export class SimulationCanvasRenderer {
       let height = this.num(element, ["height"], 12);
 
       if (this.type(el) === "text") {
-        x = Math.max(5, Math.min(90, x));
+        x = Math.max(8, Math.min(90, x));
         y = Math.max(5, Math.min(85, y));
+        if (!this.str(element.label_position)) {
+          element.label_position = "right";
+        }
       } else {
         x = Math.max(0, Math.min(85, x));
         y = Math.max(0, Math.min(80, y));
@@ -403,14 +409,15 @@ export class SimulationCanvasRenderer {
     textColor = "#FFFFFF",
     font = "600 12px Inter, Segoe UI, sans-serif"
   ): { x: number; y: number; w: number; h: number } {
-    const box = this.textPillBox(text, x, y, align, font);
+    const drawX = align === "left" ? Math.max(8, x) : x;
+    const box = this.textPillBox(text, drawX, y, align, font);
     this.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
     this.ctx.fillRect(box.x, box.y, box.w, box.h);
     this.ctx.fillStyle = this.isDarkColor(textColor) ? "#FFFFFF" : textColor;
     this.ctx.font = font;
     this.ctx.textAlign = align;
     this.ctx.textBaseline = "middle";
-    this.ctx.fillText(text, x, y);
+    this.ctx.fillText(text, drawX, y);
     return box;
   }
 
@@ -430,7 +437,7 @@ export class SimulationCanvasRenderer {
     const boxW = tw + padX * 2;
     const boxH = th + padY * 2;
     let boxX = x - boxW / 2;
-    if (align === "left") boxX = x - 2;
+    if (align === "left") boxX = Math.max(8, x - 2);
     if (align === "right") boxX = x - boxW + 2;
     const boxY = y - boxH / 2;
     return { x: boxX, y: boxY, w: boxW, h: boxH };
