@@ -200,25 +200,48 @@ function inject3DElements(topic: string, steps: SimulationCanvasStep[]): Simulat
     return steps;
   }
   const rotationAxisCycle = ["x", "y", "z"] as const;
+  const shapeCycle = [
+    { type: "cube", label: "Cube", color: "#4A90E2", size: 15, width: 15, height: 15 },
+    { type: "sphere", label: "Sphere", color: "#FF6B35", size: 12, width: 12, height: 12 },
+    { type: "cylinder", label: "Cylinder", color: "#00D4FF", size: 10, width: 10, height: 20 },
+    { type: "cone", label: "Cone", color: "#4CAF50", size: 10, width: 10, height: 18 },
+    { type: "torus", label: "Torus", color: "#9B59B6", size: 12, width: 12, height: 12 }
+  ] as const;
+
+  const isGenericRectangleLabel = (label: string): boolean => {
+    const normalizedLabel = label.trim().toLowerCase();
+    if (!normalizedLabel) return true;
+    return /^(rectangle|rect|box)(\s*\d+)?$/.test(normalizedLabel);
+  };
+
   return steps.map((step, index) => {
     const existingElements = Array.isArray(step.canvas_instructions?.elements) ? step.canvas_instructions.elements : [];
+    const filteredElements = existingElements.filter((element) => {
+      const type = String(element.type ?? "").toLowerCase().replace(/\s+/g, "_");
+      if (type !== "rectangle") {
+        return true;
+      }
+      const label = String(element.label ?? "");
+      return !isGenericRectangleLabel(label);
+    });
+    const shape = shapeCycle[index % shapeCycle.length];
     const injectedElement: SimulationCanvasElement = {
-      type: "cube",
+      type: shape.type,
       render_mode: "3d",
       x: 70,
       y: 30,
-      size: 15,
-      width: 15,
-      height: 15,
-      color: "#4A90E2",
-      label: "Cube",
+      size: shape.size,
+      width: shape.width,
+      height: shape.height,
+      color: shape.color,
+      label: shape.label,
       rotation_axis: rotationAxisCycle[index % rotationAxisCycle.length]
     };
     return {
       ...step,
       canvas_instructions: {
         ...(step.canvas_instructions ?? { elements: [] }),
-        elements: [...existingElements, injectedElement]
+        elements: [...filteredElements, injectedElement]
       }
     };
   });
@@ -2113,10 +2136,9 @@ export default function App(): JSX.Element {
       key.castShadow = true;
       scene.add(ambient, key);
 
-      const meshes: any[] = [];
+      const meshes: Array<{ mesh: any; type: string }> = [];
       const percentX = (value: unknown) => ((Number(value ?? 50) - 50) / 50) * 4.8;
       const percentY = (value: unknown) => ((50 - Number(value ?? 50)) / 50) * 2.8;
-      const sizeOf = (value: unknown, fallback: number) => Math.max(0.2, (Number(value ?? fallback) / 100) * 4);
       const colorOf = (value: unknown) =>
         typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : "#72d9ff";
 
@@ -2124,49 +2146,44 @@ export default function App(): JSX.Element {
         const element = raw as Record<string, unknown>;
         const type = String(element.type ?? "").toLowerCase().replace(/\s+/g, "_");
         const color = colorOf(element.color);
-        const material = new THREE.MeshStandardMaterial({ color, metalness: 0.35, roughness: 0.45 });
         let mesh: any = null;
-        const sx = sizeOf(element.width, 14);
-        const sy = sizeOf(element.height, 14);
+        const shapeMaterial = new THREE.MeshPhongMaterial({ color });
         if (type === "sphere") {
-          mesh = new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.22, sx * 0.25), 28, 28), material);
+          mesh = new THREE.Mesh(new THREE.SphereGeometry(1.2, 32, 32), shapeMaterial);
         } else if (type === "cube") {
-          mesh = new THREE.Mesh(new THREE.BoxGeometry(sx * 0.5, sy * 0.5, sx * 0.5), material);
+          mesh = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.8, 1.8), shapeMaterial);
         } else if (type === "cylinder") {
-          mesh = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(0.18, sx * 0.2), Math.max(0.18, sx * 0.2), sy * 0.6, 24), material);
+          mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.8, 2, 32), shapeMaterial);
         } else if (type === "cone") {
-          mesh = new THREE.Mesh(new THREE.ConeGeometry(Math.max(0.18, sx * 0.22), sy * 0.62, 24), material);
+          mesh = new THREE.Mesh(new THREE.ConeGeometry(1, 2, 32), shapeMaterial);
         } else if (type === "torus") {
-          mesh = new THREE.Mesh(new THREE.TorusGeometry(Math.max(0.2, sx * 0.24), 0.08, 16, 64), material);
-        } else if (type === "plane") {
-          mesh = new THREE.Mesh(new THREE.PlaneGeometry(sx * 0.7, sy * 0.7), material);
-        } else if (type === "3d_text" || type === "text_3d") {
-          const label = String(element.label ?? element.text ?? "Text");
-          const canvas = document.createElement("canvas");
-          canvas.width = 512;
-          canvas.height = 128;
-          const ctx = canvas.getContext("2d");
-          if (ctx) {
-            ctx.fillStyle = "rgba(0,0,0,0.4)";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 64px Inter, Segoe UI, sans-serif";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText(label.slice(0, 20), canvas.width / 2, canvas.height / 2);
-          }
-          const texture = new THREE.CanvasTexture(canvas);
-          mesh = new THREE.Mesh(
-            new THREE.PlaneGeometry(Math.max(0.8, sx), Math.max(0.35, sy * 0.5)),
-            new THREE.MeshBasicMaterial({ map: texture, transparent: true })
-          );
+          mesh = new THREE.Mesh(new THREE.TorusGeometry(1, 0.4, 16, 100), shapeMaterial);
         }
         if (!mesh) continue;
+        const rawSize = Number(element.size ?? 12);
+        if (type === "cube") {
+          const scale = Math.max(0.6, rawSize / 15);
+          mesh.scale.set(scale, scale, scale);
+        } else if (type === "sphere") {
+          const scale = Math.max(0.6, rawSize / 12);
+          mesh.scale.set(scale, scale, scale);
+        } else if (type === "cylinder") {
+          const widthScale = Math.max(0.55, Number(element.size ?? 10) / 10);
+          const heightScale = Math.max(0.65, Number(element.height ?? 20) / 20);
+          mesh.scale.set(widthScale, heightScale, widthScale);
+        } else if (type === "cone") {
+          const widthScale = Math.max(0.55, Number(element.size ?? 10) / 10);
+          const heightScale = Math.max(0.65, Number(element.height ?? 18) / 18);
+          mesh.scale.set(widthScale, heightScale, widthScale);
+        } else if (type === "torus") {
+          const scale = Math.max(0.6, rawSize / 12);
+          mesh.scale.set(scale, scale, scale);
+        }
         mesh.position.set(percentX(element.x), percentY(element.y), 0);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         scene.add(mesh);
-        meshes.push(mesh);
+        meshes.push({ mesh, type });
       }
 
       const onResize = () => {
@@ -2188,8 +2205,19 @@ export default function App(): JSX.Element {
 
       const tick = () => {
         if (disposed) return;
-        for (const mesh of meshes) {
-          mesh.rotation.y += 0.004;
+        for (const entry of meshes) {
+          if (entry.type === "cube") {
+            entry.mesh.rotation.y += 0.01;
+          } else if (entry.type === "sphere") {
+            entry.mesh.rotation.y += 0.007;
+            entry.mesh.rotation.x += 0.004;
+          } else if (entry.type === "cylinder") {
+            entry.mesh.rotation.z += 0.01;
+          } else if (entry.type === "cone") {
+            entry.mesh.rotation.y += 0.01;
+          } else if (entry.type === "torus") {
+            entry.mesh.rotation.x += 0.01;
+          }
         }
         renderer.render(scene, camera);
         frameId = window.requestAnimationFrame(tick);

@@ -442,9 +442,9 @@ export class SimulationCanvasRenderer {
     this.ctx.fillRect(box.x, box.y, box.w, box.h);
     this.ctx.fillStyle = this.isDarkColor(textColor) ? "#FFFFFF" : textColor;
     this.ctx.font = font;
-    this.ctx.textAlign = align;
+    this.ctx.textAlign = "center";
     this.ctx.textBaseline = "middle";
-    this.ctx.fillText(text, drawX, y);
+    this.ctx.fillText(text, box.x + box.w / 2, box.y + box.h / 2);
     return box;
   }
 
@@ -458,14 +458,16 @@ export class SimulationCanvasRenderer {
     this.ctx.font = font;
     const metrics = this.ctx.measureText(text);
     const tw = Math.max(8, metrics.width);
-    const th = 16;
+    const sizeMatch = /(\d+)px/.exec(font);
+    const fontPx = sizeMatch ? Number.parseInt(sizeMatch[1], 10) : 12;
+    const th = Math.max(14, fontPx + 2);
     const padX = 8;
-    const padY = 4;
+    const padY = 5;
     const boxW = tw + padX * 2;
     const boxH = th + padY * 2;
     let boxX = x - boxW / 2;
     if (align === "left") boxX = Math.max(this.width * 0.08, x - 2);
-    if (align === "right") boxX = x - boxW + 2;
+    if (align === "right") boxX = x - boxW;
     const boxY = y - boxH / 2;
     return { x: boxX, y: boxY, w: boxW, h: boxH };
   }
@@ -521,24 +523,25 @@ export class SimulationCanvasRenderer {
     const fontPx = sizeMatch ? Number.parseInt(sizeMatch[1], 10) : 12;
     const lineHeight = Math.max(14, fontPx + 4);
     const padX = 8;
-    const padY = 6;
+    const padY = 5;
     const maxLineWidth = lines.reduce((max, line) => Math.max(max, this.ctx.measureText(line).width), 8);
     const boxW = maxLineWidth + padX * 2;
     const boxH = lines.length * lineHeight + padY * 2;
     const drawX = align === "left" ? Math.max(this.width * 0.08, x) : x;
     let boxX = drawX - boxW / 2;
     if (align === "left") boxX = Math.max(this.width * 0.08, drawX - 2);
-    if (align === "right") boxX = drawX - boxW + 2;
+    if (align === "right") boxX = drawX - boxW;
     const boxY = y - boxH / 2;
     this.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
     this.ctx.fillRect(boxX, boxY, boxW, boxH);
     this.ctx.fillStyle = this.isDarkColor(textColor) ? "#FFFFFF" : textColor;
     this.ctx.font = font;
-    this.ctx.textAlign = align;
+    this.ctx.textAlign = "center";
     this.ctx.textBaseline = "middle";
+    const centerX = boxX + boxW / 2;
     for (let i = 0; i < lines.length; i += 1) {
       const lineY = boxY + padY + lineHeight * (i + 0.5);
-      this.ctx.fillText(lines[i], drawX, lineY);
+      this.ctx.fillText(lines[i], centerX, lineY);
     }
   }
 

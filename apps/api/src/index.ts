@@ -1771,6 +1771,10 @@ TOPIC-SPECIFIC ELEMENT RULES:
 - Use tree_node for any hierarchical structure.
 - Use table elements for comparisons between options.
 - Never use plain rectangle or circle when a more semantically specific element type exists.
+- Never generate rectangle elements unless the topic is specifically about rectangles or bounding boxes.
+- For 3D topics, use only text elements for definitions; the frontend will handle all visual rendering.
+- For algorithm topics, use only bar, tree_node, arrow, circle, or matrix elements.
+- For concept topics, use text, arrow, and flowchart_diamond elements.
 - Do not use render_mode in any element. The frontend will handle 3D rendering automatically.
 - For purely algorithmic topics (sorting, searching, etc.), do not force 3D elements.
 
