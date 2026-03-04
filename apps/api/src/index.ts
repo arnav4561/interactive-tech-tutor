@@ -185,7 +185,6 @@ type BedrockJsonRequestOptions = {
   saveCache?: boolean;
   maxTokens?: number;
   temperature?: number;
-  debugLabel?: string;
 };
 
 async function saveSimulationS3Cache(topicKey: string, payload: unknown): Promise<void> {
@@ -207,8 +206,7 @@ async function requestBedrockJson(prompt: string, options: BedrockJsonRequestOpt
     useCache = true,
     saveCache = true,
     maxTokens = 8000,
-    temperature = 0,
-    debugLabel = ""
+    temperature = 0
   } = options;
   const canUseCache = Boolean(topicKey) && useCache;
   const canSaveCache = Boolean(topicKey) && saveCache;
@@ -226,9 +224,6 @@ async function requestBedrockJson(prompt: string, options: BedrockJsonRequestOpt
       const cached = await s3Response.Body?.transformToString();
       if (cached) {
         console.log(`Cache hit for topic: ${topicKey}`);
-        if (debugLabel) {
-          console.log(`[Bedrock ${debugLabel}] using cached JSON payload`);
-        }
         return JSON.parse(cached);
       }
     } catch (_error) {
@@ -264,13 +259,8 @@ async function requestBedrockJson(prompt: string, options: BedrockJsonRequestOpt
   }
   const responseBody = JSON.parse(new TextDecoder().decode(response.body as Uint8Array));
   const text = responseBody.output?.message?.content?.[0]?.text ?? "";
-  console.log("[Bedrock raw response text FULL]", JSON.stringify(text, null, 2));
-  if (debugLabel) {
-    console.log(`[Bedrock raw response text ${debugLabel}]`, JSON.stringify(text, null, 2));
-  }
   const clean = String(text).replace(/```json|```/g, "").trim();
   const parsed = JSON.parse(clean);
-  console.log("[Bedrock parsed object FULL]", JSON.stringify(parsed, null, 2));
 
   // Save to S3 cache if topic key provided
   if (canSaveCache && topicKey) {
@@ -496,21 +486,9 @@ const llmSimulationSchema = z.object({
   steps: z.array(simCanvasStepSchema).min(1).max(120)
 });
 
-const simOutlineStepSchema = z.object({
-  step: z.number().int().min(1).max(120),
-  concept: z.string().min(1).max(220),
-  subtitle: z.string().min(1).max(1200),
-  duration_ms: z.number().int().min(12000).max(35000)
-});
-
-const llmOutlineSchema = z.object({
-  steps: z.array(simOutlineStepSchema).min(1).max(120)
-});
-
 type GeminiSimulationPayload = {
   steps: z.infer<typeof simCanvasStepSchema>[];
 };
-type SimulationOutlineStep = z.infer<typeof simOutlineStepSchema>;
 
 type SimStep = z.infer<typeof simStepSchema>;
 type GeminiCanvasStep = z.infer<typeof simCanvasStepSchema>;
@@ -976,20 +954,6 @@ function extractStepCandidates(payload: unknown): unknown[] {
   return [];
 }
 
-function rawStepElementCount(candidate: unknown): number {
-  const raw = asObject(candidate);
-  if (!raw) {
-    return 0;
-  }
-  const canvasInstructions = asObject(raw.canvas_instructions) ?? asObject(raw.canvasInstructions);
-  const elements =
-    (canvasInstructions && Array.isArray(canvasInstructions.elements) ? canvasInstructions.elements : null) ??
-    (Array.isArray(raw.elements) ? raw.elements : null) ??
-    (Array.isArray(raw.objects) ? raw.objects : null) ??
-    [];
-  return Array.isArray(elements) ? elements.length : 0;
-}
-
 function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasStep | null {
   const raw = asObject(candidate);
   if (!raw) {
@@ -1056,45 +1020,6 @@ function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasSte
     canvas_instructions: {
       elements
     }
-  };
-}
-
-function durationFromSubtitle(subtitle: string): number {
-  const wordCount = subtitle.split(/\s+/).filter(Boolean).length;
-  return clamp(wordCount * 400, 12000, 35000);
-}
-
-function normalizeOutlineStep(candidate: unknown, index: number): SimulationOutlineStep | null {
-  const raw = asObject(candidate);
-  if (!raw) {
-    return null;
-  }
-
-  const stepValue = Number.parseInt(asText(raw.step), 10);
-  const step = Number.isFinite(stepValue) ? clamp(stepValue, 1, 120) : clamp(index + 1, 1, 120);
-  const concept = (asText(raw.concept) || asText(raw.title) || `Step ${step}`).slice(0, 220);
-  const subtitle = (
-    asText(raw.subtitle) ||
-    asText(raw.annotation) ||
-    asText(raw.explanation) ||
-    `Explaining ${concept}.`
-  ).slice(0, 1200);
-
-  if (!subtitle) {
-    return null;
-  }
-
-  const durationRaw = Number(raw.duration_ms ?? raw.durationMs);
-  const duration_ms =
-    Number.isFinite(durationRaw) && durationRaw >= 12000 && durationRaw <= 35000
-      ? Math.round(durationRaw)
-      : durationFromSubtitle(subtitle);
-
-  return {
-    step,
-    concept,
-    subtitle,
-    duration_ms
   };
 }
 
@@ -1778,239 +1703,6 @@ function normalizeProblemSets(
   });
 }
 
-async function generateSimulationOutline(topic: string): Promise<SimulationOutlineStep[]> {
-  const prompt = `
-Generate a complete educational outline for the topic: ${topic}.
-Return JSON with steps array where each step has:
-- step (number)
-- concept (string)
-- subtitle (3-4 sentence factually accurate explanation)
-- duration_ms (word count times 400, min 12000, max 35000)
-No canvas elements.
-Return only JSON.
-`.trim();
-
-  const outlinePayload = await requestBedrockJson(prompt, {
-    topicKey: topic,
-    useCache: true,
-    saveCache: false,
-    maxTokens: 8000,
-    temperature: 0
-  });
-
-  const strict = llmOutlineSchema.safeParse(outlinePayload);
-  const candidates = strict.success ? strict.data.steps : extractStepCandidates(outlinePayload);
-  const outline: SimulationOutlineStep[] = [];
-  for (let index = 0; index < candidates.length; index += 1) {
-    const parsed = simOutlineStepSchema.safeParse(normalizeOutlineStep(candidates[index], index));
-    if (parsed.success) {
-      outline.push(parsed.data);
-    }
-  }
-
-  if (outline.length === 0) {
-    throw new Error("Simulation outline generation failed: no valid steps returned.");
-  }
-
-  return outline;
-}
-
-async function generateSimulationSinglePass(topic: string): Promise<GeminiCanvasStep[]> {
-  const prompt = `
-Generate a complete educational simulation for the topic: ${topic}.
-Return a JSON object with a steps array.
-Each step must have:
-- step (number)
-- concept (string)
-- subtitle (string)
-- duration_ms (number)
-- canvas_instructions with an elements array
-Elements must never be empty.
-Return only valid JSON.
-`.trim();
-
-  const payload = await requestBedrockJson(prompt, {
-    topicKey: topic,
-    useCache: false,
-    saveCache: false,
-    maxTokens: 8000,
-    temperature: 0,
-    debugLabel: "single-pass-fallback"
-  });
-
-  const strict = llmSimulationSchema.safeParse(payload);
-  const candidates = strict.success ? strict.data.steps : extractStepCandidates(payload);
-  const steps: GeminiCanvasStep[] = [];
-  for (let index = 0; index < candidates.length; index += 1) {
-    const parsed = simCanvasStepSchema.safeParse(normalizeCanvasStep(candidates[index], index));
-    if (parsed.success) {
-      steps.push(parsed.data);
-    }
-  }
-
-  if (steps.length === 0) {
-    throw new Error("Single-pass fallback failed: no valid simulation steps returned.");
-  }
-
-  return steps;
-}
-
-async function generateSimulationVisuals(
-  topic: string,
-  outline: SimulationOutlineStep[]
-): Promise<GeminiCanvasStep[]> {
-  const prompt = `
-'You are a visual diagram generator for educational simulations. Given steps with subtitles, generate rich canvas elements for each step. You MUST generate at least 4-6 elements per step — never just 1 element.
-MANDATORY RULES:
-- For binary search tree topics: every step must have multiple tree_node elements arranged as a proper BST. Use values like 10 as root, 5 and 15 as children, 3 and 7 under 5, 12 and 17 under 15. Each tree_node needs: type tree_node, value (number), x (percentage), y (percentage), color. Connect parent to children with lines.
-- For sorting topics: every step must have 5-7 bar elements with heights proportional to their values.
-- For concept topics: use multiple text elements with arrows showing relationships.
-- NEVER return only 1 element. NEVER return only a title text element.
-- Each step must visually show what the subtitle describes.
-Return JSON with steps array. Each step has step, concept, subtitle (copy exactly), duration_ms (copy exactly), and canvas_instructions.elements (minimum 4 elements).'
-Topic: ${topic}
-Outline JSON:
-${JSON.stringify({ steps: outline })}
-Return only valid JSON.
-`.trim();
-
-  const visualsPayload = await requestBedrockJson(prompt, {
-    topicKey: topic,
-    useCache: true,
-    saveCache: false,
-    maxTokens: 8000,
-    temperature: 0,
-    debugLabel: "visuals-call"
-  });
-
-  const strict = llmSimulationSchema.safeParse(visualsPayload);
-  const candidates = strict.success ? strict.data.steps : extractStepCandidates(visualsPayload);
-  console.log("[Visuals] raw parsed payload", JSON.stringify(visualsPayload, null, 2));
-  console.log(`[Visuals] returned steps: ${candidates.length}`);
-  const rawElementCounts = candidates.map((candidate) => rawStepElementCount(candidate));
-  rawElementCounts.forEach((count, index) => {
-    console.log(`[Visuals] step ${index + 1} raw elements: ${count}`);
-  });
-  const hasAnySparseStep = rawElementCounts.some((count) => count < 3);
-  if (candidates.length === 0 || hasAnySparseStep) {
-    console.warn("[Visuals] Sparse visuals response detected (<3 elements in a step). Falling back to single-pass generation.");
-    return generateSimulationSinglePass(topic);
-  }
-
-  const visualSteps: GeminiCanvasStep[] = [];
-  for (let index = 0; index < candidates.length; index += 1) {
-    const parsed = simCanvasStepSchema.safeParse(normalizeCanvasStep(candidates[index], index));
-    if (parsed.success) {
-      visualSteps.push(parsed.data);
-    }
-  }
-
-  const visualByStep = new Map<number, GeminiCanvasStep>();
-  for (const visualStep of visualSteps) {
-    visualByStep.set(visualStep.step, visualStep);
-  }
-
-  const merged: GeminiCanvasStep[] = [];
-  for (let index = 0; index < outline.length; index += 1) {
-    const outlineStep = outline[index];
-    const visual =
-      visualByStep.get(outlineStep.step) ??
-      visualSteps[index] ??
-      normalizeCanvasStep(
-        {
-          step: outlineStep.step,
-          concept: outlineStep.concept,
-          subtitle: outlineStep.subtitle,
-          duration_ms: outlineStep.duration_ms,
-          canvas_instructions: {
-            elements: [
-              {
-                type: "text",
-                x: 50,
-                y: 50,
-                width: 34,
-                height: 6,
-                color: "#00d4ff",
-                label: outlineStep.subtitle.slice(0, 160),
-                label_position: "above",
-                animation: {
-                  type: "fade_in",
-                  duration: 900,
-                  direction: "none",
-                  represents: outlineStep.subtitle
-                }
-              }
-            ]
-          }
-        },
-        index
-      );
-
-    if (!visual) {
-      continue;
-    }
-
-    merged.push({
-      ...visual,
-      step: outlineStep.step,
-      concept: outlineStep.concept,
-      subtitle: outlineStep.subtitle,
-      duration_ms: outlineStep.duration_ms
-    });
-  }
-
-  if (merged.length === 0) {
-    console.warn("[Visuals] No merged visual steps produced. Falling back to single-pass generation.");
-    return generateSimulationSinglePass(topic);
-  }
-
-  return merged;
-}
-
-async function validateAndCorrectSimulation(
-  topic: string,
-  steps: GeminiCanvasStep[]
-): Promise<GeminiCanvasStep[]> {
-  const validationPrompt = `
-You are a fact-checking expert. Review these educational simulation steps for the topic: ${topic}.
-Check every subtitle for factual accuracy. If any subtitle contains incorrect information, fix it.
-Return the corrected steps in the exact same JSON format.
-Rules: mathematical facts must be correct, algorithm descriptions must follow correct logic, data structure operations must follow correct rules (BST: less goes left, greater goes right), sorting algorithm steps must show correct comparisons, physics formulas must be accurate.
-If a subtitle is correct leave it unchanged.
-Return only the corrected JSON with the same structure.
-
-JSON to review:
-${JSON.stringify({ steps })}
-`.trim();
-
-  try {
-    const validatedPayload = await requestBedrockJson(validationPrompt, {
-      useCache: false,
-      saveCache: false,
-      maxTokens: 8000,
-      temperature: 0
-    });
-
-    const strict = llmSimulationSchema.safeParse(validatedPayload);
-    const candidates = strict.success ? strict.data.steps : extractStepCandidates(validatedPayload);
-    const corrected: GeminiCanvasStep[] = [];
-    for (let index = 0; index < candidates.length; index += 1) {
-      const parsedStep = simCanvasStepSchema.safeParse(normalizeCanvasStep(candidates[index], index));
-      if (parsedStep.success) {
-        corrected.push(parsedStep.data);
-      }
-    }
-    if (corrected.length > 0) {
-      return corrected;
-    }
-    console.warn("[Simulation] Fact-check pass returned no valid steps. Using original generated steps.");
-    return steps;
-  } catch (error) {
-    console.warn("[Simulation] Fact-check pass failed. Using original generated steps.", error);
-    return steps;
-  }
-}
-
 async function generateSimulationFromGemini(
   topic: string,
   level: DifficultyLevel
@@ -2022,16 +1714,57 @@ async function generateSimulationFromGemini(
   }
 
   void level;
-  const outline = await generateSimulationOutline(topic);
-  const visualizedSteps = await generateSimulationVisuals(topic, outline);
-  const factCheckedSteps = await validateAndCorrectSimulation(topic, visualizedSteps);
-  try {
-    await saveSimulationS3Cache(topic, { steps: factCheckedSteps });
-  } catch (error) {
-    console.warn("[Simulation] Unable to cache fact-checked steps to S3. Continuing without cache.", error);
+  const simulationFormatPrompt = `
+You are a world class technical educator creating a visual simulation for the topic: ${topic}.
+
+Return ONLY a JSON object with a steps array.
+Each step must include:
+- step (number)
+- concept (string)
+- subtitle (3-4 sentence explanation)
+- duration_ms (word_count * 400, minimum 12000, maximum 35000)
+- canvas_instructions with an elements array
+
+STRICT RULES:
+- For binary search tree topics: use ONLY tree_node elements (never line, never rectangle).
+  Each tree_node must have: type='tree_node', value (number), x (0-100), y (0-100), color, parent_value (number or null for root).
+  The renderer will draw connection lines automatically.
+- For sorting topics: use ONLY bar elements with numeric labels.
+- NEVER invent new element types.
+- Only use these exact types: tree_node, bar, text, arrow, circle, matrix, axis, plot_point, flowchart_diamond.
+- Every step must visually match its subtitle.
+- Never return markdown or prose outside JSON.
+`.trim();
+
+  const payload = await requestBedrockJson(simulationFormatPrompt, {
+    topicKey: topic,
+    useCache: true,
+    saveCache: false,
+    maxTokens: 8000,
+    temperature: 0
+  });
+
+  const strict = llmSimulationSchema.safeParse(payload);
+  const candidates = strict.success ? strict.data.steps : extractStepCandidates(payload);
+  const generatedSteps: GeminiCanvasStep[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const parsed = simCanvasStepSchema.safeParse(normalizeCanvasStep(candidates[index], index));
+    if (parsed.success) {
+      generatedSteps.push(parsed.data);
+    }
   }
 
-  return { steps: factCheckedSteps };
+  if (generatedSteps.length === 0) {
+    throw new Error("Simulation generation failed: Bedrock did not return valid steps.");
+  }
+
+  try {
+    await saveSimulationS3Cache(topic, { steps: generatedSteps });
+  } catch (error) {
+    console.warn("[Simulation] Unable to cache generated steps to S3. Continuing without cache.", error);
+  }
+
+  return { steps: generatedSteps };
 }
 
 function toCanvasPercentX(x: number): number {

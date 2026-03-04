@@ -2051,6 +2051,7 @@ export default function App(): JSX.Element {
           stepElapsedMsRef.current = 0;
           pausedAtElapsedMsRef.current = 0;
           applyStep(simulationStepRef.current);
+          setSubtitle(steps[targetIndex]?.subtitle ?? "");
         } else if (pendingCommand.action === "toggle-chat") {
           setChatPanelOpen((value) => !value);
         } else if (pendingCommand.action === "toggle-controls") {
