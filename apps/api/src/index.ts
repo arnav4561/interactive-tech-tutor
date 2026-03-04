@@ -455,6 +455,7 @@ const simCanvasStepSchema = z.object({
   step: z.number().int().min(1).max(120),
   concept: z.string().min(1).max(220),
   subtitle: z.string().min(1).max(400),
+  duration_ms: z.number().int().min(12000).max(20000).optional(),
   canvas_instructions: z.object({
     elements: z.array(simCanvasElementSchema).min(1).max(240)
   })
@@ -947,6 +948,11 @@ function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasSte
     asText(raw.explanation) ||
     `Explaining ${concept}.`
   ).slice(0, 400);
+  const durationRaw = Number(raw.duration_ms ?? raw.durationMs);
+  const duration_ms =
+    Number.isFinite(durationRaw) && durationRaw >= 12000 && durationRaw <= 20000
+      ? Math.round(durationRaw)
+      : undefined;
 
   const canvasInstructions = asObject(raw.canvas_instructions) ?? asObject(raw.canvasInstructions);
   const elementsSource =
@@ -989,6 +995,7 @@ function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasSte
     step,
     concept,
     subtitle,
+    ...(duration_ms ? { duration_ms } : {}),
     canvas_instructions: {
       elements
     }
@@ -1697,6 +1704,7 @@ Output ONLY a JSON object in this EXACT schema with no deviations:
       "step": 1,
       "concept": "concept_name_no_spaces",
       "subtitle": "One sentence explaining what this step shows",
+      "duration_ms": 15000,
       "canvas_instructions": {
         "elements": [
           {
@@ -1720,7 +1728,7 @@ Output ONLY a JSON object in this EXACT schema with no deviations:
 }
 STRICT RULES:
 - The top level key must be exactly "steps" - not "simulation", not "visualization"
-- Every step must have exactly: step (number), concept (string), subtitle (string), canvas_instructions.elements (array)
+- Every step must have exactly: step (number), concept (string), subtitle (string), duration_ms (number), canvas_instructions.elements (array)
 - Every element must have: type, x, y, color, label
 - All x and y values are percentages 0-100
 - All color values must be valid hex like #FF5733
@@ -1737,7 +1745,11 @@ TOPIC-SPECIFIC ELEMENT RULES:
 - Signal processing: use type "wave" elements
 - Matrices or grids: use type "matrix" elements
 
-Generate minimum 8 steps. Each step must be visually distinct and teach one specific concept about ${topic}.
+Generate the minimum number of steps needed to explain ${topic} completely - do not pad with extra steps.
+For each step, set subtitle to a thorough explanation of 2-3 sentences that covers that concept in enough detail for a complete beginner to understand.
+The subtitle will be read aloud, so it must be self-contained and educational.
+Do not rush - each subtitle should take about 15-20 seconds to read aloud.
+Add duration_ms on every step and set it between 12000 and 20000 based on concept complexity.
 `.trim();
 
 

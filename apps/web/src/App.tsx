@@ -105,6 +105,7 @@ interface SimulationCanvasStep {
   step: number;
   concept: string;
   subtitle: string;
+  duration_ms?: number;
   canvas_instructions: {
     elements: SimulationCanvasElement[];
   };
@@ -249,6 +250,8 @@ export default function App(): JSX.Element {
   const simulationPausedRef = useRef(false);
   const spokenStepRef = useRef(-1);
   const stepNarrationCompleteRef = useRef(true);
+  const stepElapsedMsRef = useRef(0);
+  const pausedAtElapsedMsRef = useRef(0);
   const recognitionStartingRef = useRef(false);
   const recognitionActiveRef = useRef(false);
   const recognitionStoppingRef = useRef(false);
@@ -1148,14 +1151,15 @@ export default function App(): JSX.Element {
 
           let toast = "Action executed";
           if (action.action_type === "play") {
+            stepElapsedMsRef.current = pausedAtElapsedMsRef.current;
             setSimulationPaused(false);
             simulationPausedRef.current = false;
             toast = "Playing simulation";
           } else if (action.action_type === "pause") {
-            setSimulationPaused(true);
+            pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+            setSimulationPaused(true); window.speechSynthesis.cancel();
             simulationPausedRef.current = true;
             stepNarrationCompleteRef.current = true;
-            window.speechSynthesis.cancel();
             toast = "Pausing simulation";
           } else if (action.action_type === "next_step") {
             commandNonceRef.current += 1;
@@ -1488,9 +1492,9 @@ export default function App(): JSX.Element {
       return;
     }
     if (appView === "simulation") {
-      setSimulationPaused(true);
+      pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+      setSimulationPaused(true); window.speechSynthesis.cancel();
       stepNarrationCompleteRef.current = true;
-      window.speechSynthesis.cancel();
       setToolsPanelOpen(false);
       goHomeDirect();
     }
@@ -1726,7 +1730,7 @@ export default function App(): JSX.Element {
     setSimulationRendererLoading(true);
     let disposed = false;
     let frameId = 0;
-    let stepElapsedMs = 0;
+    let stepElapsedMs = stepElapsedMsRef.current;
     let currentStepDurationMs = 3200;
     let lastFrame = performance.now();
     let lastProcessedCommandId = 0;
@@ -1776,7 +1780,11 @@ export default function App(): JSX.Element {
       const step = steps[index];
       renderer.setStep(step as SimulationCanvasStepLike);
       console.log(`[Simulation] step=${index + 1} elementTypes=`, renderer.getElementTypes());
-      currentStepDurationMs = renderer.getSuggestedDurationMs();
+      const requestedDuration = Number(step.duration_ms);
+      currentStepDurationMs =
+        Number.isFinite(requestedDuration) && requestedDuration >= 12000 && requestedDuration <= 20000
+          ? requestedDuration
+          : renderer.getSuggestedDurationMs();
       setStepNarration(step, index);
       renderer.render(performance.now());
       setSimulationRendererLoading(false);
@@ -1799,6 +1807,9 @@ export default function App(): JSX.Element {
     if (simulationStepRef.current >= steps.length) {
       simulationStepRef.current = 0;
     }
+    stepElapsedMs = 0;
+    stepElapsedMsRef.current = 0;
+    pausedAtElapsedMsRef.current = 0;
     applyStep(simulationStepRef.current);
 
     const tick = (now: number) => {
@@ -1807,6 +1818,7 @@ export default function App(): JSX.Element {
       }
       const delta = Math.min(50, now - lastFrame);
       lastFrame = now;
+      stepElapsedMs = stepElapsedMsRef.current;
 
       const pendingCommand = pendingSimulationCommandRef.current;
       if (pendingCommand && pendingCommand.id > lastProcessedCommandId) {
@@ -1814,22 +1826,30 @@ export default function App(): JSX.Element {
         if (pendingCommand.action === "next-step") {
           simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
           stepElapsedMs = 0;
+          stepElapsedMsRef.current = 0;
+          pausedAtElapsedMsRef.current = 0;
           applyStep(simulationStepRef.current);
         } else if (pendingCommand.action === "previous-step") {
           simulationStepRef.current = (simulationStepRef.current - 1 + steps.length) % steps.length;
           stepElapsedMs = 0;
+          stepElapsedMsRef.current = 0;
+          pausedAtElapsedMsRef.current = 0;
           applyStep(simulationStepRef.current);
         } else if (pendingCommand.action === "pause") {
+          pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
           simulationPausedRef.current = true;
-          setSimulationPaused(true);
+          setSimulationPaused(true); window.speechSynthesis.cancel();
           stepNarrationCompleteRef.current = true;
-          window.speechSynthesis.cancel();
         } else if (pendingCommand.action === "play") {
+          stepElapsedMs = pausedAtElapsedMsRef.current;
+          stepElapsedMsRef.current = stepElapsedMs;
           simulationPausedRef.current = false;
           setSimulationPaused(false);
         } else if (pendingCommand.action === "restart") {
           simulationStepRef.current = 0;
           stepElapsedMs = 0;
+          stepElapsedMsRef.current = 0;
+          pausedAtElapsedMsRef.current = 0;
           applyStep(simulationStepRef.current);
         } else if (pendingCommand.action === "toggle-chat") {
           setChatPanelOpen((value) => !value);
@@ -1845,8 +1865,11 @@ export default function App(): JSX.Element {
       renderer.setPaused(pausedNow, now);
       if (!pausedNow) {
         stepElapsedMs += delta;
+        stepElapsedMsRef.current = stepElapsedMs;
         if (stepElapsedMs >= currentStepDurationMs && stepNarrationCompleteRef.current) {
           stepElapsedMs = 0;
+          stepElapsedMsRef.current = 0;
+          pausedAtElapsedMsRef.current = 0;
           simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
           applyStep(simulationStepRef.current);
         }
@@ -1866,6 +1889,8 @@ export default function App(): JSX.Element {
       if ("speechSynthesis" in window) {
         window.speechSynthesis.cancel();
       }
+      stepElapsedMsRef.current = 0;
+      pausedAtElapsedMsRef.current = 0;
       renderer?.dispose();
       simulationRendererRef.current = null;
       setSimulationRendererLoading(false);
@@ -2639,17 +2664,18 @@ export default function App(): JSX.Element {
           <div className="sim-bottom-bar">
             <button
               className="sim-play-toggle nav-icon-btn"
-              onClick={() =>
-                setSimulationPaused((value) => {
-                  const next = !value;
-                  simulationPausedRef.current = next;
-                  if (next) {
-                    stepNarrationCompleteRef.current = true;
-                    window.speechSynthesis.cancel();
-                  }
-                  return next;
-                })
-              }
+              onClick={() => {
+                if (!simulationPausedRef.current) {
+                  pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+                  simulationPausedRef.current = true;
+                  setSimulationPaused(true); window.speechSynthesis.cancel();
+                  stepNarrationCompleteRef.current = true;
+                  return;
+                }
+                stepElapsedMsRef.current = pausedAtElapsedMsRef.current;
+                simulationPausedRef.current = false;
+                setSimulationPaused(false);
+              }}
               aria-label={simulationPaused ? "Play simulation" : "Pause simulation"}
               title={simulationPaused ? "Play simulation" : "Pause simulation"}
             >
