@@ -185,6 +185,7 @@ type BedrockJsonRequestOptions = {
   saveCache?: boolean;
   maxTokens?: number;
   temperature?: number;
+  debugLabel?: string;
 };
 
 async function saveSimulationS3Cache(topicKey: string, payload: unknown): Promise<void> {
@@ -206,7 +207,8 @@ async function requestBedrockJson(prompt: string, options: BedrockJsonRequestOpt
     useCache = true,
     saveCache = true,
     maxTokens = 8000,
-    temperature = 0
+    temperature = 0,
+    debugLabel = ""
   } = options;
   const canUseCache = Boolean(topicKey) && useCache;
   const canSaveCache = Boolean(topicKey) && saveCache;
@@ -224,6 +226,9 @@ async function requestBedrockJson(prompt: string, options: BedrockJsonRequestOpt
       const cached = await s3Response.Body?.transformToString();
       if (cached) {
         console.log(`Cache hit for topic: ${topicKey}`);
+        if (debugLabel) {
+          console.log(`[Bedrock ${debugLabel}] using cached JSON payload`);
+        }
         return JSON.parse(cached);
       }
     } catch (_error) {
@@ -260,6 +265,9 @@ async function requestBedrockJson(prompt: string, options: BedrockJsonRequestOpt
   const responseBody = JSON.parse(new TextDecoder().decode(response.body as Uint8Array));
   const text = responseBody.output?.message?.content?.[0]?.text ?? "";
   console.log("[Bedrock raw response text FULL]", JSON.stringify(text, null, 2));
+  if (debugLabel) {
+    console.log(`[Bedrock raw response text ${debugLabel}]`, JSON.stringify(text, null, 2));
+  }
   const clean = String(text).replace(/```json|```/g, "").trim();
   const parsed = JSON.parse(clean);
   console.log("[Bedrock parsed object FULL]", JSON.stringify(parsed, null, 2));
@@ -966,6 +974,20 @@ function extractStepCandidates(payload: unknown): unknown[] {
     return [root];
   }
   return [];
+}
+
+function rawStepElementCount(candidate: unknown): number {
+  const raw = asObject(candidate);
+  if (!raw) {
+    return 0;
+  }
+  const canvasInstructions = asObject(raw.canvas_instructions) ?? asObject(raw.canvasInstructions);
+  const elements =
+    (canvasInstructions && Array.isArray(canvasInstructions.elements) ? canvasInstructions.elements : null) ??
+    (Array.isArray(raw.elements) ? raw.elements : null) ??
+    (Array.isArray(raw.objects) ? raw.objects : null) ??
+    [];
+  return Array.isArray(elements) ? elements.length : 0;
 }
 
 function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasStep | null {
@@ -1793,17 +1815,64 @@ Return only JSON.
   return outline;
 }
 
+async function generateSimulationSinglePass(topic: string): Promise<GeminiCanvasStep[]> {
+  const prompt = `
+Generate a complete educational simulation for the topic: ${topic}.
+Return a JSON object with a steps array.
+Each step must have:
+- step (number)
+- concept (string)
+- subtitle (string)
+- duration_ms (number)
+- canvas_instructions with an elements array
+Elements must never be empty.
+Return only valid JSON.
+`.trim();
+
+  const payload = await requestBedrockJson(prompt, {
+    topicKey: topic,
+    useCache: false,
+    saveCache: false,
+    maxTokens: 8000,
+    temperature: 0,
+    debugLabel: "single-pass-fallback"
+  });
+
+  const strict = llmSimulationSchema.safeParse(payload);
+  const candidates = strict.success ? strict.data.steps : extractStepCandidates(payload);
+  const steps: GeminiCanvasStep[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const parsed = simCanvasStepSchema.safeParse(normalizeCanvasStep(candidates[index], index));
+    if (parsed.success) {
+      steps.push(parsed.data);
+    }
+  }
+
+  if (steps.length === 0) {
+    throw new Error("Single-pass fallback failed: no valid simulation steps returned.");
+  }
+
+  return steps;
+}
+
 async function generateSimulationVisuals(
   topic: string,
   outline: SimulationOutlineStep[]
 ): Promise<GeminiCanvasStep[]> {
   const prompt = `
 Given these educational steps with their explanations, generate the canvas_instructions.elements for each step.
+Return a JSON object with a steps array.
+Each step must have:
+- step (number)
+- concept (string)
+- subtitle (copy exactly from the outline)
+- duration_ms (copy exactly from the outline)
+- canvas_instructions with an elements array
 The visual elements MUST accurately represent what the subtitle describes.
 If the subtitle says move right, the visual must show movement to the right.
 If the subtitle says insert 8 as right child of 7, element 8 must be positioned to the RIGHT of element 7.
 Read each subtitle carefully and make the visual match it exactly.
-Return the same steps array with canvas_instructions added to each step.
+The elements array must not be empty. If a step has no good visual, use at least one text element showing the key concept.
 Topic: ${topic}
 Outline JSON:
 ${JSON.stringify({ steps: outline })}
@@ -1815,11 +1884,24 @@ Return only valid JSON.
     useCache: true,
     saveCache: false,
     maxTokens: 8000,
-    temperature: 0
+    temperature: 0,
+    debugLabel: "visuals-call"
   });
 
   const strict = llmSimulationSchema.safeParse(visualsPayload);
   const candidates = strict.success ? strict.data.steps : extractStepCandidates(visualsPayload);
+  console.log("[Visuals] raw parsed payload", JSON.stringify(visualsPayload, null, 2));
+  console.log(`[Visuals] returned steps: ${candidates.length}`);
+  const rawElementCounts = candidates.map((candidate) => rawStepElementCount(candidate));
+  rawElementCounts.forEach((count, index) => {
+    console.log(`[Visuals] step ${index + 1} raw elements: ${count}`);
+  });
+  const hasNonEmptyVisualStep = rawElementCounts.some((count) => count > 0);
+  if (candidates.length === 0 || !hasNonEmptyVisualStep) {
+    console.warn("[Visuals] Empty visuals response detected. Falling back to single-pass generation.");
+    return generateSimulationSinglePass(topic);
+  }
+
   const visualSteps: GeminiCanvasStep[] = [];
   for (let index = 0; index < candidates.length; index += 1) {
     const parsed = simCanvasStepSchema.safeParse(normalizeCanvasStep(candidates[index], index));
@@ -1883,7 +1965,8 @@ Return only valid JSON.
   }
 
   if (merged.length === 0) {
-    throw new Error("Simulation visual generation failed: no valid visual steps returned.");
+    console.warn("[Visuals] No merged visual steps produced. Falling back to single-pass generation.");
+    return generateSimulationSinglePass(topic);
   }
 
   return merged;

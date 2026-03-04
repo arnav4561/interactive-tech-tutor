@@ -485,7 +485,7 @@ export default function App(): JSX.Element {
       subtitleTimerRef.current = null;
     }
     setSubtitle("");
-    subtitleDisplayCompleteRef.current = true;
+    subtitleDisplayCompleteRef.current = false;
     if ("speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -493,7 +493,6 @@ export default function App(): JSX.Element {
 
   const pushSubtitle = useCallback((text: string, durationMs = 2600) => {
     setSubtitle(text);
-    subtitleDisplayCompleteRef.current = true;
     if (subtitleTimerRef.current !== null) {
       window.clearTimeout(subtitleTimerRef.current);
     }
@@ -1685,7 +1684,7 @@ export default function App(): JSX.Element {
           window.speechSynthesis.cancel();
         }
         stepNarrationCompleteRef.current = true;
-        subtitleDisplayCompleteRef.current = true;
+        subtitleDisplayCompleteRef.current = false;
         resumeNarrationRequestedRef.current = false;
         return;
       }
@@ -1904,10 +1903,10 @@ export default function App(): JSX.Element {
       setActiveStepIndex(index);
       if (subtitlesEnabled) {
         setSubtitle(fullSubtitle);
-        subtitleDisplayCompleteRef.current = true;
+        subtitleDisplayCompleteRef.current = false;
       } else {
         setSubtitle("");
-        subtitleDisplayCompleteRef.current = true;
+        subtitleDisplayCompleteRef.current = false;
       }
       setMathOverlayLines([]);
 

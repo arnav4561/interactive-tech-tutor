@@ -831,6 +831,9 @@ export class SimulationCanvasRenderer {
         this.arrowHead(p2.x, p2.y, p.x, p.y, c, lineWidth + 2);
       } else if (t === "text") {
         const text = this.str(el.text, label);
+        if (text.length > 200) {
+          return;
+        }
         let adjustedFontSize = 13;
         if (text.length > 120) {
           adjustedFontSize = 10;
