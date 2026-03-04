@@ -177,6 +177,53 @@ function loadSubtitlePreference(): boolean {
   return localStorage.getItem("itt_subtitles") !== "false";
 }
 
+function inject3DElements(topic: string, steps: SimulationCanvasStep[]): SimulationCanvasStep[] {
+  const normalizedTopic = topic.toLowerCase();
+  const threeKeywords = [
+    "3d",
+    "rotation",
+    "rotate",
+    "cube",
+    "sphere",
+    "graphics",
+    "geometry",
+    "spatial",
+    "physics",
+    "cylinder",
+    "cone",
+    "torus",
+    "molecular",
+    "crystal"
+  ];
+  const shouldInject = threeKeywords.some((keyword) => normalizedTopic.includes(keyword));
+  if (!shouldInject) {
+    return steps;
+  }
+  const rotationAxisCycle = ["x", "y", "z"] as const;
+  return steps.map((step, index) => {
+    const existingElements = Array.isArray(step.canvas_instructions?.elements) ? step.canvas_instructions.elements : [];
+    const injectedElement: SimulationCanvasElement = {
+      type: "cube",
+      render_mode: "3d",
+      x: 70,
+      y: 30,
+      size: 15,
+      width: 15,
+      height: 15,
+      color: "#4A90E2",
+      label: "Cube",
+      rotation_axis: rotationAxisCycle[index % rotationAxisCycle.length]
+    };
+    return {
+      ...step,
+      canvas_instructions: {
+        ...(step.canvas_instructions ?? { elements: [] }),
+        elements: [...existingElements, injectedElement]
+      }
+    };
+  });
+}
+
 export default function App(): JSX.Element {
   const [displayName, setDisplayName] = useState<string>(() => localStorage.getItem("itt_name") ?? "");
   const [email, setEmail] = useState("");
@@ -684,6 +731,7 @@ export default function App(): JSX.Element {
         },
         token
       );
+      const injectedSteps = inject3DElements(requestedTopic, response.simulation_steps);
       setTopics((current) => [response.topic, ...current.filter((topic) => topic.id !== response.topic.id)]);
       setGeneratedProblemSets((current) => ({
         ...current,
@@ -693,12 +741,12 @@ export default function App(): JSX.Element {
         ...current,
         [response.topic.id]: {
           explanationScript: response.explanation_script,
-          steps: response.simulation_steps,
+          steps: injectedSteps,
           generationSource: response.generationSource === "template" ? "template" : "bedrock"
         }
       }));
       console.log(
-        `[Simulation] source=${response.generationSource ?? "unknown"} steps=${response.simulation_steps.length}`
+        `[Simulation] source=${response.generationSource ?? "unknown"} steps=${injectedSteps.length}`
       );
       setSelectedTopicId(response.topic.id);
       simulationStepRef.current = 0;
