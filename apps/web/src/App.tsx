@@ -200,13 +200,17 @@ function inject3DElements(topic: string, steps: SimulationCanvasStep[]): Simulat
     return steps;
   }
   const rotationAxisCycle = ["x", "y", "z"] as const;
-  const shapeCycle = [
-    { type: "cube", label: "Cube", color: "#4A90E2", size: 15, width: 15, height: 15 },
-    { type: "sphere", label: "Sphere", color: "#FF6B35", size: 12, width: 12, height: 12 },
-    { type: "cylinder", label: "Cylinder", color: "#00D4FF", size: 10, width: 10, height: 20 },
-    { type: "cone", label: "Cone", color: "#4CAF50", size: 10, width: 10, height: 18 },
-    { type: "torus", label: "Torus", color: "#9B59B6", size: 12, width: 12, height: 12 }
-  ] as const;
+  const selectedShape = normalizedTopic.includes("sphere")
+    ? { type: "sphere", label: "Sphere", color: "#FF6B35", size: 12, width: 12, height: 12 }
+    : normalizedTopic.includes("cylinder")
+      ? { type: "cylinder", label: "Cylinder", color: "#00D4FF", size: 10, width: 10, height: 20 }
+      : normalizedTopic.includes("cone")
+        ? { type: "cone", label: "Cone", color: "#4CAF50", size: 10, width: 10, height: 18 }
+        : normalizedTopic.includes("torus")
+          ? { type: "torus", label: "Torus", color: "#9B59B6", size: 12, width: 12, height: 12 }
+          : normalizedTopic.includes("cube")
+            ? { type: "cube", label: "Cube", color: "#4A90E2", size: 15, width: 15, height: 15 }
+            : { type: "cube", label: "Cube", color: "#4A90E2", size: 15, width: 15, height: 15 };
 
   const isGenericRectangleLabel = (label: string): boolean => {
     const normalizedLabel = label.trim().toLowerCase();
@@ -224,17 +228,16 @@ function inject3DElements(topic: string, steps: SimulationCanvasStep[]): Simulat
       const label = String(element.label ?? "");
       return !isGenericRectangleLabel(label);
     });
-    const shape = shapeCycle[index % shapeCycle.length];
     const injectedElement: SimulationCanvasElement = {
-      type: shape.type,
+      type: selectedShape.type,
       render_mode: "3d",
       x: 70,
       y: 30,
-      size: shape.size,
-      width: shape.width,
-      height: shape.height,
-      color: shape.color,
-      label: shape.label,
+      size: selectedShape.size,
+      width: selectedShape.width,
+      height: selectedShape.height,
+      color: selectedShape.color,
+      label: selectedShape.label,
       rotation_axis: rotationAxisCycle[index % rotationAxisCycle.length]
     };
     return {
@@ -2030,7 +2033,11 @@ export default function App(): JSX.Element {
       if (!pausedNow) {
         stepElapsedMs += delta;
         stepElapsedMsRef.current = stepElapsedMs;
-        if (stepElapsedMs >= currentStepDurationMs && stepNarrationCompleteRef.current) {
+        if (
+          stepElapsedMs >= currentStepDurationMs &&
+          stepNarrationCompleteRef.current &&
+          renderer.isAnimationComplete(now)
+        ) {
           stepElapsedMs = 0;
           stepElapsedMsRef.current = 0;
           pausedAtElapsedMsRef.current = 0;

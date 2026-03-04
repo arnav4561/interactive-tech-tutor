@@ -93,6 +93,27 @@ export class SimulationCanvasRenderer {
     return Math.max(2600, maxDuration + 800);
   }
 
+  isAnimationComplete(now = performance.now()): boolean {
+    const elements = this.getElements();
+    if (!elements.length) {
+      return true;
+    }
+    const elapsed = this.elapsed(now);
+    for (const el of elements) {
+      const a = this.anim(el);
+      const type = this.str(a.type, "none").toLowerCase().replace(/\s+/g, "_");
+      if (!Object.keys(a).length || type === "none") {
+        continue;
+      }
+      const delay = Math.max(0, this.num(a, ["delay", "delayMs"], 0));
+      const duration = Math.max(100, this.num(a, ["duration", "durationMs"], 900));
+      if (elapsed < delay + duration) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   getCurrentStep(): SimulationCanvasStepLike | null {
     return this.step;
   }
@@ -395,6 +416,10 @@ export class SimulationCanvasRenderer {
         const q = this.quad(t, sx, sy, cx, cy, tx, ty);
         s.dx = q.x - sx;
         s.dy = q.y - sy;
+      } else if (type === "swap") {
+        // Explicit linear interpolation for swap animations.
+        s.dx = (tx - sx) * p;
+        s.dy = (ty - sy) * p;
       } else {
         s.dx = (tx - sx) * t;
         s.dy = (ty - sy) * t;
@@ -727,8 +752,12 @@ export class SimulationCanvasRenderer {
         this.arrowHead(p2.x, p2.y, p.x, p.y, c, lineWidth + 2);
       } else if (t === "text") {
         const text = this.str(el.text, label);
-        const baseFontSize = Math.max(10, this.num(el, ["font_size", "fontSize"], 16));
-        const adjustedFontSize = text.length > 60 ? Math.min(baseFontSize, 10) : text.length > 40 ? Math.min(baseFontSize, 11) : baseFontSize;
+        let adjustedFontSize = 13;
+        if (text.length > 120) {
+          adjustedFontSize = 10;
+        } else if (text.length > 80) {
+          adjustedFontSize = 11;
+        }
         const textAlign = this.str(el.text_align, "left") as CanvasTextAlign;
         const visible = text.slice(0, Math.max(0, Math.ceil(text.length * s.textProgress)));
         const rawTextX = this.num(el, ["x"], 50);
@@ -791,7 +820,7 @@ export class SimulationCanvasRenderer {
       } else if (t === "neural_network") {
         this.neuralNetwork(el, x, y, w, h, c, s.highlight > 0 || s.scale !== 1);
       } else if (t === "tree_node") {
-        this.treeNodeRecursive(el, x, y, w, h, r, c);
+        this.treeNodeRecursive(el, c, s);
       }
     });
   }
@@ -1107,61 +1136,86 @@ export class SimulationCanvasRenderer {
     }
   }
 
-  private treeNodeRecursive(el: StepElement, x: number, y: number, w: number, h: number, r: number, c: string): void {
-    const buildNode = (nodeLike: unknown): { value: string; children: Array<any>; x: number; depth: number } => {
+  private treeNodeRecursive(el: StepElement, c: string, s: AnimState): void {
+    type TreeNode = {
+      key: string;
+      value: string;
+      children: TreeNode[];
+      depth: number;
+      index: number;
+    };
+
+    const buildNode = (nodeLike: unknown, depth: number, index: number): TreeNode => {
       const o = this.obj(nodeLike);
+      const childrenRaw = this.arr(o.children).slice(0, 2);
       return {
+        key: `${depth}-${index}`,
         value: this.str(o.value, this.str(o.label, "N")),
-        children: this.arr(o.children).map((child) => buildNode(child)),
-        x: 0,
-        depth: 0
+        children: childrenRaw.map((child, childIdx) => buildNode(child, depth + 1, index * 2 + childIdx)),
+        depth,
+        index
       };
     };
 
-    const root = buildNode(el);
-    let leaf = 0;
-    const assign = (node: { children: Array<any>; x: number; depth: number }, depth: number): void => {
-      node.depth = depth;
-      if (!node.children.length) {
-        node.x = leaf;
-        leaf += 1;
-        return;
-      }
-      for (const child of node.children) assign(child, depth + 1);
-      node.x = node.children.reduce((sum, child) => sum + child.x, 0) / node.children.length;
+    const root = buildNode(el, 0, 0);
+    const minSiblingGapPct = 18;
+    const levelY = (depth: number) => 15 + depth * 20;
+    const levelX = (depth: number, index: number) => {
+      if (depth === 0) return 50;
+      if (depth === 1) return index === 0 ? 30 : 70;
+      if (depth === 2) return [20, 40, 60, 80][Math.max(0, Math.min(3, index))];
+      const nodesAtLevel = Math.pow(2, depth);
+      const start = 50 - ((nodesAtLevel - 1) * minSiblingGapPct) / 2;
+      return Math.max(8, Math.min(92, start + index * minSiblingGapPct));
     };
-    assign(root, 0);
 
-    const maxDepth = (node: { children: Array<any>; depth: number }): number =>
-      node.children.length ? Math.max(node.depth, ...node.children.map((child) => maxDepth(child))) : node.depth;
-    const depthMax = Math.max(1, maxDepth(root));
-    const leaves = Math.max(1, leaf - 1);
-    const nodeRadius = Math.max(8, r);
-    const levelHeight = h / depthMax;
-
-    const toScreen = (node: { x: number; depth: number }): { x: number; y: number } => ({
-      x: x + (leaves === 0 ? w / 2 : (node.x / leaves) * w),
-      y: y + (node.depth / depthMax) * h
+    const toScreen = (node: TreeNode): { x: number; y: number } => ({
+      x: this.x(levelX(node.depth, node.index)),
+      y: this.y(levelY(node.depth))
     });
 
-    const drawEdges = (node: { children: Array<any>; x: number; depth: number }) => {
+    const findAnimatedInsertionKey = (node: TreeNode): string => {
+      let best = node;
+      const visit = (current: TreeNode) => {
+        if (current.depth > best.depth || (current.depth === best.depth && current.index > best.index)) {
+          best = current;
+        }
+        current.children.forEach(visit);
+      };
+      visit(node);
+      return best.key;
+    };
+
+    const animType = this.str(this.anim(el).type, "none").toLowerCase().replace(/\s+/g, "_");
+    const animateInsertion = animType === "fade_in" || animType === "scale_up";
+    const insertionKey = animateInsertion ? findAnimatedInsertionKey(root) : "";
+
+    const nodeRadius = Math.max(8, this.px(2.2));
+    const drawEdges = (node: TreeNode) => {
       const parent = toScreen(node);
       for (const child of node.children) {
         const childPos = toScreen(child);
-        const midY = parent.y + levelHeight / 2;
         this.ctx.strokeStyle = "#99b7e8";
         this.ctx.beginPath();
         this.ctx.moveTo(parent.x, parent.y + nodeRadius);
-        this.ctx.lineTo(parent.x, midY);
-        this.ctx.lineTo(childPos.x, midY);
         this.ctx.lineTo(childPos.x, childPos.y - nodeRadius);
         this.ctx.stroke();
         drawEdges(child);
       }
     };
 
-    const drawNodes = (node: { value: string; children: Array<any>; x: number; depth: number }) => {
+    const drawNodes = (node: TreeNode) => {
       const p = toScreen(node);
+      const isInsertionNode = animateInsertion && node.key === insertionKey;
+      const nodeAlpha = isInsertionNode && animType === "fade_in" ? Math.max(0, Math.min(1, s.alpha)) : 1;
+      const nodeScale = isInsertionNode && animType === "scale_up" ? Math.max(0.01, s.scale) : 1;
+
+      this.ctx.save();
+      this.ctx.globalAlpha *= nodeAlpha;
+      this.ctx.translate(p.x, p.y);
+      this.ctx.scale(nodeScale, nodeScale);
+      this.ctx.translate(-p.x, -p.y);
+
       this.ctx.beginPath();
       this.ctx.fillStyle = c;
       this.ctx.arc(p.x, p.y, nodeRadius, 0, Math.PI * 2);
@@ -1171,7 +1225,9 @@ export class SimulationCanvasRenderer {
       this.ctx.textBaseline = "middle";
       this.ctx.font = "600 11px Inter, Segoe UI, sans-serif";
       this.ctx.fillText(node.value.slice(0, 8), p.x, p.y);
-      for (const child of node.children) drawNodes(child);
+      this.ctx.restore();
+
+      node.children.forEach(drawNodes);
     };
 
     drawEdges(root);
