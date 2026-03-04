@@ -1934,7 +1934,7 @@ textarea {
   gap: 8px !important;
   border-radius: 12px !important;
   overflow: hidden;
-  position: relative;
+  position: relative !important;
 }
 
 .sim-canvas {

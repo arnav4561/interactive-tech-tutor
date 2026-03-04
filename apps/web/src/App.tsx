@@ -2016,33 +2016,25 @@ export default function App(): JSX.Element {
       return;
     }
 
-    const stepIndex = Math.min(selectedSimulation.steps.length - 1, Math.max(0, activeStepIndex));
-    const step = selectedSimulation.steps[stepIndex];
+    const step = selectedSimulation.steps[Math.min(selectedSimulation.steps.length - 1, Math.max(0, activeStepIndex))];
     const rawElements = [
       ...(Array.isArray(step.canvas_instructions?.elements) ? step.canvas_instructions.elements : []),
       ...(Array.isArray((step as any).elements) ? (step as any).elements : [])
     ];
-    const elements = rawElements.filter((element, index) => {
-      const renderMode = String((element as Record<string, unknown>).render_mode ?? "");
-      const normalizedRenderMode = renderMode.toLowerCase();
-      const include3d = normalizedRenderMode === "3d";
-      console.log("[Three overlay filter]", {
-        stepIndex,
-        elementIndex: index,
-        type: String((element as Record<string, unknown>).type ?? ""),
-        renderMode,
-        normalizedRenderMode,
-        include3d
-      });
-      return include3d;
+    const threeDElements = rawElements.filter((el) => {
+      const renderMode = String((el as Record<string, unknown>).render_mode ?? "");
+      const type = String((el as Record<string, unknown>).type ?? "");
+      console.log("[Three overlay filter] render_mode=", renderMode, "type=", type);
+      return renderMode.toLowerCase() === "3d";
     });
-    console.log("[Three overlay 3d count]", {
-      stepIndex,
-      totalElements: rawElements.length,
-      threeDElements: elements.length
-    });
+    console.log(
+      "[Three overlay 3d count] count=",
+      threeDElements.length,
+      "elements:",
+      threeDElements.map((e) => String((e as Record<string, unknown>).type ?? ""))
+    );
 
-    if (!elements.length) {
+    if (!threeDElements.length) {
       host.innerHTML = "";
       return;
     }
@@ -2079,7 +2071,7 @@ export default function App(): JSX.Element {
       const colorOf = (value: unknown) =>
         typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : "#72d9ff";
 
-      for (const raw of elements) {
+      for (const raw of threeDElements) {
         const element = raw as Record<string, unknown>;
         const type = String(element.type ?? "").toLowerCase().replace(/\s+/g, "_");
         const color = colorOf(element.color);

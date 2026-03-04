@@ -273,7 +273,8 @@ export class SimulationCanvasRenderer {
   }
 
   private x(v: number): number {
-    return v >= 0 && v <= 100 ? (v / 100) * this.width : v;
+    const px = v >= 0 && v <= 100 ? (v / 100) * this.width : v;
+    return Math.max(10, px);
   }
 
   private y(v: number): number {
@@ -409,7 +410,7 @@ export class SimulationCanvasRenderer {
     textColor = "#FFFFFF",
     font = "600 12px Inter, Segoe UI, sans-serif"
   ): { x: number; y: number; w: number; h: number } {
-    const drawX = align === "left" ? Math.max(8, x) : x;
+    const drawX = align === "left" ? Math.max(12, x) : x;
     const box = this.textPillBox(text, drawX, y, align, font);
     this.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
     this.ctx.fillRect(box.x, box.y, box.w, box.h);
@@ -441,6 +442,78 @@ export class SimulationCanvasRenderer {
     if (align === "right") boxX = x - boxW + 2;
     const boxY = y - boxH / 2;
     return { x: boxX, y: boxY, w: boxW, h: boxH };
+  }
+
+  private wrapTextLines(text: string, font: string, maxWidth: number): string[] {
+    const safe = text.trim();
+    if (!safe) {
+      return [];
+    }
+    this.ctx.font = font;
+    const words = safe.split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      return [safe];
+    }
+    const lines: string[] = [];
+    let current = "";
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (this.ctx.measureText(candidate).width <= maxWidth) {
+        current = candidate;
+        continue;
+      }
+      if (current) {
+        lines.push(current);
+      }
+      current = word;
+      while (this.ctx.measureText(current).width > maxWidth && current.length > 1) {
+        let cut = current.length - 1;
+        while (cut > 1 && this.ctx.measureText(current.slice(0, cut)).width > maxWidth) {
+          cut -= 1;
+        }
+        lines.push(current.slice(0, cut));
+        current = current.slice(cut);
+      }
+    }
+    if (current) {
+      lines.push(current);
+    }
+    return lines;
+  }
+
+  private drawWrappedTextPill(
+    lines: string[],
+    x: number,
+    y: number,
+    align: CanvasTextAlign,
+    textColor: string,
+    font: string
+  ): void {
+    if (!lines.length) return;
+    this.ctx.font = font;
+    const sizeMatch = /(\d+)px/.exec(font);
+    const fontPx = sizeMatch ? Number.parseInt(sizeMatch[1], 10) : 12;
+    const lineHeight = Math.max(14, fontPx + 4);
+    const padX = 8;
+    const padY = 6;
+    const maxLineWidth = lines.reduce((max, line) => Math.max(max, this.ctx.measureText(line).width), 8);
+    const boxW = maxLineWidth + padX * 2;
+    const boxH = lines.length * lineHeight + padY * 2;
+    const drawX = align === "left" ? Math.max(12, x) : x;
+    let boxX = drawX - boxW / 2;
+    if (align === "left") boxX = Math.max(8, drawX - 2);
+    if (align === "right") boxX = drawX - boxW + 2;
+    const boxY = y - boxH / 2;
+    this.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    this.ctx.fillRect(boxX, boxY, boxW, boxH);
+    this.ctx.fillStyle = this.isDarkColor(textColor) ? "#FFFFFF" : textColor;
+    this.ctx.font = font;
+    this.ctx.textAlign = align;
+    this.ctx.textBaseline = "middle";
+    for (let i = 0; i < lines.length; i += 1) {
+      const lineY = boxY + padY + lineHeight * (i + 0.5);
+      this.ctx.fillText(lines[i], drawX, lineY);
+    }
   }
 
   private label(
@@ -625,17 +698,14 @@ export class SimulationCanvasRenderer {
         this.arrowHead(p2.x, p2.y, p.x, p.y, c, lineWidth + 2);
       } else if (t === "text") {
         const text = this.str(el.text, label);
-        const fontSize = Math.max(10, this.num(el, ["font_size", "fontSize"], 16));
+        const baseFontSize = Math.max(10, this.num(el, ["font_size", "fontSize"], 16));
+        const adjustedFontSize = text.length > 60 ? Math.min(baseFontSize, 10) : text.length > 40 ? Math.min(baseFontSize, 11) : baseFontSize;
         const textAlign = this.str(el.text_align, "center") as CanvasTextAlign;
         const visible = text.slice(0, Math.max(0, Math.ceil(text.length * s.textProgress)));
-        this.drawTextPill(
-          visible,
-          x,
-          y,
-          textAlign,
-          this.isDarkColor(c) ? "#FFFFFF" : c,
-          `600 ${fontSize}px Inter, Segoe UI, sans-serif`
-        );
+        const textX = Math.max(12, x);
+        const font = `600 ${adjustedFontSize}px Inter, Segoe UI, sans-serif`;
+        const wrapped = this.wrapTextLines(visible, font, Math.max(40, this.width - 20));
+        this.drawWrappedTextPill(wrapped, textX, y, textAlign, this.isDarkColor(c) ? "#FFFFFF" : c, font);
       } else if (t === "polygon") {
         const points = this.arr(el.points).map((p) => this.obj(p)).map((p) => ({ x: this.x(this.num(p, ["x"], 0)), y: this.y(this.num(p, ["y"], 0)) }));
         if (points.length >= 3) {
