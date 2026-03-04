@@ -256,6 +256,7 @@ export class SimulationCanvasRenderer {
 
   private state(el: StepElement, elapsed: number): AnimState {
     const a = this.anim(el);
+    const within = this.obj(a.with);
     const type = this.str(a.type, "none").toLowerCase().replace(/\s+/g, "_");
     const delay = Math.max(0, this.num(a, ["delay", "delayMs"], 0));
     const duration = Math.max(100, this.num(a, ["duration", "durationMs"], 900));
@@ -289,11 +290,15 @@ export class SimulationCanvasRenderer {
     else if (type === "highlight") s.highlight = Math.sin(p * Math.PI);
     else if (type === "draw") s.drawProgress = p;
     else if (type === "typewriter") s.textProgress = p;
-    else if (type === "move" || type === "bounce" || type === "follow_path") {
+    else if (type === "move" || type === "swap" || type === "bounce" || type === "follow_path") {
       const sx = this.x(this.num(el, ["x", "x1"], 0));
       const sy = this.y(this.num(el, ["y", "y1"], 0));
-      const tx = this.x(this.num(a, ["target_x", "to_x", "x2"], sx));
-      const ty = this.y(this.num(a, ["target_y", "to_y", "y2"], sy));
+      const tx = this.x(
+        this.num(within, ["target_x", "to_x", "x2", "x"], this.num(a, ["target_x", "to_x", "x2"], sx))
+      );
+      const ty = this.y(
+        this.num(within, ["target_y", "to_y", "y2", "y"], this.num(a, ["target_y", "to_y", "y2"], sy))
+      );
       const t = type === "bounce" ? this.easeOutBack(p) : p;
       if (type === "follow_path") {
         const cx = this.x(this.num(a, ["cx", "control_x"], (sx + tx) / 2));

@@ -376,6 +376,7 @@ const simCanvasAnimationTypeSchema = z.enum([
   "fade_in",
   "fade_out",
   "move",
+  "swap",
   "draw",
   "pulse",
   "rotate",

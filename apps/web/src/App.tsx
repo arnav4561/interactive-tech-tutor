@@ -1761,6 +1761,11 @@ export default function App(): JSX.Element {
           utterance.onerror = () => {
             stepNarrationCompleteRef.current = true;
           };
+          console.log("[Narration] speechSynthesis.speak()", {
+            subtitle: step.subtitle,
+            voiceNarrationEnabled,
+            subtitlesEnabled
+          });
           window.speechSynthesis.speak(utterance);
         } else {
           stepNarrationCompleteRef.current = true;
