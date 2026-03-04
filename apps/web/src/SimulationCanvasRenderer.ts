@@ -183,12 +183,17 @@ export class SimulationCanvasRenderer {
   private clampElementsForRender(elements: StepElement[]): void {
     for (const el of elements) {
       const element = el as Record<string, unknown>;
-      let x = this.num(element, ["x"], 50);
+      const rawX = this.num(element, ["x"], 50);
+      const rawXPixel = rawX >= 0 && rawX <= 100 ? (rawX / 100) * this.width : rawX;
+      let x = rawX;
       let y = this.num(element, ["y"], 50);
       let width = this.num(element, ["width"], 16);
       let height = this.num(element, ["height"], 12);
 
       if (this.type(el) === "text") {
+        if (rawXPixel < this.width * 0.08) {
+          x = 8;
+        }
         x = Math.max(8, Math.min(90, x));
         y = Math.max(5, Math.min(85, y));
         if (!this.str(element.label_position)) {
@@ -431,7 +436,7 @@ export class SimulationCanvasRenderer {
     textColor = "#FFFFFF",
     font = "600 12px Inter, Segoe UI, sans-serif"
   ): { x: number; y: number; w: number; h: number } {
-    const drawX = align === "left" ? Math.max(12, x) : x;
+    const drawX = align === "left" ? Math.max(this.width * 0.08, x) : x;
     const box = this.textPillBox(text, drawX, y, align, font);
     this.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
     this.ctx.fillRect(box.x, box.y, box.w, box.h);
@@ -459,7 +464,7 @@ export class SimulationCanvasRenderer {
     const boxW = tw + padX * 2;
     const boxH = th + padY * 2;
     let boxX = x - boxW / 2;
-    if (align === "left") boxX = Math.max(8, x - 2);
+    if (align === "left") boxX = Math.max(this.width * 0.08, x - 2);
     if (align === "right") boxX = x - boxW + 2;
     const boxY = y - boxH / 2;
     return { x: boxX, y: boxY, w: boxW, h: boxH };
@@ -520,9 +525,9 @@ export class SimulationCanvasRenderer {
     const maxLineWidth = lines.reduce((max, line) => Math.max(max, this.ctx.measureText(line).width), 8);
     const boxW = maxLineWidth + padX * 2;
     const boxH = lines.length * lineHeight + padY * 2;
-    const drawX = align === "left" ? Math.max(12, x) : x;
+    const drawX = align === "left" ? Math.max(this.width * 0.08, x) : x;
     let boxX = drawX - boxW / 2;
-    if (align === "left") boxX = Math.max(8, drawX - 2);
+    if (align === "left") boxX = Math.max(this.width * 0.08, drawX - 2);
     if (align === "right") boxX = drawX - boxW + 2;
     const boxY = y - boxH / 2;
     this.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
@@ -721,9 +726,17 @@ export class SimulationCanvasRenderer {
         const text = this.str(el.text, label);
         const baseFontSize = Math.max(10, this.num(el, ["font_size", "fontSize"], 16));
         const adjustedFontSize = text.length > 60 ? Math.min(baseFontSize, 10) : text.length > 40 ? Math.min(baseFontSize, 11) : baseFontSize;
-        const textAlign = this.str(el.text_align, "center") as CanvasTextAlign;
+        const textAlign = this.str(el.text_align, "left") as CanvasTextAlign;
         const visible = text.slice(0, Math.max(0, Math.ceil(text.length * s.textProgress)));
-        const textX = Math.max(12, x);
+        const rawTextX = this.num(el, ["x"], 50);
+        let textX = x;
+        if (rawTextX >= 0 && rawTextX <= 100) {
+          const convertedTextX = (rawTextX / 100) * this.width;
+          if (convertedTextX < this.width * 0.15) {
+            textX = this.width * 0.08;
+          }
+        }
+        textX = Math.max(this.width * 0.08, textX);
         const font = `600 ${adjustedFontSize}px Inter, Segoe UI, sans-serif`;
         const wrapped = this.wrapTextLines(visible, font, Math.max(40, this.width - 20));
         this.drawWrappedTextPill(wrapped, textX, y, textAlign, this.isDarkColor(c) ? "#FFFFFF" : c, font);

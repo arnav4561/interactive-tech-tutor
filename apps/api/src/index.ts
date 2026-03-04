@@ -1736,6 +1736,9 @@ STRICT RULES:
 - All numeric values in JSON must be plain numbers like 0.37 not JavaScript expressions like Math.exp(...)
 - Do NOT wrap in markdown code blocks
 - Do NOT add any text before or after the JSON
+- For text elements, always set x to at least 8 and never less than 8.
+- Text elements that list definitions or key terms should be placed at x values between 8 and 45 with y values spaced 15 apart starting from y=15.
+- Never place text elements at x=0 or x=1 or x=2.
 TOPIC-SPECIFIC ELEMENT RULES:
 - Before choosing element types for each step, think carefully about what visualization would make this concept most clear to a complete beginner.
 - Do not use bars unless the topic is specifically about comparing numerical values or sorting.
