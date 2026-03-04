@@ -154,7 +154,7 @@ function defaultPreferences(): UserPreferences {
   return {
     interactionMode: "click",
     voiceSettings: {
-      narrationEnabled: false,
+      narrationEnabled: true,
       interactionEnabled: false,
       navigationEnabled: false,
       rate: 1,
@@ -218,7 +218,7 @@ export default function App(): JSX.Element {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [currentStepText, setCurrentStepText] = useState("");
   const [mathOverlayLines, setMathOverlayLines] = useState<string[]>([]);
-  const [voiceNarrationEnabled, setVoiceNarrationEnabled] = useState(false);
+  const [voiceNarrationEnabled, setVoiceNarrationEnabled] = useState(true);
   const [topicListening, setTopicListening] = useState(false);
   const [simulationRendererLoading, setSimulationRendererLoading] = useState(false);
   const [simulationLoadingTopic, setSimulationLoadingTopic] = useState("");
