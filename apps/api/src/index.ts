@@ -1860,19 +1860,14 @@ async function generateSimulationVisuals(
   outline: SimulationOutlineStep[]
 ): Promise<GeminiCanvasStep[]> {
   const prompt = `
-Given these educational steps with their explanations, generate the canvas_instructions.elements for each step.
-Return a JSON object with a steps array.
-Each step must have:
-- step (number)
-- concept (string)
-- subtitle (copy exactly from the outline)
-- duration_ms (copy exactly from the outline)
-- canvas_instructions with an elements array
-The visual elements MUST accurately represent what the subtitle describes.
-If the subtitle says move right, the visual must show movement to the right.
-If the subtitle says insert 8 as right child of 7, element 8 must be positioned to the RIGHT of element 7.
-Read each subtitle carefully and make the visual match it exactly.
-The elements array must not be empty. If a step has no good visual, use at least one text element showing the key concept.
+'You are a visual diagram generator for educational simulations. Given steps with subtitles, generate rich canvas elements for each step. You MUST generate at least 4-6 elements per step — never just 1 element.
+MANDATORY RULES:
+- For binary search tree topics: every step must have multiple tree_node elements arranged as a proper BST. Use values like 10 as root, 5 and 15 as children, 3 and 7 under 5, 12 and 17 under 15. Each tree_node needs: type tree_node, value (number), x (percentage), y (percentage), color. Connect parent to children with lines.
+- For sorting topics: every step must have 5-7 bar elements with heights proportional to their values.
+- For concept topics: use multiple text elements with arrows showing relationships.
+- NEVER return only 1 element. NEVER return only a title text element.
+- Each step must visually show what the subtitle describes.
+Return JSON with steps array. Each step has step, concept, subtitle (copy exactly), duration_ms (copy exactly), and canvas_instructions.elements (minimum 4 elements).'
 Topic: ${topic}
 Outline JSON:
 ${JSON.stringify({ steps: outline })}
@@ -1896,9 +1891,9 @@ Return only valid JSON.
   rawElementCounts.forEach((count, index) => {
     console.log(`[Visuals] step ${index + 1} raw elements: ${count}`);
   });
-  const hasNonEmptyVisualStep = rawElementCounts.some((count) => count > 0);
-  if (candidates.length === 0 || !hasNonEmptyVisualStep) {
-    console.warn("[Visuals] Empty visuals response detected. Falling back to single-pass generation.");
+  const hasAnySparseStep = rawElementCounts.some((count) => count < 3);
+  if (candidates.length === 0 || hasAnySparseStep) {
+    console.warn("[Visuals] Sparse visuals response detected (<3 elements in a step). Falling back to single-pass generation.");
     return generateSimulationSinglePass(topic);
   }
 
