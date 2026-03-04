@@ -455,7 +455,7 @@ const simCanvasElementSchema = z.object({
 const simCanvasStepSchema = z.object({
   step: z.number().int().min(1).max(120),
   concept: z.string().min(1).max(220),
-  subtitle: z.string().min(1).max(400),
+  subtitle: z.string().min(1).max(1200),
   duration_ms: z.number().int().min(12000).max(35000).optional(),
   canvas_instructions: z.object({
     elements: z.array(simCanvasElementSchema).min(1).max(240)
@@ -948,7 +948,7 @@ function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasSte
     asText(raw.annotation) ||
     asText(raw.explanation) ||
     `Explaining ${concept}.`
-  ).slice(0, 400);
+  ).slice(0, 1200);
   const durationRaw = Number(raw.duration_ms ?? raw.durationMs);
   const duration_ms =
     Number.isFinite(durationRaw) && durationRaw >= 12000 && durationRaw <= 35000
@@ -2009,7 +2009,7 @@ function convertTemplateToCanvasSteps(topic: Topic): GeminiCanvasStep[] {
     return {
       step: stepIndex + 1,
       concept: (step.concept || `Step ${stepIndex + 1}`).slice(0, 220),
-      subtitle: step.annotation.slice(0, 400),
+      subtitle: step.annotation.slice(0, 1200),
       canvas_instructions: {
         elements: [
           {

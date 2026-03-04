@@ -1898,11 +1898,12 @@ export default function App(): JSX.Element {
     let initialNarrationTimer: number | null = null;
 
     const setStepNarration = (step: SimulationCanvasStep, index: number, forceReplay = false) => {
+      const fullSubtitle = String(step.subtitle ?? "");
       setCurrentStepText(`Step ${index + 1}: ${step.concept}`);
       currentStepConceptRef.current = step.concept;
       setActiveStepIndex(index);
       if (subtitlesEnabled) {
-        setSubtitle(step.subtitle);
+        setSubtitle(fullSubtitle);
         subtitleDisplayCompleteRef.current = true;
       } else {
         setSubtitle("");
@@ -1915,7 +1916,7 @@ export default function App(): JSX.Element {
           spokenStepRef.current = index;
           stepNarrationCompleteRef.current = false;
           window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance(step.subtitle);
+          const utterance = new SpeechSynthesisUtterance(fullSubtitle);
           utterance.rate = 1;
           utterance.onend = () => {
             stepNarrationCompleteRef.current = true;
@@ -1926,7 +1927,7 @@ export default function App(): JSX.Element {
             subtitleDisplayCompleteRef.current = true;
           };
           console.log("[Narration] speechSynthesis.speak()", {
-            subtitle: step.subtitle,
+            subtitle: fullSubtitle,
             voiceNarrationEnabled,
             subtitlesEnabled
           });
@@ -2937,7 +2938,11 @@ export default function App(): JSX.Element {
               )}
             </button>
             <div className="subtitle-bar">
-              {subtitlesEnabled ? subtitle || "Simulation subtitles will appear here." : "Subtitles are muted."}
+              {subtitlesEnabled
+                ? (typeof subtitle === "string" && subtitle.length > 0
+                    ? subtitle
+                    : "Simulation subtitles will appear here.")
+                : "Subtitles are muted."}
             </div>
           </div>
         </section>

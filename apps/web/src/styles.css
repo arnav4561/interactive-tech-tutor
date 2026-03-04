@@ -1967,6 +1967,9 @@ textarea {
   gap: 8px !important;
   background: transparent !important;
   border: 0 !important;
+  overflow: visible !important;
+  height: auto !important;
+  max-height: none !important;
 }
 
 .sim-play-toggle {
@@ -1986,8 +1989,18 @@ textarea {
   white-space: normal !important;
   word-wrap: break-word !important;
   overflow-wrap: break-word !important;
+  text-overflow: clip !important;
+  line-clamp: none !important;
+  -webkit-line-clamp: unset !important;
   line-height: 1.55 !important;
   padding: 12px 16px !important;
+}
+
+.simulation-area,
+.canvas-wrapper,
+.sim-bottom-bar,
+.subtitle-bar {
+  overflow: visible !important;
 }
 
 .sim-interim-bubble {
