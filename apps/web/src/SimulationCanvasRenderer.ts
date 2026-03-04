@@ -156,7 +156,9 @@ export class SimulationCanvasRenderer {
     if (!this.step) return;
     this.labelBoxes = [];
     const elapsed = this.elapsed(now);
-    for (const el of this.getElements()) {
+    const elements = this.getElements();
+    this.clampElementsForRender(elements);
+    for (const el of elements) {
       this.draw(el, elapsed);
     }
   }
@@ -171,6 +173,62 @@ export class SimulationCanvasRenderer {
     const fromCanvas = Array.isArray(this.step.canvas_instructions?.elements) ? this.step.canvas_instructions.elements : [];
     const fromFlat = Array.isArray(this.step.elements) ? this.step.elements : [];
     return [...fromCanvas, ...fromFlat].filter(Boolean) as StepElement[];
+  }
+
+  private clampElementsForRender(elements: StepElement[]): void {
+    for (const el of elements) {
+      const element = el as Record<string, unknown>;
+      let x = this.num(element, ["x"], 50);
+      let y = this.num(element, ["y"], 50);
+      let width = this.num(element, ["width"], 16);
+      let height = this.num(element, ["height"], 12);
+
+      if (this.type(el) === "text") {
+        x = Math.max(5, Math.min(90, x));
+        y = Math.max(5, Math.min(85, y));
+      } else {
+        x = Math.max(0, Math.min(85, x));
+        y = Math.max(0, Math.min(80, y));
+      }
+
+      width = Math.max(1, Math.min(width, 90 - x));
+      height = Math.max(1, Math.min(height, 88 - y));
+
+      element.x = x;
+      element.y = y;
+      element.width = width;
+      element.height = height;
+    }
+
+    const bars = elements
+      .filter((el) => this.type(el) === "bar")
+      .map((el) => ({ el: el as Record<string, unknown>, x: this.num(el, ["x"], 50), w: this.num(el, ["width"], 8) }))
+      .sort((a, b) => a.x - b.x);
+
+    let hasOverlap = false;
+    for (let i = 0; i < bars.length; i += 1) {
+      for (let j = i + 1; j < bars.length; j += 1) {
+        if (Math.abs(bars[i].x - bars[j].x) < Math.max(bars[i].w, bars[j].w)) {
+          hasOverlap = true;
+          break;
+        }
+      }
+      if (hasOverlap) break;
+    }
+
+    if (hasOverlap && bars.length > 1) {
+      const startX = 8;
+      const endX = 82;
+      const spacing = (endX - startX) / (bars.length - 1);
+      const maxBarWidth = Math.max(2, spacing * 0.7);
+      bars.forEach((bar, index) => {
+        const targetX = startX + spacing * index;
+        const existingW = this.num(bar.el, ["width"], maxBarWidth);
+        const adjustedW = Math.max(2, Math.min(existingW, maxBarWidth, 90 - targetX));
+        bar.el.x = targetX;
+        bar.el.width = adjustedW;
+      });
+    }
   }
 
   private obj(v: unknown): Record<string, unknown> {
@@ -209,29 +267,19 @@ export class SimulationCanvasRenderer {
   }
 
   private x(v: number): number {
-    if (v >= 0 && v <= 100) {
-      const bounded = Math.max(2, Math.min(95, v));
-      return (bounded / 100) * this.width;
-    }
-    return Math.max(2, Math.min(this.width * 0.95, v));
+    return v >= 0 && v <= 100 ? (v / 100) * this.width : v;
   }
 
   private y(v: number): number {
-    if (v >= 0 && v <= 100) {
-      const bounded = Math.max(2, Math.min(90, v));
-      return (bounded / 100) * this.height;
-    }
-    return Math.max(2, Math.min(this.height * 0.9, v));
+    return v >= 0 && v <= 100 ? (v / 100) * this.height : v;
   }
 
   private w(v: number): number {
-    const raw = v >= 0 && v <= 100 ? (v / 100) * this.width : v;
-    return Math.max(1, Math.min(this.width * 0.98, raw));
+    return Math.max(1, v >= 0 && v <= 100 ? (v / 100) * this.width : v);
   }
 
   private h(v: number): number {
-    const raw = v >= 0 && v <= 100 ? (v / 100) * this.height : v;
-    return Math.max(1, Math.min(this.height * 0.95, raw));
+    return Math.max(1, v >= 0 && v <= 100 ? (v / 100) * this.height : v);
   }
 
   private px(v: number): number {
@@ -441,18 +489,10 @@ export class SimulationCanvasRenderer {
     const s = this.state(el, elapsed);
     const c = this.brighten(this.color(el), s.highlight * 0.35);
     const label = this.str(el.label);
-    const rawXPct = this.num(el, ["x"], 50);
-    const rawYPct = this.num(el, ["y"], 50);
-    const clampedXPct = Math.max(2, Math.min(95, rawXPct));
-    const clampedYPct = Math.max(2, Math.min(90, rawYPct));
-    const rawWPct = this.num(el, ["width"], 16);
-    const rawHPct = this.num(el, ["height"], 12);
-    const clampedWPct = Math.max(1, Math.min(rawWPct, 98 - clampedXPct));
-    const clampedHPct = Math.max(1, Math.min(rawHPct, 95 - clampedYPct));
-    const x = this.x(clampedXPct);
-    const y = this.y(clampedYPct);
-    const w = this.w(clampedWPct);
-    const h = this.h(clampedHPct);
+    const x = this.x(this.num(el, ["x"], 50));
+    const y = this.y(this.num(el, ["y"], 50));
+    const w = this.w(this.num(el, ["width"], 16));
+    const h = this.h(this.num(el, ["height"], 12));
     const r = this.px(this.num(el, ["radius", "r"], Math.min(w, h) / 4));
     const lineWidth = Math.max(1, this.num(el, ["thickness", "line_width", "stroke_width"], 2));
     const centerX = t === "circle" || t === "ellipse" || t === "plot_point" || t === "pulse" || t === "tree_node" ? x : x + w / 2;

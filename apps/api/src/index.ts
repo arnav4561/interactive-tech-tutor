@@ -1737,6 +1737,14 @@ STRICT RULES:
 - Do NOT wrap in markdown code blocks
 - Do NOT add any text before or after the JSON
 TOPIC-SPECIFIC ELEMENT RULES:
+- Before choosing element types for each step, think carefully about what visualization would make this concept most clear to a complete beginner.
+- Do not use bars unless the topic is specifically about comparing numerical values or sorting.
+- Do not use generic shapes.
+- For algorithm topics, show the actual data structure being manipulated.
+- For concept topics, use diagrams with arrows and labeled boxes showing relationships.
+- For mathematical topics, use axis and plot_point.
+- For process topics, use flowchart_diamond and arrows.
+- Always ask yourself: would a textbook use this diagram for this concept? If not, choose a different element type.
 - Binary search tree or any tree: use type "tree_node" with children array containing nested nodes with real numeric values like 10, 5, 15, 3, 7
 - Sorting algorithms: use type "bar" elements with numeric labels showing actual array values being sorted
 - Neural networks: use type "neural_network" with a layers array like [3,4,2]
@@ -1761,6 +1769,7 @@ TOPIC-SPECIFIC ELEMENT RULES:
 - Use table elements for comparisons between options.
 - Never use plain rectangle or circle when a more semantically specific element type exists.
 - For inherently 3D or spatial topics (3D graphics, computer vision, robotics, geometry, physics simulations, molecular structures, architectural visualization), include at least one element per step with render_mode set to 3d using one of: sphere, cube, cylinder, cone, torus.
+- If the topic contains any of these keywords - 3D, rotation, graphics, geometry, spatial, cube, sphere, physics, molecular, crystal, architecture, computer vision - then EVERY step must include at least one element with render_mode set to the string 3d and type set to one of sphere, cube, cylinder, cone, or torus. This is mandatory.
 - For purely algorithmic topics (sorting, searching, etc.), do not force 3D elements.
 
 Generate the minimum number of steps needed to explain ${topic} completely - do not pad with extra steps.

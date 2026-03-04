@@ -252,7 +252,9 @@ export default function App(): JSX.Element {
   const stepNarrationCompleteRef = useRef(true);
   const stepElapsedMsRef = useRef(0);
   const pausedAtElapsedMsRef = useRef(0);
+  const pausedAtStepRef = useRef(0);
   const resumeNarrationRequestedRef = useRef(false);
+  const previousRendererLoadingRef = useRef(false);
   const recognitionStartingRef = useRef(false);
   const recognitionActiveRef = useRef(false);
   const recognitionStoppingRef = useRef(false);
@@ -1153,6 +1155,7 @@ export default function App(): JSX.Element {
           let toast = "Action executed";
           if (action.action_type === "play") {
             stepElapsedMsRef.current = pausedAtElapsedMsRef.current;
+            simulationStepRef.current = pausedAtStepRef.current;
             stepNarrationCompleteRef.current = false;
             resumeNarrationRequestedRef.current = true;
             setSimulationPaused(false);
@@ -1160,6 +1163,7 @@ export default function App(): JSX.Element {
             toast = "Playing simulation";
           } else if (action.action_type === "pause") {
             pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+            pausedAtStepRef.current = simulationStepRef.current;
             setSimulationPaused(true); window.speechSynthesis.cancel();
             simulationPausedRef.current = true;
             stepNarrationCompleteRef.current = true;
@@ -1497,6 +1501,7 @@ export default function App(): JSX.Element {
     }
     if (appView === "simulation") {
       pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+      pausedAtStepRef.current = simulationStepRef.current;
       setSimulationPaused(true); window.speechSynthesis.cancel();
       stepNarrationCompleteRef.current = true;
       resumeNarrationRequestedRef.current = false;
@@ -1577,6 +1582,7 @@ export default function App(): JSX.Element {
     const handleVisibilityChange = () => {
       if (document.hidden) {
         pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+        pausedAtStepRef.current = simulationStepRef.current;
         stopListening();
         if ("speechSynthesis" in window) {
           window.speechSynthesis.cancel();
@@ -1587,6 +1593,7 @@ export default function App(): JSX.Element {
       }
       if (appViewRef.current === "simulation" && !simulationPausedRef.current) {
         stepElapsedMsRef.current = pausedAtElapsedMsRef.current;
+        simulationStepRef.current = pausedAtStepRef.current;
         stepNarrationCompleteRef.current = false;
         resumeNarrationRequestedRef.current = true;
       }
@@ -1600,6 +1607,26 @@ export default function App(): JSX.Element {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [startListening, stopListening, voiceCaptureEnabled]);
+
+  useEffect(() => {
+    const wasLoading = previousRendererLoadingRef.current;
+    previousRendererLoadingRef.current = simulationRendererLoading;
+    if (!wasLoading || simulationRendererLoading) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (appViewRef.current !== "simulation" || simulationPausedRef.current || !voiceNarrationEnabled) {
+        return;
+      }
+      stepElapsedMsRef.current = pausedAtElapsedMsRef.current;
+      simulationStepRef.current = pausedAtStepRef.current;
+      stepNarrationCompleteRef.current = false;
+      resumeNarrationRequestedRef.current = true;
+    }, 400);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [simulationRendererLoading, voiceNarrationEnabled]);
 
   useEffect(() => {
     if (!token) {
@@ -1769,6 +1796,7 @@ export default function App(): JSX.Element {
     let lastProcessedCommandId = 0;
     let renderer: SimulationCanvasRenderer | null = null;
     let resizeObserver: ResizeObserver | null = null;
+    let initialNarrationTimer: number | null = null;
 
     const setStepNarration = (step: SimulationCanvasStep, index: number, forceReplay = false) => {
       setCurrentStepText(`Step ${index + 1}: ${step.concept}`);
@@ -1816,6 +1844,7 @@ export default function App(): JSX.Element {
         return;
       }
       const step = steps[index];
+      pausedAtStepRef.current = index;
       renderer.setStep(step as SimulationCanvasStepLike);
       console.log(`[Simulation] step=${index + 1} elementTypes=`, renderer.getElementTypes());
       const requestedDuration = Number(step.duration_ms);
@@ -1848,8 +1877,22 @@ export default function App(): JSX.Element {
     stepElapsedMs = 0;
     stepElapsedMsRef.current = 0;
     pausedAtElapsedMsRef.current = 0;
+    pausedAtStepRef.current = simulationStepRef.current;
     resumeNarrationRequestedRef.current = false;
     applyStep(simulationStepRef.current);
+    if (simulationStepRef.current === 0) {
+      console.log("[Simulation] initial step narration check", { voiceNarrationEnabled });
+      initialNarrationTimer = window.setTimeout(() => {
+        if (disposed || appViewRef.current !== "simulation" || simulationPausedRef.current || !voiceNarrationEnabled) {
+          return;
+        }
+        if ("speechSynthesis" in window && window.speechSynthesis.speaking) {
+          return;
+        }
+        stepNarrationCompleteRef.current = false;
+        setStepNarration(steps[0], 0, true);
+      }, 300);
+    }
 
     const tick = (now: number) => {
       if (disposed || !renderer) {
@@ -1876,6 +1919,7 @@ export default function App(): JSX.Element {
           applyStep(simulationStepRef.current);
         } else if (pendingCommand.action === "pause") {
           pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+          pausedAtStepRef.current = simulationStepRef.current;
           simulationPausedRef.current = true;
           setSimulationPaused(true); window.speechSynthesis.cancel();
           stepNarrationCompleteRef.current = true;
@@ -1883,6 +1927,7 @@ export default function App(): JSX.Element {
         } else if (pendingCommand.action === "play") {
           stepElapsedMs = pausedAtElapsedMsRef.current;
           stepElapsedMsRef.current = stepElapsedMs;
+          simulationStepRef.current = pausedAtStepRef.current;
           stepNarrationCompleteRef.current = false;
           resumeNarrationRequestedRef.current = true;
           simulationPausedRef.current = false;
@@ -1932,6 +1977,10 @@ export default function App(): JSX.Element {
     return () => {
       disposed = true;
       window.cancelAnimationFrame(frameId);
+      if (initialNarrationTimer !== null) {
+        window.clearTimeout(initialNarrationTimer);
+        initialNarrationTimer = null;
+      }
       resizeObserver?.disconnect();
       window.removeEventListener("resize", onResize);
       if ("speechSynthesis" in window) {
@@ -1939,6 +1988,7 @@ export default function App(): JSX.Element {
       }
       stepElapsedMsRef.current = 0;
       pausedAtElapsedMsRef.current = 0;
+      pausedAtStepRef.current = 0;
       resumeNarrationRequestedRef.current = false;
       renderer?.dispose();
       simulationRendererRef.current = null;
@@ -2716,6 +2766,7 @@ export default function App(): JSX.Element {
               onClick={() => {
                 if (!simulationPausedRef.current) {
                   pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+                  pausedAtStepRef.current = simulationStepRef.current;
                   simulationPausedRef.current = true;
                   setSimulationPaused(true); window.speechSynthesis.cancel();
                   stepNarrationCompleteRef.current = true;
@@ -2723,6 +2774,7 @@ export default function App(): JSX.Element {
                   return;
                 }
                 stepElapsedMsRef.current = pausedAtElapsedMsRef.current;
+                 simulationStepRef.current = pausedAtStepRef.current;
                 stepNarrationCompleteRef.current = false;
                 resumeNarrationRequestedRef.current = true;
                 simulationPausedRef.current = false;
