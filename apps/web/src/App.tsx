@@ -1569,6 +1569,27 @@ export default function App(): JSX.Element {
   }, [preferences.voiceSettings.narrationEnabled]);
 
   useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopListening();
+        if ("speechSynthesis" in window) {
+          window.speechSynthesis.cancel();
+        }
+        stepNarrationCompleteRef.current = true;
+        return;
+      }
+      if (voiceCaptureEnabled && appViewRef.current === "simulation") {
+        startListening();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [startListening, stopListening, voiceCaptureEnabled]);
+
+  useEffect(() => {
     if (!token) {
       return;
     }

@@ -1745,6 +1745,13 @@ TOPIC-SPECIFIC ELEMENT RULES:
 - Queue or stack data structures: use type "queue" or type "stack" elements
 - Signal processing: use type "wave" elements
 - Matrices or grids: use type "matrix" elements
+- Bar heights must be proportional to their numeric values. If bars represent numbers [5, 3, 8, 1, 4], calculate height exactly as (value / max_value) * 70 and use that as the height percentage.
+- Never assign arbitrary bar heights. Always make heights mathematically correct relative to the values being shown.
+- Example for values [5, 3, 8, 1, 4]: max is 8, so heights are approximately [44, 26, 70, 9, 35].
+- Use color meaningfully: highlighted or active elements should use bright colors like #FF6B35 or #00D4FF.
+- Sorted or completed elements should use #4CAF50 (green).
+- Unsorted elements should use #4A90E2 (blue).
+- Never use the same color for all elements when some are being compared or swapped; make comparisons visually obvious with color contrast.
 
 Generate the minimum number of steps needed to explain ${topic} completely - do not pad with extra steps.
 For each step, set subtitle to a thorough explanation of 2-3 sentences that covers that concept in enough detail for a complete beginner to understand.

@@ -463,13 +463,37 @@ export class SimulationCanvasRenderer {
         this.label(el, label, x + w / 2, y, "above", { x, y, w, h });
       } else if (t === "bar") {
         const orientation = this.str(el.orientation, "vertical").toLowerCase();
-        this.roundRect(x, y, w, h, 6);
+        let barX = x;
+        let barY = y;
+        let barW = w;
+        let barH = h;
+        if (orientation !== "horizontal") {
+          const barScale = this.barScaleMetrics();
+          if (barScale) {
+            const rawBarHeight = this.h(this.num(el, ["height"], 0));
+            const normalizedHeight = Math.max(2, (rawBarHeight / barScale.maxHeightPx) * this.height * 0.7);
+            const baselineY = Math.min(this.height - 4, Math.max(4, barScale.baselineYPx));
+            barH = normalizedHeight;
+            barY = Math.max(4, baselineY - barH);
+          }
+        }
+        this.roundRect(barX, barY, barW, barH, 6);
         this.ctx.fill();
         const valueLabel = this.str(el.value_label, label);
         if (orientation === "horizontal") {
-          this.label(el, valueLabel, x + w, y + h / 2, "right", { x, y, w, h });
+          this.label(el, valueLabel, barX + barW, barY + barH / 2, "right", {
+            x: barX,
+            y: barY,
+            w: barW,
+            h: barH
+          });
         } else {
-          this.label(el, valueLabel, x + w / 2, y, "above", { x, y, w, h });
+          this.label(el, valueLabel, barX + barW / 2, barY, "above", {
+            x: barX,
+            y: barY,
+            w: barW,
+            h: barH
+          });
         }
       } else if (t === "circle" || t === "plot_point") {
         this.ctx.beginPath();
@@ -604,6 +628,30 @@ export class SimulationCanvasRenderer {
         this.treeNodeRecursive(el, x, y, w, h, r, c);
       }
     });
+  }
+
+  private barScaleMetrics(): { maxHeightPx: number; baselineYPx: number } | null {
+    const bars = this.getElements().filter((candidate) => {
+      const type = this.type(candidate);
+      const orientation = this.str(candidate.orientation, "vertical").toLowerCase();
+      return type === "bar" && orientation !== "horizontal";
+    });
+    if (bars.length === 0) {
+      return null;
+    }
+
+    let maxHeightPx = 0;
+    let baselineYPx = 0;
+    for (const bar of bars) {
+      const rawY = this.y(this.num(bar, ["y"], 0));
+      const rawH = this.h(this.num(bar, ["height"], 0));
+      maxHeightPx = Math.max(maxHeightPx, rawH);
+      baselineYPx = Math.max(baselineYPx, rawY + rawH);
+    }
+    if (maxHeightPx <= 0) {
+      return null;
+    }
+    return { maxHeightPx, baselineYPx };
   }
 
   private roundRect(x: number, y: number, w: number, h: number, r: number): void {
