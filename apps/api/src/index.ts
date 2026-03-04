@@ -1752,11 +1752,29 @@ TOPIC-SPECIFIC ELEMENT RULES:
 - Sorted or completed elements should use #4CAF50 (green).
 - Unsorted elements should use #4A90E2 (blue).
 - Never use the same color for all elements when some are being compared or swapped; make comparisons visually obvious with color contrast.
+- Use the most visually descriptive element type for each concept.
+- Use arrow elements to show data flow or relationships between nodes.
+- Use matrix elements for any grid-based data.
+- Use axis and plot_point for any mathematical or statistical concepts.
+- Use flowchart_diamond for any decision or conditional logic.
+- Use tree_node for any hierarchical structure.
+- Use table elements for comparisons between options.
+- Never use plain rectangle or circle when a more semantically specific element type exists.
+- For inherently 3D or spatial topics (3D graphics, computer vision, robotics, geometry, physics simulations, molecular structures, architectural visualization), include at least one element per step with render_mode set to 3d using one of: sphere, cube, cylinder, cone, torus.
+- For purely algorithmic topics (sorting, searching, etc.), do not force 3D elements.
 
 Generate the minimum number of steps needed to explain ${topic} completely - do not pad with extra steps.
-For each step, set subtitle to a thorough explanation of 2-3 sentences that covers that concept in enough detail for a complete beginner to understand.
-The subtitle will be read aloud, so it must be self-contained and educational.
-Do not rush - each subtitle should take about 15-20 seconds to read aloud.
+The very first step must define all key terms and vocabulary of the topic using text elements with one-line definitions.
+The subtitle for step 1 must say what this topic is, why it matters, and define the 2-3 most important words.
+Every subsequent step must build on these definitions.
+For every step, subtitle must be a thorough educational explanation of 3-4 complete sentences.
+First define technical terms used in that step.
+Then explain the concept in plain English for a complete beginner.
+Then give a concrete real-world analogy or example with actual numbers.
+The subtitle must fill the entire duration_ms when read aloud at normal speaking pace.
+For 15000ms, write approximately 40-50 words.
+For 18000ms, write approximately 50-60 words.
+For 20000ms, write approximately 55-70 words.
 Add duration_ms on every step and set it between 12000 and 20000 based on concept complexity.
 `.trim();
 

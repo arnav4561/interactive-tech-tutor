@@ -209,19 +209,29 @@ export class SimulationCanvasRenderer {
   }
 
   private x(v: number): number {
-    return v >= 0 && v <= 100 ? (v / 100) * this.width : v;
+    if (v >= 0 && v <= 100) {
+      const bounded = Math.max(2, Math.min(95, v));
+      return (bounded / 100) * this.width;
+    }
+    return Math.max(2, Math.min(this.width * 0.95, v));
   }
 
   private y(v: number): number {
-    return v >= 0 && v <= 100 ? (v / 100) * this.height : v;
+    if (v >= 0 && v <= 100) {
+      const bounded = Math.max(2, Math.min(90, v));
+      return (bounded / 100) * this.height;
+    }
+    return Math.max(2, Math.min(this.height * 0.9, v));
   }
 
   private w(v: number): number {
-    return Math.max(1, v >= 0 && v <= 100 ? (v / 100) * this.width : v);
+    const raw = v >= 0 && v <= 100 ? (v / 100) * this.width : v;
+    return Math.max(1, Math.min(this.width * 0.98, raw));
   }
 
   private h(v: number): number {
-    return Math.max(1, v >= 0 && v <= 100 ? (v / 100) * this.height : v);
+    const raw = v >= 0 && v <= 100 ? (v / 100) * this.height : v;
+    return Math.max(1, Math.min(this.height * 0.95, raw));
   }
 
   private px(v: number): number {
@@ -267,10 +277,8 @@ export class SimulationCanvasRenderer {
       : Math.min(1, localElapsed / duration);
     const s: AnimState = { alpha: 1, scale: 1, rotation: 0, dx: 0, dy: 0, drawProgress: 1, textProgress: 1, highlight: 0 };
     const hasAnimation = Object.keys(a).length > 0 && type !== "none";
-    const idleScale = 1 + 0.03 * Math.sin((elapsed / 2000) * Math.PI * 2);
 
     if (!hasAnimation) {
-      s.scale = idleScale;
       return s;
     }
 
@@ -310,10 +318,6 @@ export class SimulationCanvasRenderer {
         s.dx = (tx - sx) * t;
         s.dy = (ty - sy) * t;
       }
-    }
-
-    if (!loopPulse && localElapsed >= duration) {
-      s.scale *= idleScale;
     }
 
     return s;
@@ -437,10 +441,18 @@ export class SimulationCanvasRenderer {
     const s = this.state(el, elapsed);
     const c = this.brighten(this.color(el), s.highlight * 0.35);
     const label = this.str(el.label);
-    const x = this.x(this.num(el, ["x"], 50));
-    const y = this.y(this.num(el, ["y"], 50));
-    const w = this.w(this.num(el, ["width"], 16));
-    const h = this.h(this.num(el, ["height"], 12));
+    const rawXPct = this.num(el, ["x"], 50);
+    const rawYPct = this.num(el, ["y"], 50);
+    const clampedXPct = Math.max(2, Math.min(95, rawXPct));
+    const clampedYPct = Math.max(2, Math.min(90, rawYPct));
+    const rawWPct = this.num(el, ["width"], 16);
+    const rawHPct = this.num(el, ["height"], 12);
+    const clampedWPct = Math.max(1, Math.min(rawWPct, 98 - clampedXPct));
+    const clampedHPct = Math.max(1, Math.min(rawHPct, 95 - clampedYPct));
+    const x = this.x(clampedXPct);
+    const y = this.y(clampedYPct);
+    const w = this.w(clampedWPct);
+    const h = this.h(clampedHPct);
     const r = this.px(this.num(el, ["radius", "r"], Math.min(w, h) / 4));
     const lineWidth = Math.max(1, this.num(el, ["thickness", "line_width", "stroke_width"], 2));
     const centerX = t === "circle" || t === "ellipse" || t === "plot_point" || t === "pulse" || t === "tree_node" ? x : x + w / 2;
