@@ -179,9 +179,40 @@ async function appendHistorySafely(interaction: InteractionRecord): Promise<void
   }
 }
 
-async function requestBedrockJson(prompt: string, topicKey?: string) {
+type BedrockJsonRequestOptions = {
+  topicKey?: string;
+  useCache?: boolean;
+  saveCache?: boolean;
+  maxTokens?: number;
+  temperature?: number;
+};
+
+async function saveSimulationS3Cache(topicKey: string, payload: unknown): Promise<void> {
+  const cacheKey = getSimulationS3CacheKey(topicKey);
+  await s3Client.send(
+    new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: cacheKey,
+      Body: JSON.stringify(payload),
+      ContentType: "application/json"
+    })
+  );
+  console.log(`Cached simulation for topic: ${topicKey}`);
+}
+
+async function requestBedrockJson(prompt: string, options: BedrockJsonRequestOptions = {}) {
+  const {
+    topicKey,
+    useCache = true,
+    saveCache = true,
+    maxTokens = 8000,
+    temperature = 0
+  } = options;
+  const canUseCache = Boolean(topicKey) && useCache;
+  const canSaveCache = Boolean(topicKey) && saveCache;
+
   // Check S3 cache first if topic key provided
-  if (topicKey) {
+  if (canUseCache && topicKey) {
     try {
       const cacheKey = getSimulationS3CacheKey(topicKey);
       const s3Response = await s3Client.send(
@@ -204,8 +235,8 @@ async function requestBedrockJson(prompt: string, topicKey?: string) {
   const body = JSON.stringify({
     messages: [{ role: "user", content: [{ text: prompt }] }],
     inferenceConfig: {
-      maxTokens: 8000,
-      temperature: 0.3
+      maxTokens,
+      temperature
     }
   });
   const command = new InvokeModelCommand({
@@ -234,18 +265,9 @@ async function requestBedrockJson(prompt: string, topicKey?: string) {
   console.log("[Bedrock parsed object FULL]", JSON.stringify(parsed, null, 2));
 
   // Save to S3 cache if topic key provided
-  if (topicKey) {
+  if (canSaveCache && topicKey) {
     try {
-      const cacheKey = getSimulationS3CacheKey(topicKey);
-      await s3Client.send(
-        new PutObjectCommand({
-          Bucket: S3_BUCKET,
-          Key: cacheKey,
-          Body: JSON.stringify(parsed),
-          ContentType: "application/json"
-        })
-      );
-      console.log(`Cached simulation for topic: ${topicKey}`);
+      await saveSimulationS3Cache(topicKey, parsed);
     } catch (e) {
       console.log("S3 cache save failed, continuing anyway:", e);
     }
@@ -1683,6 +1705,50 @@ function normalizeProblemSets(
   });
 }
 
+async function validateAndCorrectSimulation(
+  topic: string,
+  steps: GeminiCanvasStep[]
+): Promise<GeminiCanvasStep[]> {
+  const validationPrompt = `
+You are a fact-checking expert. Review these educational simulation steps for the topic: ${topic}.
+Check every subtitle for factual accuracy. If any subtitle contains incorrect information, fix it.
+Return the corrected steps in the exact same JSON format.
+Rules: mathematical facts must be correct, algorithm descriptions must follow correct logic, data structure operations must follow correct rules (BST: less goes left, greater goes right), sorting algorithm steps must show correct comparisons, physics formulas must be accurate.
+If a subtitle is correct leave it unchanged.
+Return only the corrected JSON with the same structure.
+
+JSON to review:
+${JSON.stringify({ steps })}
+`.trim();
+
+  try {
+    const validatedPayload = await requestBedrockJson(validationPrompt, {
+      useCache: false,
+      saveCache: false,
+      maxTokens: 8000,
+      temperature: 0
+    });
+
+    const strict = llmSimulationSchema.safeParse(validatedPayload);
+    const candidates = strict.success ? strict.data.steps : extractStepCandidates(validatedPayload);
+    const corrected: GeminiCanvasStep[] = [];
+    for (let index = 0; index < candidates.length; index += 1) {
+      const parsedStep = simCanvasStepSchema.safeParse(normalizeCanvasStep(candidates[index], index));
+      if (parsedStep.success) {
+        corrected.push(parsedStep.data);
+      }
+    }
+    if (corrected.length > 0) {
+      return corrected;
+    }
+    console.warn("[Simulation] Fact-check pass returned no valid steps. Using original generated steps.");
+    return steps;
+  } catch (error) {
+    console.warn("[Simulation] Fact-check pass failed. Using original generated steps.", error);
+    return steps;
+  }
+}
+
 async function generateSimulationFromGemini(
   topic: string,
   level: DifficultyLevel
@@ -1777,6 +1843,19 @@ TOPIC-SPECIFIC ELEMENT RULES:
 - For concept topics, use text, arrow, and flowchart_diamond elements.
 - Do not use render_mode in any element. The frontend will handle 3D rendering automatically.
 - For purely algorithmic topics (sorting, searching, etc.), do not force 3D elements.
+- You must be 100% factually accurate.
+- Common rules that must never be violated:
+  - BST insertion: values less than current node go LEFT, values greater go RIGHT.
+  - Bubble sort: compare adjacent elements, swap if left is greater than right.
+  - Binary search: always check the middle element, eliminate the half that cannot contain the target.
+  - Merge sort: split array in half, sort each half recursively, merge sorted halves.
+  - Quick sort: pick pivot, elements less than pivot go left partition, greater go right.
+  - Linked list: each node points to next node, head is first node, null terminates the list.
+  - Stack: LIFO, push adds to top, pop removes from top.
+  - Queue: FIFO, enqueue adds to back, dequeue removes from front.
+  - Hash table: key is hashed to find bucket index.
+- If you are unsure about any fact, do not include it.
+- For tree topics never generate standalone arrow elements. Tree structure is shown by tree_node connections only.
 
 Generate the minimum number of steps needed to explain ${topic} completely - do not pad with extra steps.
 The very first step must define all key terms and vocabulary of the topic using text elements with one-line definitions.
@@ -1800,7 +1879,13 @@ Examples:
 
   const requestGeminiJson = async (prompt: string): Promise<unknown> => {
     void systemPrompt;
-    return requestBedrockJson(prompt, topic);
+    return requestBedrockJson(prompt, {
+      topicKey: topic,
+      useCache: true,
+      saveCache: false,
+      maxTokens: 8000,
+      temperature: 0
+    });
   };
 
   let rawSteps: unknown[] = [];
@@ -1857,7 +1942,14 @@ Examples:
     throw new Error("Gemini JSON validation failed: Required");
   }
 
-  return { steps: validSteps };
+  const factCheckedSteps = await validateAndCorrectSimulation(topic, validSteps);
+  try {
+    await saveSimulationS3Cache(topic, { steps: factCheckedSteps });
+  } catch (error) {
+    console.warn("[Simulation] Unable to cache fact-checked steps to S3. Continuing without cache.", error);
+  }
+
+  return { steps: factCheckedSteps };
 }
 
 function toCanvasPercentX(x: number): number {
