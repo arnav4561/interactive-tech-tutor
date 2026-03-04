@@ -488,9 +488,21 @@ const llmSimulationSchema = z.object({
   steps: z.array(simCanvasStepSchema).min(1).max(120)
 });
 
+const simOutlineStepSchema = z.object({
+  step: z.number().int().min(1).max(120),
+  concept: z.string().min(1).max(220),
+  subtitle: z.string().min(1).max(1200),
+  duration_ms: z.number().int().min(12000).max(35000)
+});
+
+const llmOutlineSchema = z.object({
+  steps: z.array(simOutlineStepSchema).min(1).max(120)
+});
+
 type GeminiSimulationPayload = {
   steps: z.infer<typeof simCanvasStepSchema>[];
 };
+type SimulationOutlineStep = z.infer<typeof simOutlineStepSchema>;
 
 type SimStep = z.infer<typeof simStepSchema>;
 type GeminiCanvasStep = z.infer<typeof simCanvasStepSchema>;
@@ -1022,6 +1034,45 @@ function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasSte
     canvas_instructions: {
       elements
     }
+  };
+}
+
+function durationFromSubtitle(subtitle: string): number {
+  const wordCount = subtitle.split(/\s+/).filter(Boolean).length;
+  return clamp(wordCount * 400, 12000, 35000);
+}
+
+function normalizeOutlineStep(candidate: unknown, index: number): SimulationOutlineStep | null {
+  const raw = asObject(candidate);
+  if (!raw) {
+    return null;
+  }
+
+  const stepValue = Number.parseInt(asText(raw.step), 10);
+  const step = Number.isFinite(stepValue) ? clamp(stepValue, 1, 120) : clamp(index + 1, 1, 120);
+  const concept = (asText(raw.concept) || asText(raw.title) || `Step ${step}`).slice(0, 220);
+  const subtitle = (
+    asText(raw.subtitle) ||
+    asText(raw.annotation) ||
+    asText(raw.explanation) ||
+    `Explaining ${concept}.`
+  ).slice(0, 1200);
+
+  if (!subtitle) {
+    return null;
+  }
+
+  const durationRaw = Number(raw.duration_ms ?? raw.durationMs);
+  const duration_ms =
+    Number.isFinite(durationRaw) && durationRaw >= 12000 && durationRaw <= 35000
+      ? Math.round(durationRaw)
+      : durationFromSubtitle(subtitle);
+
+  return {
+    step,
+    concept,
+    subtitle,
+    duration_ms
   };
 }
 
@@ -1705,6 +1756,139 @@ function normalizeProblemSets(
   });
 }
 
+async function generateSimulationOutline(topic: string): Promise<SimulationOutlineStep[]> {
+  const prompt = `
+Generate a complete educational outline for the topic: ${topic}.
+Return JSON with steps array where each step has:
+- step (number)
+- concept (string)
+- subtitle (3-4 sentence factually accurate explanation)
+- duration_ms (word count times 400, min 12000, max 35000)
+No canvas elements.
+Return only JSON.
+`.trim();
+
+  const outlinePayload = await requestBedrockJson(prompt, {
+    topicKey: topic,
+    useCache: true,
+    saveCache: false,
+    maxTokens: 8000,
+    temperature: 0
+  });
+
+  const strict = llmOutlineSchema.safeParse(outlinePayload);
+  const candidates = strict.success ? strict.data.steps : extractStepCandidates(outlinePayload);
+  const outline: SimulationOutlineStep[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const parsed = simOutlineStepSchema.safeParse(normalizeOutlineStep(candidates[index], index));
+    if (parsed.success) {
+      outline.push(parsed.data);
+    }
+  }
+
+  if (outline.length === 0) {
+    throw new Error("Simulation outline generation failed: no valid steps returned.");
+  }
+
+  return outline;
+}
+
+async function generateSimulationVisuals(
+  topic: string,
+  outline: SimulationOutlineStep[]
+): Promise<GeminiCanvasStep[]> {
+  const prompt = `
+Given these educational steps with their explanations, generate the canvas_instructions.elements for each step.
+The visual elements MUST accurately represent what the subtitle describes.
+If the subtitle says move right, the visual must show movement to the right.
+If the subtitle says insert 8 as right child of 7, element 8 must be positioned to the RIGHT of element 7.
+Read each subtitle carefully and make the visual match it exactly.
+Return the same steps array with canvas_instructions added to each step.
+Topic: ${topic}
+Outline JSON:
+${JSON.stringify({ steps: outline })}
+Return only valid JSON.
+`.trim();
+
+  const visualsPayload = await requestBedrockJson(prompt, {
+    topicKey: topic,
+    useCache: true,
+    saveCache: false,
+    maxTokens: 8000,
+    temperature: 0
+  });
+
+  const strict = llmSimulationSchema.safeParse(visualsPayload);
+  const candidates = strict.success ? strict.data.steps : extractStepCandidates(visualsPayload);
+  const visualSteps: GeminiCanvasStep[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const parsed = simCanvasStepSchema.safeParse(normalizeCanvasStep(candidates[index], index));
+    if (parsed.success) {
+      visualSteps.push(parsed.data);
+    }
+  }
+
+  const visualByStep = new Map<number, GeminiCanvasStep>();
+  for (const visualStep of visualSteps) {
+    visualByStep.set(visualStep.step, visualStep);
+  }
+
+  const merged: GeminiCanvasStep[] = [];
+  for (let index = 0; index < outline.length; index += 1) {
+    const outlineStep = outline[index];
+    const visual =
+      visualByStep.get(outlineStep.step) ??
+      visualSteps[index] ??
+      normalizeCanvasStep(
+        {
+          step: outlineStep.step,
+          concept: outlineStep.concept,
+          subtitle: outlineStep.subtitle,
+          duration_ms: outlineStep.duration_ms,
+          canvas_instructions: {
+            elements: [
+              {
+                type: "text",
+                x: 50,
+                y: 50,
+                width: 34,
+                height: 6,
+                color: "#00d4ff",
+                label: outlineStep.subtitle.slice(0, 160),
+                label_position: "above",
+                animation: {
+                  type: "fade_in",
+                  duration: 900,
+                  direction: "none",
+                  represents: outlineStep.subtitle
+                }
+              }
+            ]
+          }
+        },
+        index
+      );
+
+    if (!visual) {
+      continue;
+    }
+
+    merged.push({
+      ...visual,
+      step: outlineStep.step,
+      concept: outlineStep.concept,
+      subtitle: outlineStep.subtitle,
+      duration_ms: outlineStep.duration_ms
+    });
+  }
+
+  if (merged.length === 0) {
+    throw new Error("Simulation visual generation failed: no valid visual steps returned.");
+  }
+
+  return merged;
+}
+
 async function validateAndCorrectSimulation(
   topic: string,
   steps: GeminiCanvasStep[]
@@ -1760,189 +1944,9 @@ async function generateSimulationFromGemini(
   }
 
   void level;
-
-  const simulationFormatPrompt = `
-You are a world class technical educator creating a visual simulation for the topic: ${topic}.
-
-Output ONLY a JSON object in this EXACT schema with no deviations:
-{
-  "steps": [
-    {
-      "step": 1,
-      "concept": "concept_name_no_spaces",
-      "subtitle": "One sentence explaining what this step shows",
-      "duration_ms": 15000,
-      "canvas_instructions": {
-        "elements": [
-          {
-            "type": "bar",
-            "x": 10,
-            "y": 30,
-            "width": 10,
-            "height": 40,
-            "color": "#4A90E2",
-            "label": "5",
-            "label_position": "above",
-            "animation": {
-              "type": "fade_in",
-              "duration": 800
-            }
-          }
-        ]
-      }
-    }
-  ]
-}
-STRICT RULES:
-- The top level key must be exactly "steps" - not "simulation", not "visualization"
-- Every step must have exactly: step (number), concept (string), subtitle (string), duration_ms (number), canvas_instructions.elements (array)
-- Every element must have: type, x, y, color, label
-- All x and y values are percentages 0-100
-- All color values must be valid hex like #FF5733
-- All numeric values in JSON must be plain numbers like 0.37 not JavaScript expressions like Math.exp(...)
-- Do NOT wrap in markdown code blocks
-- Do NOT add any text before or after the JSON
-- For text elements, always set x to at least 8 and never less than 8.
-- Text elements that list definitions or key terms should be placed at x values between 8 and 45 with y values spaced 15 apart starting from y=15.
-- Never place text elements at x=0 or x=1 or x=2.
-TOPIC-SPECIFIC ELEMENT RULES:
-- Before choosing element types for each step, think carefully about what visualization would make this concept most clear to a complete beginner.
-- Do not use bars unless the topic is specifically about comparing numerical values or sorting.
-- Do not use generic shapes.
-- For algorithm topics, show the actual data structure being manipulated.
-- For concept topics, use diagrams with arrows and labeled boxes showing relationships.
-- For mathematical topics, use axis and plot_point.
-- For process topics, use flowchart_diamond and arrows.
-- Always ask yourself: would a textbook use this diagram for this concept? If not, choose a different element type.
-- Binary search tree or any tree: use type "tree_node" with children array containing nested nodes with real numeric values like 10, 5, 15, 3, 7
-- Sorting algorithms: use type "bar" elements with numeric labels showing actual array values being sorted
-- Neural networks: use type "neural_network" with a layers array like [3,4,2]
-- Graphs or networks: use type "circle" nodes with type "arrow" connections and real node labels
-- Mathematical functions: use type "axis" and type "plot_point" elements
-- Queue or stack data structures: use type "queue" or type "stack" elements
-- Signal processing: use type "wave" elements
-- Matrices or grids: use type "matrix" elements
-- Bar heights must be proportional to their numeric values. If bars represent numbers [5, 3, 8, 1, 4], calculate height exactly as (value / max_value) * 70 and use that as the height percentage.
-- Never assign arbitrary bar heights. Always make heights mathematically correct relative to the values being shown.
-- Example for values [5, 3, 8, 1, 4]: max is 8, so heights are approximately [44, 26, 70, 9, 35].
-- Use color meaningfully: highlighted or active elements should use bright colors like #FF6B35 or #00D4FF.
-- Sorted or completed elements should use #4CAF50 (green).
-- Unsorted elements should use #4A90E2 (blue).
-- Never use the same color for all elements when some are being compared or swapped; make comparisons visually obvious with color contrast.
-- Use the most visually descriptive element type for each concept.
-- Use arrow elements to show data flow or relationships between nodes.
-- Use matrix elements for any grid-based data.
-- Use axis and plot_point for any mathematical or statistical concepts.
-- Use flowchart_diamond for any decision or conditional logic.
-- Use tree_node for any hierarchical structure.
-- Use table elements for comparisons between options.
-- Never use plain rectangle or circle when a more semantically specific element type exists.
-- Never generate rectangle elements unless the topic is specifically about rectangles or bounding boxes.
-- For 3D topics, use only text elements for definitions; the frontend will handle all visual rendering.
-- For algorithm topics, use only bar, tree_node, arrow, circle, or matrix elements.
-- For concept topics, use text, arrow, and flowchart_diamond elements.
-- Do not use render_mode in any element. The frontend will handle 3D rendering automatically.
-- For purely algorithmic topics (sorting, searching, etc.), do not force 3D elements.
-- You must be 100% factually accurate.
-- Common rules that must never be violated:
-  - BST insertion: values less than current node go LEFT, values greater go RIGHT.
-  - Bubble sort: compare adjacent elements, swap if left is greater than right.
-  - Binary search: always check the middle element, eliminate the half that cannot contain the target.
-  - Merge sort: split array in half, sort each half recursively, merge sorted halves.
-  - Quick sort: pick pivot, elements less than pivot go left partition, greater go right.
-  - Linked list: each node points to next node, head is first node, null terminates the list.
-  - Stack: LIFO, push adds to top, pop removes from top.
-  - Queue: FIFO, enqueue adds to back, dequeue removes from front.
-  - Hash table: key is hashed to find bucket index.
-- If you are unsure about any fact, do not include it.
-- For tree topics never generate standalone arrow elements. Tree structure is shown by tree_node connections only.
-
-Generate the minimum number of steps needed to explain ${topic} completely - do not pad with extra steps.
-The very first step must define all key terms and vocabulary of the topic using text elements with one-line definitions.
-The subtitle for step 1 must say what this topic is, why it matters, and define the 2-3 most important words.
-Every subsequent step must build on these definitions.
-For every step, subtitle must be a thorough educational explanation of 3-4 complete sentences.
-First define technical terms used in that step.
-Then explain the concept in plain English for a complete beginner.
-Then give a concrete real-world analogy or example with actual numbers.
-The subtitle must fill the entire duration_ms when read aloud at normal speaking pace.
-Set duration_ms on every step by counting the subtitle words and using:
-duration_ms = Math.max(12000, Math.min(35000, subtitle.split(' ').length * 400)).
-Examples:
-- 30 words => 12000ms
-- 50 words => 20000ms
-- 70 words => 28000ms
-`.trim();
-
-
-  const systemPrompt = "Return only valid JSON with no markdown and no prose.";
-
-  const requestGeminiJson = async (prompt: string): Promise<unknown> => {
-    void systemPrompt;
-    return requestBedrockJson(prompt, {
-      topicKey: topic,
-      useCache: true,
-      saveCache: false,
-      maxTokens: 8000,
-      temperature: 0
-    });
-  };
-
-  let rawSteps: unknown[] = [];
-  for (let attempt = 1; attempt <= 1; attempt += 1) {
-    try {
-      const initialPayload = await requestGeminiJson(simulationFormatPrompt);
-      const strict = llmSimulationSchema.safeParse(initialPayload);
-      console.log(
-        `[Gemini simulation] top-level JSON parse ${strict.success ? "succeeded" : "failed"} on attempt ${attempt}`
-      );
-      if (!strict.success) {
-        console.log(
-          `[Gemini simulation] top-level parse issue: ${strict.error.issues[0]?.message ?? "Unknown issue"}`
-        );
-      }
-
-      rawSteps = strict.success ? strict.data.steps : extractStepCandidates(initialPayload);
-
-      if (rawSteps.length === 0) {
-        throw new Error(
-          `Gemini JSON validation failed: ${strict.success ? "Missing steps" : strict.error.issues[0]?.message}`
-        );
-      }
-      break;
-    } catch (error) {
-      const message = (error as Error).message;
-      if (attempt >= 2) {
-        throw error;
-      }
-      console.warn(
-        `[Gemini simulation] invalid or unparsable JSON on attempt ${attempt}. Retrying once. Reason: ${message}`
-      );
-    }
-  }
-
-  if (rawSteps.length === 0) {
-    throw new Error("Gemini JSON validation failed: Missing steps");
-  }
-
-  const validSteps: GeminiCanvasStep[] = [];
-  for (let index = 0; index < rawSteps.length; index += 1) {
-    let stepCandidate: unknown = rawSteps[index];
-    let parsedStep = simCanvasStepSchema.safeParse(normalizeCanvasStep(stepCandidate, index));
-    console.log(
-      `[Gemini simulation] step ${index + 1} parse ${parsedStep.success ? "succeeded" : "failed"}`
-    );
-
-    if (parsedStep.success) {
-      validSteps.push(parsedStep.data);
-    }
-  }
-
-  if (validSteps.length === 0) {
-    throw new Error("Gemini JSON validation failed: Required");
-  }
-
-  const factCheckedSteps = await validateAndCorrectSimulation(topic, validSteps);
+  const outline = await generateSimulationOutline(topic);
+  const visualizedSteps = await generateSimulationVisuals(topic, outline);
+  const factCheckedSteps = await validateAndCorrectSimulation(topic, visualizedSteps);
   try {
     await saveSimulationS3Cache(topic, { steps: factCheckedSteps });
   } catch (error) {
