@@ -456,7 +456,7 @@ const simCanvasStepSchema = z.object({
   step: z.number().int().min(1).max(120),
   concept: z.string().min(1).max(220),
   subtitle: z.string().min(1).max(400),
-  duration_ms: z.number().int().min(12000).max(20000).optional(),
+  duration_ms: z.number().int().min(12000).max(35000).optional(),
   canvas_instructions: z.object({
     elements: z.array(simCanvasElementSchema).min(1).max(240)
   })
@@ -951,7 +951,7 @@ function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasSte
   ).slice(0, 400);
   const durationRaw = Number(raw.duration_ms ?? raw.durationMs);
   const duration_ms =
-    Number.isFinite(durationRaw) && durationRaw >= 12000 && durationRaw <= 20000
+    Number.isFinite(durationRaw) && durationRaw >= 12000 && durationRaw <= 35000
       ? Math.round(durationRaw)
       : undefined;
 
@@ -1787,10 +1787,12 @@ First define technical terms used in that step.
 Then explain the concept in plain English for a complete beginner.
 Then give a concrete real-world analogy or example with actual numbers.
 The subtitle must fill the entire duration_ms when read aloud at normal speaking pace.
-For 15000ms, write approximately 40-50 words.
-For 18000ms, write approximately 50-60 words.
-For 20000ms, write approximately 55-70 words.
-Add duration_ms on every step and set it between 12000 and 20000 based on concept complexity.
+Set duration_ms on every step by counting the subtitle words and using:
+duration_ms = Math.max(12000, Math.min(35000, subtitle.split(' ').length * 400)).
+Examples:
+- 30 words => 12000ms
+- 50 words => 20000ms
+- 70 words => 28000ms
 `.trim();
 
 
@@ -2102,9 +2104,10 @@ Map natural language reliably using these examples:
 - play / resume / start => play
 - what is this / explain / tell me => answer_question
 - move X to Y => move_element
+- go to step N / jump to step N / show step N / take me to step N => jump_to_step with step_number N
 Respond with ONLY valid JSON containing:
-- action_type (exactly one of: answer_question, move_element, modify_element, play, pause, next_step, previous_step, restart, open_menu, close_menu, toggle_subtitles, toggle_voice, not_possible, general_answer)
-- action_params (object; for move_element include element_label, target_x, target_y as canvas percentages; for modify_element include element_label, property, new_value)
+- action_type (exactly one of: answer_question, move_element, modify_element, play, pause, next_step, previous_step, jump_to_step, restart, open_menu, close_menu, toggle_subtitles, toggle_voice, not_possible, general_answer)
+- action_params (object; for move_element include element_label, target_x, target_y as canvas percentages; for modify_element include element_label, property, new_value; for jump_to_step include step_number as integer)
 - spoken_response (brief natural response for the user)
 - feedback (required only for move_element and modify_element; otherwise empty string)
 - requires_animation (boolean)

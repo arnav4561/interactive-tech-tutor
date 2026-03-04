@@ -137,6 +137,7 @@ interface VoiceActionResponse {
     | "next_step"
     | "previous_step"
     | "restart"
+    | "jump_to_step"
     | "open_menu"
     | "close_menu"
     | "toggle_subtitles"
@@ -323,6 +324,7 @@ export default function App(): JSX.Element {
   const simulationPausedRef = useRef(false);
   const spokenStepRef = useRef(-1);
   const stepNarrationCompleteRef = useRef(true);
+  const subtitleDisplayCompleteRef = useRef(true);
   const stepElapsedMsRef = useRef(0);
   const pausedAtElapsedMsRef = useRef(0);
   const pausedAtStepRef = useRef(0);
@@ -348,9 +350,11 @@ export default function App(): JSX.Element {
       | "pause"
       | "play"
       | "restart"
+      | "jump-step"
       | "toggle-chat"
       | "toggle-controls"
       | "go-home";
+    stepIndex?: number;
   } | null>(null);
   const commandNonceRef = useRef(0);
 
@@ -481,6 +485,7 @@ export default function App(): JSX.Element {
       subtitleTimerRef.current = null;
     }
     setSubtitle("");
+    subtitleDisplayCompleteRef.current = true;
     if ("speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -488,6 +493,7 @@ export default function App(): JSX.Element {
 
   const pushSubtitle = useCallback((text: string, durationMs = 2600) => {
     setSubtitle(text);
+    subtitleDisplayCompleteRef.current = true;
     if (subtitleTimerRef.current !== null) {
       window.clearTimeout(subtitleTimerRef.current);
     }
@@ -1255,6 +1261,22 @@ export default function App(): JSX.Element {
             commandNonceRef.current += 1;
             pendingSimulationCommandRef.current = { id: commandNonceRef.current, action: "restart" };
             toast = "Restarting simulation";
+          } else if (action.action_type === "jump_to_step") {
+            const totalSteps = selectedSimulation?.steps?.length ?? 0;
+            const rawStep = Number(params.step_number ?? params.step ?? params.index ?? Number.NaN);
+            const requestedStep = Number.isFinite(rawStep) ? Math.trunc(rawStep) : Number.NaN;
+            if (totalSteps > 0 && Number.isFinite(requestedStep)) {
+              const clampedStep = Math.min(totalSteps, Math.max(1, requestedStep));
+              commandNonceRef.current += 1;
+              pendingSimulationCommandRef.current = {
+                id: commandNonceRef.current,
+                action: "jump-step",
+                stepIndex: clampedStep - 1
+              };
+              toast = `Going to step ${clampedStep}`;
+            } else {
+              toast = "Unable to jump to requested step";
+            }
           } else if (action.action_type === "open_menu") {
             setToolsPanelOpen(true);
             toast = "Opening controls";
@@ -1424,7 +1446,8 @@ export default function App(): JSX.Element {
     token,
     voiceCaptureEnabled,
     voiceNarrationEnabled,
-    speakText
+    speakText,
+    selectedSimulation
   ]);
 
   const stopListening = useCallback(() => {
@@ -1662,6 +1685,7 @@ export default function App(): JSX.Element {
           window.speechSynthesis.cancel();
         }
         stepNarrationCompleteRef.current = true;
+        subtitleDisplayCompleteRef.current = true;
         resumeNarrationRequestedRef.current = false;
         return;
       }
@@ -1669,6 +1693,7 @@ export default function App(): JSX.Element {
         stepElapsedMsRef.current = pausedAtElapsedMsRef.current;
         simulationStepRef.current = pausedAtStepRef.current;
         stepNarrationCompleteRef.current = false;
+        subtitleDisplayCompleteRef.current = false;
         resumeNarrationRequestedRef.current = true;
       }
       if (voiceCaptureEnabled && appViewRef.current === "simulation") {
@@ -1878,8 +1903,10 @@ export default function App(): JSX.Element {
       setActiveStepIndex(index);
       if (subtitlesEnabled) {
         setSubtitle(step.subtitle);
+        subtitleDisplayCompleteRef.current = true;
       } else {
         setSubtitle("");
+        subtitleDisplayCompleteRef.current = true;
       }
       setMathOverlayLines([]);
 
@@ -1892,9 +1919,11 @@ export default function App(): JSX.Element {
           utterance.rate = 1;
           utterance.onend = () => {
             stepNarrationCompleteRef.current = true;
+            subtitleDisplayCompleteRef.current = true;
           };
           utterance.onerror = () => {
             stepNarrationCompleteRef.current = true;
+            subtitleDisplayCompleteRef.current = true;
           };
           console.log("[Narration] speechSynthesis.speak()", {
             subtitle: step.subtitle,
@@ -1904,12 +1933,15 @@ export default function App(): JSX.Element {
           window.speechSynthesis.speak(utterance);
         } else {
           stepNarrationCompleteRef.current = true;
+          subtitleDisplayCompleteRef.current = true;
         }
       } else if ("speechSynthesis" in window) {
         stepNarrationCompleteRef.current = true;
+        subtitleDisplayCompleteRef.current = true;
         window.speechSynthesis.cancel();
       } else {
         stepNarrationCompleteRef.current = true;
+        subtitleDisplayCompleteRef.current = true;
       }
     };
 
@@ -1923,7 +1955,7 @@ export default function App(): JSX.Element {
       console.log(`[Simulation] step=${index + 1} elementTypes=`, renderer.getElementTypes());
       const requestedDuration = Number(step.duration_ms);
       currentStepDurationMs =
-        Number.isFinite(requestedDuration) && requestedDuration >= 12000 && requestedDuration <= 20000
+        Number.isFinite(requestedDuration) && requestedDuration >= 12000 && requestedDuration <= 35000
           ? requestedDuration
           : renderer.getSuggestedDurationMs();
       setStepNarration(step, index);
@@ -2012,6 +2044,13 @@ export default function App(): JSX.Element {
           stepElapsedMsRef.current = 0;
           pausedAtElapsedMsRef.current = 0;
           applyStep(simulationStepRef.current);
+        } else if (pendingCommand.action === "jump-step") {
+          const targetIndex = Math.max(0, Math.min(steps.length - 1, Number(pendingCommand.stepIndex ?? 0)));
+          simulationStepRef.current = targetIndex;
+          stepElapsedMs = 0;
+          stepElapsedMsRef.current = 0;
+          pausedAtElapsedMsRef.current = 0;
+          applyStep(simulationStepRef.current);
         } else if (pendingCommand.action === "toggle-chat") {
           setChatPanelOpen((value) => !value);
         } else if (pendingCommand.action === "toggle-controls") {
@@ -2036,6 +2075,7 @@ export default function App(): JSX.Element {
         if (
           stepElapsedMs >= currentStepDurationMs &&
           stepNarrationCompleteRef.current &&
+          subtitleDisplayCompleteRef.current &&
           renderer.isAnimationComplete(now)
         ) {
           stepElapsedMs = 0;

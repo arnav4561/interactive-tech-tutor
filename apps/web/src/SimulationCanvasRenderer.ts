@@ -17,6 +17,8 @@ type AnimState = {
   drawProgress: number;
   textProgress: number;
   highlight: number;
+  startX?: number;
+  startY?: number;
 };
 
 export class SimulationCanvasRenderer {
@@ -67,6 +69,12 @@ export class SimulationCanvasRenderer {
     this.pauseStartedAt = 0;
     this.pausedMs = 0;
     this.paused = false;
+    const elements = this.getElements();
+    for (const el of elements) {
+      const runtime = el as Record<string, unknown>;
+      delete runtime.__swapStartX;
+      delete runtime.__swapStartY;
+    }
   }
 
   setPaused(paused: boolean, now = performance.now()): void {
@@ -307,6 +315,50 @@ export class SimulationCanvasRenderer {
     return fallback;
   }
 
+  private optionalNum(source: unknown, keys: string[]): number | null {
+    const o = this.obj(source);
+    for (const k of keys) {
+      const v = o[k];
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string") {
+        const n = Number.parseFloat(v.replace("%", "").trim());
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return null;
+  }
+
+  private swapPartnerTargetX(el: StepElement, ownX: number): number | null {
+    const ownPercentX = this.num(el, ["x", "x1"], Number.NaN);
+    if (!Number.isFinite(ownPercentX)) {
+      return null;
+    }
+    const elements = this.getElements();
+    for (const candidate of elements) {
+      if (candidate === el || this.type(candidate) !== "bar") {
+        continue;
+      }
+      const anim = this.anim(candidate);
+      const animType = this.str(anim.type, "").toLowerCase().replace(/\s+/g, "_");
+      if (animType !== "swap") {
+        continue;
+      }
+      const within = this.obj(anim.with);
+      const partnerTarget =
+        this.optionalNum(within, ["x", "target_x", "to_x", "x2"]) ??
+        this.optionalNum(anim, ["target_x", "to_x", "x2"]);
+      if (partnerTarget === null || Math.abs(partnerTarget - ownPercentX) > 0.6) {
+        continue;
+      }
+      const partnerXPercent = this.num(candidate, ["x", "x1"], Number.NaN);
+      if (!Number.isFinite(partnerXPercent)) {
+        continue;
+      }
+      return this.x(partnerXPercent);
+    }
+    return ownX;
+  }
+
   private type(el: StepElement): string {
     return this.str(el.type, "rectangle").toLowerCase().replace(/\s+/g, "_");
   }
@@ -401,14 +453,38 @@ export class SimulationCanvasRenderer {
     else if (type === "draw") s.drawProgress = p;
     else if (type === "typewriter") s.textProgress = p;
     else if (type === "move" || type === "swap" || type === "bounce" || type === "follow_path") {
-      const sx = this.x(this.num(el, ["x", "x1"], 0));
-      const sy = this.y(this.num(el, ["y", "y1"], 0));
-      const tx = this.x(
-        this.num(within, ["target_x", "to_x", "x2", "x"], this.num(a, ["target_x", "to_x", "x2"], sx))
-      );
-      const ty = this.y(
-        this.num(within, ["target_y", "to_y", "y2", "y"], this.num(a, ["target_y", "to_y", "y2"], sy))
-      );
+      const runtime = el as Record<string, unknown>;
+      const sxCurrent = this.x(this.num(el, ["x", "x1"], 0));
+      const syCurrent = this.y(this.num(el, ["y", "y1"], 0));
+      let sx = sxCurrent;
+      let sy = syCurrent;
+      if (type === "swap") {
+        if (typeof runtime.__swapStartX !== "number") {
+          runtime.__swapStartX = sxCurrent;
+        }
+        if (typeof runtime.__swapStartY !== "number") {
+          runtime.__swapStartY = syCurrent;
+        }
+        sx = runtime.__swapStartX as number;
+        sy = runtime.__swapStartY as number;
+        s.startX = sx;
+        s.startY = sy;
+      }
+
+      const fallbackTxRaw = this.num(a, ["target_x", "to_x", "x2"], this.num(el, ["x", "x1"], 0));
+      const fallbackTyRaw = this.num(a, ["target_y", "to_y", "y2"], this.num(el, ["y", "y1"], 0));
+      let txRaw = this.optionalNum(within, ["target_x", "to_x", "x2", "x"]) ?? this.optionalNum(a, ["target_x", "to_x", "x2"]);
+      let tyRaw = this.optionalNum(within, ["target_y", "to_y", "y2", "y"]) ?? this.optionalNum(a, ["target_y", "to_y", "y2"]);
+
+      if (type === "swap" && txRaw === null) {
+        const partnerTarget = this.swapPartnerTargetX(el, sx);
+        if (partnerTarget !== null) {
+          txRaw = partnerTarget;
+        }
+      }
+
+      const tx = this.x(txRaw ?? fallbackTxRaw);
+      const ty = this.y(tyRaw ?? fallbackTyRaw);
       const t = type === "bounce" ? this.easeOutBack(p) : p;
       if (type === "follow_path") {
         const cx = this.x(this.num(a, ["cx", "control_x"], (sx + tx) / 2));
@@ -730,12 +806,15 @@ export class SimulationCanvasRenderer {
         this.ctx.stroke();
         this.ctx.restore();
         if (t === "arrow") this.arrowHead(x1, y1, end.x, end.y, c, lineWidth + 2);
-        this.label(el, label, (x1 + x2) / 2, (y1 + y2) / 2, "above", {
-          x: Math.min(x1, x2),
-          y: Math.min(y1, y2),
-          w: Math.abs(x2 - x1) || 1,
-          h: Math.abs(y2 - y1) || 1
-        });
+        const isPlaceholderArrowLabel = t === "arrow" && /^arrow(?:\s*\d+)?$/i.test(label.trim());
+        if (!isPlaceholderArrowLabel) {
+          this.label(el, label, (x1 + x2) / 2, (y1 + y2) / 2, "above", {
+            x: Math.min(x1, x2),
+            y: Math.min(y1, y2),
+            w: Math.abs(x2 - x1) || 1,
+            h: Math.abs(y2 - y1) || 1
+          });
+        }
       } else if (t === "curved_arrow") {
         const x1 = this.x(this.num(el, ["x1"], x));
         const y1 = this.y(this.num(el, ["y1"], y));
