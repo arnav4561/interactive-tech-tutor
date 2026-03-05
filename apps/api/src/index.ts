@@ -1257,8 +1257,89 @@ function rebuildBstParentLinks(treeElements: Array<Record<string, unknown>>): vo
   }
 }
 
-function repairBstStep(step: GeminiCanvasStep): GeminiCanvasStep {
+function isBstTopic(topic: string): boolean {
+  return /(binary search tree|\bbst\b)/i.test(topic);
+}
+
+function replaceBstPlaceholderTextWithTreeNodes(step: GeminiCanvasStep): GeminiCanvasStep {
   const elements = step.canvas_instructions.elements.map((element) => ({ ...(element as Record<string, unknown>) }));
+  const usedValues = new Set<number>();
+  for (const element of elements) {
+    const type = asText(element.type).toLowerCase().replace(/\s+/g, "_");
+    if (type !== "tree_node") {
+      continue;
+    }
+    const value = treeNodeNumericValue(element);
+    if (value !== null) {
+      usedValues.add(value);
+    }
+  }
+
+  let fallbackValue = usedValues.size > 0 ? Math.max(...Array.from(usedValues)) + 1 : 10;
+  const nextFallbackValue = (): number => {
+    while (usedValues.has(fallbackValue)) {
+      fallbackValue += 1;
+    }
+    const chosen = fallbackValue;
+    usedValues.add(chosen);
+    fallbackValue += 1;
+    return chosen;
+  };
+
+  const normalizedElements = elements.map((element) => {
+    const type = asText(element.type).toLowerCase().replace(/\s+/g, "_");
+    const label = asText(element.label) || asText(element.text);
+    if (type !== "text" || !/subtree|left child|right child|root node/i.test(label)) {
+      return element;
+    }
+
+    const numericMatch = label.match(/-?\d+(?:\.\d+)?/);
+    const parsedValue = numericMatch ? Number.parseFloat(numericMatch[0]) : Number.NaN;
+    let value = Number.isFinite(parsedValue) ? parsedValue : nextFallbackValue();
+    if (!Number.isFinite(value)) {
+      value = nextFallbackValue();
+    }
+    if (usedValues.has(value)) {
+      value = nextFallbackValue();
+    } else {
+      usedValues.add(value);
+    }
+
+    const labelLower = label.toLowerCase();
+    const xFromElement = Number(element.x);
+    const yFromElement = Number(element.y);
+    const inferredX = labelLower.includes("left")
+      ? 25
+      : labelLower.includes("right")
+        ? 75
+        : labelLower.includes("root")
+          ? 50
+          : 50;
+    const inferredY = labelLower.includes("root") ? 12 : 30;
+
+    return {
+      ...element,
+      type: "tree_node",
+      value,
+      label: String(value),
+      x: Number.isFinite(xFromElement) ? clamp(xFromElement, 0, 100) : inferredX,
+      y: Number.isFinite(yFromElement) ? clamp(yFromElement, 0, 100) : inferredY,
+      color: normalizeHexColor(asText(element.color), "#4A90E2"),
+      parent_value: labelLower.includes("root") ? null : element.parent_value ?? null
+    } as Record<string, unknown>;
+  });
+
+  return {
+    ...step,
+    canvas_instructions: {
+      elements: normalizedElements as GeminiCanvasElement[]
+    }
+  };
+}
+
+function repairBstStep(step: GeminiCanvasStep): GeminiCanvasStep {
+  const normalizedStep = replaceBstPlaceholderTextWithTreeNodes(step);
+  const elements = normalizedStep.canvas_instructions.elements.map((element) => ({ ...(element as Record<string, unknown>) }));
   const treeElements = elements.filter(
     (element) => asText(element.type).toLowerCase().replace(/\s+/g, "_") === "tree_node"
   );
@@ -2034,6 +2115,25 @@ Each step must include:
 - canvas_instructions with an elements array
 
 STRICT RULES:
+- CRITICAL RULE — BINARY SEARCH TREE: If the topic is binary search tree or BST, you MUST generate tree_node elements for every node in the tree.
+  A tree_node element looks exactly like this:
+  {"type": "tree_node", "value": 50, "x": 50, "y": 12, "color": "#4A90E2", "parent_value": null}
+  {"type": "tree_node", "value": 30, "x": 25, "y": 30, "color": "#4A90E2", "parent_value": 50}
+  {"type": "tree_node", "value": 70, "x": 75, "y": 30, "color": "#4A90E2", "parent_value": 50}
+  NEVER generate type text with label Left Subtree or Right Subtree.
+  NEVER generate placeholder text elements for tree parts.
+  Every node in the tree must be its own tree_node element with a numeric value, x position, y position, color, and parent_value.
+  The root node has parent_value null.
+  All other nodes have parent_value set to their parent node value.
+  For a BST with values [50,30,70,20,40,60,80]:
+  50 is root at (50,12),
+  30 is left child of 50 at (25,30),
+  70 is right child of 50 at (75,30),
+  20 is left child of 30 at (12,50),
+  40 is right child of 30 at (38,50),
+  60 is left child of 70 at (62,50),
+  80 is right child of 70 at (88,50).
+  Use this exact pattern for every BST simulation step.
 - For binary search tree topics: use ONLY tree_node elements (never line, never rectangle).
   Each tree_node must have: type='tree_node', value (number), x (0-100), y (0-100), color, parent_value (number or null for root).
   The renderer will draw connection lines automatically.
@@ -2078,7 +2178,9 @@ STRICT RULES:
     throw new Error("Simulation generation failed: Bedrock did not return valid steps.");
   }
 
-  const validatedSteps = validateAndRepairBstSteps(generatedSteps);
+  const validatedSteps = isBstTopic(topic)
+    ? validateAndRepairBstSteps(generatedSteps)
+    : generatedSteps;
 
   try {
     await saveSimulationS3Cache(topic, { steps: validatedSteps });
