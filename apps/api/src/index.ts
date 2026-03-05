@@ -5,6 +5,7 @@ import cors from "cors";
 import express from "express";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
+import { CreateTableCommand, DescribeTableCommand, DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { z } from "zod";
 import { authMiddleware, AuthenticatedRequest, createToken, hashPassword } from "./auth.js";
@@ -64,6 +65,17 @@ const s3Client = new S3Client({
 });
 
 const S3_BUCKET = process.env.AWS_S3_BUCKET || "interactive-tech-tutor-cache";
+const DYNAMODB_TABLE_PREFIX = process.env.DYNAMODB_TABLE_PREFIX?.trim() || "itt";
+const DYNAMODB_USERS_TABLE = `${DYNAMODB_TABLE_PREFIX}-users`;
+const DYNAMODB_SESSIONS_TABLE = `${DYNAMODB_TABLE_PREFIX}-sessions`;
+const DYNAMODB_SIM_HISTORY_TABLE = `${DYNAMODB_TABLE_PREFIX}-simulation-history`;
+const dynamoDbClient = new DynamoDBClient({
+  region: process.env.AWS_REGION?.trim() || "us-east-1",
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!
+  }
+});
 const simulationResponseCache = new Map<
   string,
   {
@@ -132,6 +144,76 @@ async function initializeCacheState(): Promise<void> {
   } catch (error) {
     console.error(`[Cache] Failed to clear S3 cache bucket ${S3_BUCKET}. Continuing startup.`, error);
   }
+}
+
+async function initializeDynamoDBTables(): Promise<void> {
+  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+    throw new Error("DynamoDB is not configured. Missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY.");
+  }
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  const ensureTable = async (
+    tableName: string,
+    keySchema: Array<{ AttributeName: string; KeyType: "HASH" | "RANGE" }>,
+    attributeDefinitions: Array<{ AttributeName: string; AttributeType: "S" | "N" | "B" }>
+  ) => {
+    try {
+      await dynamoDbClient.send(new DescribeTableCommand({ TableName: tableName }));
+      return;
+    } catch (error) {
+      const name = (error as { name?: string }).name ?? "";
+      if (name !== "ResourceNotFoundException") {
+        throw error;
+      }
+    }
+
+    await dynamoDbClient.send(
+      new CreateTableCommand({
+        TableName: tableName,
+        BillingMode: "PAY_PER_REQUEST",
+        KeySchema: keySchema,
+        AttributeDefinitions: attributeDefinitions
+      })
+    );
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await sleep(1500);
+      try {
+        const description = await dynamoDbClient.send(
+          new DescribeTableCommand({ TableName: tableName })
+        );
+        if (description.Table?.TableStatus === "ACTIVE") {
+          return;
+        }
+      } catch (_error) {
+        // keep polling
+      }
+    }
+    throw new Error(`Timed out waiting for DynamoDB table ${tableName} to become ACTIVE.`);
+  };
+
+  await ensureTable(
+    DYNAMODB_USERS_TABLE,
+    [{ AttributeName: "userId", KeyType: "HASH" }],
+    [{ AttributeName: "userId", AttributeType: "S" }]
+  );
+  await ensureTable(
+    DYNAMODB_SESSIONS_TABLE,
+    [{ AttributeName: "sessionToken", KeyType: "HASH" }],
+    [{ AttributeName: "sessionToken", AttributeType: "S" }]
+  );
+  await ensureTable(
+    DYNAMODB_SIM_HISTORY_TABLE,
+    [
+      { AttributeName: "userId", KeyType: "HASH" },
+      { AttributeName: "timestamp", KeyType: "RANGE" }
+    ],
+    [
+      { AttributeName: "userId", AttributeType: "S" },
+      { AttributeName: "timestamp", AttributeType: "S" }
+    ]
+  );
 }
 
 app.use(
@@ -3057,6 +3139,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 });
 
 async function startServer(): Promise<void> {
+  await initializeDynamoDBTables();
   await initializeCacheState();
   app.listen(port, () => {
     console.log(`Interactive Tech Tutor API running on http://localhost:${port}`);

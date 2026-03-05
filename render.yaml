@@ -1,9 +1,3 @@
-databases:
-  - name: interactive-tech-tutor-db
-    plan: free
-    databaseName: interactive_tech_tutor
-    user: interactive_tech_tutor_user
-
 services:
   - type: web
     name: interactive-tech-tutor-api
@@ -20,14 +14,12 @@ services:
         generateValue: true
       - key: FRONTEND_ORIGINS
         sync: false
-      - key: DATABASE_URL
-        fromDatabase:
-          name: interactive-tech-tutor-db
-          property: connectionString
       - key: AWS_REGION
         value: us-east-1
       - key: AWS_BEDROCK_REGION
         value: us-west-2
+      - key: DYNAMODB_TABLE_PREFIX
+        value: itt
       - key: AWS_S3_BUCKET
         value: interactive-tech-tutor-cache
       - key: AWS_ACCESS_KEY_ID
