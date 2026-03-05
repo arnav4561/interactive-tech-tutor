@@ -337,6 +337,7 @@ export default function App(): JSX.Element {
   const mathWorkerRef = useRef<Worker | null>(null);
   const mathWorkerTicketRef = useRef(0);
   const commandFlashTimerRef = useRef<number | null>(null);
+  const interimNoticeTimerRef = useRef<number | null>(null);
   const simulationRendererRef = useRef<SimulationCanvasRenderer | null>(null);
   const currentStepConceptRef = useRef("Current step");
   const systemSpeakingRef = useRef(false);
@@ -1232,6 +1233,7 @@ export default function App(): JSX.Element {
           };
 
           let toast = "Action executed";
+          let skipFlashToast = false;
           if (action.action_type === "play") {
             stepElapsedMsRef.current = pausedAtElapsedMsRef.current;
             simulationStepRef.current = pausedAtStepRef.current;
@@ -1272,7 +1274,17 @@ export default function App(): JSX.Element {
                 action: "jump-step",
                 stepIndex: clampedStep - 1
               };
-              toast = `Going to step ${clampedStep}`;
+              const jumpMessage = `Going to step ${clampedStep}`;
+              toast = jumpMessage;
+              setVoiceInterimText(jumpMessage);
+              if (interimNoticeTimerRef.current !== null) {
+                window.clearTimeout(interimNoticeTimerRef.current);
+              }
+              interimNoticeTimerRef.current = window.setTimeout(() => {
+                setVoiceInterimText("");
+                interimNoticeTimerRef.current = null;
+              }, 1600);
+              skipFlashToast = true;
             } else {
               toast = "Unable to jump to requested step";
             }
@@ -1341,7 +1353,9 @@ export default function App(): JSX.Element {
           ) {
             await respond(action.spoken_response);
           }
-          flashVoiceCommand(toast);
+          if (!skipFlashToast) {
+            flashVoiceCommand(toast);
+          }
         } catch (error) {
           setStatusMessage((error as Error).message);
           processVoiceCommand(transcript);
@@ -1945,11 +1959,12 @@ export default function App(): JSX.Element {
       }
     };
 
-    const applyStep = (index: number) => {
+    const applyStep = (index: number, options?: { narrate?: boolean }) => {
       if (!renderer) {
         return;
       }
       const step = steps[index];
+      const shouldNarrate = options?.narrate !== false;
       pausedAtStepRef.current = index;
       renderer.setStep(step as SimulationCanvasStepLike);
       console.log(`[Simulation] step=${index + 1} elementTypes=`, renderer.getElementTypes());
@@ -1958,7 +1973,14 @@ export default function App(): JSX.Element {
         Number.isFinite(requestedDuration) && requestedDuration >= 12000 && requestedDuration <= 35000
           ? requestedDuration
           : renderer.getSuggestedDurationMs();
-      setStepNarration(step, index);
+      if (shouldNarrate) {
+        setStepNarration(step, index);
+      } else {
+        setCurrentStepText(`Step ${index + 1}: ${step.concept}`);
+        currentStepConceptRef.current = step.concept;
+        setActiveStepIndex(index);
+        setMathOverlayLines([]);
+      }
       renderer.render(performance.now());
       setSimulationRendererLoading(false);
     };
@@ -2045,13 +2067,33 @@ export default function App(): JSX.Element {
           pausedAtElapsedMsRef.current = 0;
           applyStep(simulationStepRef.current);
         } else if (pendingCommand.action === "jump-step") {
+          const wasPausedBeforeJump = simulationPausedRef.current;
           const targetIndex = Math.max(0, Math.min(steps.length - 1, Number(pendingCommand.stepIndex ?? 0)));
           simulationStepRef.current = targetIndex;
           stepElapsedMs = 0;
           stepElapsedMsRef.current = 0;
           pausedAtElapsedMsRef.current = 0;
-          applyStep(simulationStepRef.current);
+          applyStep(simulationStepRef.current, { narrate: false });
           setSubtitle(steps[targetIndex]?.subtitle ?? "");
+          subtitleDisplayCompleteRef.current = false;
+          stepNarrationCompleteRef.current = false;
+          if ("speechSynthesis" in window) {
+            window.speechSynthesis.cancel();
+          }
+          const jumpNarrationTimer = window.setTimeout(() => {
+            if (disposed || appViewRef.current !== "simulation") {
+              return;
+            }
+            setStepNarration(steps[targetIndex], targetIndex, true);
+          }, 200);
+          narrationTimersRef.current.push(jumpNarrationTimer);
+          simulationPausedRef.current = wasPausedBeforeJump;
+          setSimulationPaused(wasPausedBeforeJump);
+          if (wasPausedBeforeJump) {
+            pausedAtStepRef.current = simulationStepRef.current;
+            pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+            resumeNarrationRequestedRef.current = false;
+          }
         } else if (pendingCommand.action === "toggle-chat") {
           setChatPanelOpen((value) => !value);
         } else if (pendingCommand.action === "toggle-controls") {
@@ -2447,6 +2489,9 @@ export default function App(): JSX.Element {
       topicCaptureDesiredRef.current = false;
       if (commandFlashTimerRef.current !== null) {
         window.clearTimeout(commandFlashTimerRef.current);
+      }
+      if (interimNoticeTimerRef.current !== null) {
+        window.clearTimeout(interimNoticeTimerRef.current);
       }
       if (recognitionRestartTimerRef.current !== null) {
         window.clearTimeout(recognitionRestartTimerRef.current);

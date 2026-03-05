@@ -1651,6 +1651,7 @@ textarea {
   display: grid;
   place-items: center;
   padding: 0;
+  position: relative;
 }
 
 .sim-mic-btn svg {
@@ -2015,7 +2016,25 @@ textarea {
 }
 
 .sim-mic-btn.state-idle {
-  border-color: rgba(123, 150, 190, 0.48);
+  background: #dc2626 !important;
+  border-color: #b91c1c !important;
+}
+
+.sim-mic-btn.state-idle svg {
+  fill: #ffffff !important;
+}
+
+.sim-mic-btn.state-idle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 23px;
+  height: 2.5px;
+  background: #ffffff;
+  border-radius: 999px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  pointer-events: none;
 }
 
 .sim-mic-btn.state-listening {

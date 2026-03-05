@@ -1023,6 +1023,314 @@ function normalizeCanvasStep(candidate: unknown, index: number): GeminiCanvasSte
   };
 }
 
+function treeNodeNumericValue(element: Record<string, unknown>): number | null {
+  const candidates = [element.value, element.label, element.text];
+  for (const candidate of candidates) {
+    const parsed = Number.parseFloat(asText(candidate));
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function parseTreeHintsFromSubtitle(subtitle: string): {
+  explicitChildren: Map<number, Set<number>>;
+  parentsClaimingTwoChildren: Set<number>;
+} {
+  const explicitChildren = new Map<number, Set<number>>();
+  const parentsClaimingTwoChildren = new Set<number>();
+  const addChildHint = (parent: number, child: number) => {
+    if (!Number.isFinite(parent) || !Number.isFinite(child) || parent === child) {
+      return;
+    }
+    if (!explicitChildren.has(parent)) {
+      explicitChildren.set(parent, new Set<number>());
+    }
+    explicitChildren.get(parent)?.add(child);
+  };
+
+  let match: RegExpExecArray | null = null;
+  const childrenOfPattern = /children\s+of\s+(-?\d+(?:\.\d+)?)\s+are\s+(-?\d+(?:\.\d+)?)\s*(?:,|and)\s*(-?\d+(?:\.\d+)?)/gi;
+  while ((match = childrenOfPattern.exec(subtitle)) !== null) {
+    const parent = Number.parseFloat(match[1]);
+    const left = Number.parseFloat(match[2]);
+    const right = Number.parseFloat(match[3]);
+    if (Number.isFinite(parent)) {
+      parentsClaimingTwoChildren.add(parent);
+    }
+    addChildHint(parent, left);
+    addChildHint(parent, right);
+  }
+
+  const twoChildrenPattern = /(?:node\s+)?(-?\d+(?:\.\d+)?)\s+has\s+two\s+children(?:\s*[:\-]?\s*(-?\d+(?:\.\d+)?)\s*(?:,|and)\s*(-?\d+(?:\.\d+)?))?/gi;
+  while ((match = twoChildrenPattern.exec(subtitle)) !== null) {
+    const parent = Number.parseFloat(match[1]);
+    if (Number.isFinite(parent)) {
+      parentsClaimingTwoChildren.add(parent);
+    }
+    if (match[2] && match[3]) {
+      addChildHint(parent, Number.parseFloat(match[2]));
+      addChildHint(parent, Number.parseFloat(match[3]));
+    }
+  }
+
+  const sideChildPattern = /(?:left|right)\s+child\s+of\s+(-?\d+(?:\.\d+)?)\s+is\s+(-?\d+(?:\.\d+)?)/gi;
+  while ((match = sideChildPattern.exec(subtitle)) !== null) {
+    addChildHint(Number.parseFloat(match[1]), Number.parseFloat(match[2]));
+  }
+
+  return { explicitChildren, parentsClaimingTwoChildren };
+}
+
+function ensureTreeNodeElement(
+  treeElements: Array<Record<string, unknown>>,
+  value: number,
+  parentValue: number | null
+): Record<string, unknown> {
+  const existing = treeElements.find((element) => treeNodeNumericValue(element) === value);
+  if (existing) {
+    if (parentValue !== null && parentValue !== value) {
+      existing.parent_value = parentValue;
+    }
+    if (!asText(existing.label)) {
+      existing.label = String(value);
+    }
+    if (treeNodeNumericValue(existing) === null) {
+      existing.value = value;
+    }
+    return existing;
+  }
+
+  const node: Record<string, unknown> = {
+    type: "tree_node",
+    value,
+    label: String(value),
+    x: 50,
+    y: 50,
+    width: 10,
+    height: 10,
+    color: "#4A90E2",
+    label_position: "above",
+    parent_value: parentValue
+  };
+  treeElements.push(node);
+  return node;
+}
+
+function validateBstByParentLinks(treeElements: Array<Record<string, unknown>>): boolean {
+  const nodeByValue = new Map<number, { value: number; left: number | null; right: number | null }>();
+  for (const element of treeElements) {
+    const value = treeNodeNumericValue(element);
+    if (value === null || nodeByValue.has(value)) {
+      continue;
+    }
+    nodeByValue.set(value, { value, left: null, right: null });
+  }
+  if (nodeByValue.size === 0) {
+    return true;
+  }
+
+  const hasParent = new Set<number>();
+  for (const element of treeElements) {
+    const value = treeNodeNumericValue(element);
+    if (value === null) {
+      continue;
+    }
+    const parentValueParsed = Number.parseFloat(asText(element.parent_value));
+    if (!Number.isFinite(parentValueParsed)) {
+      continue;
+    }
+    const parentValue = parentValueParsed;
+    const parent = nodeByValue.get(parentValue);
+    const node = nodeByValue.get(value);
+    if (!parent || !node || value === parentValue) {
+      return false;
+    }
+    if (value < parentValue) {
+      if (parent.left !== null && parent.left !== value) {
+        return false;
+      }
+      parent.left = value;
+    } else if (value > parentValue) {
+      if (parent.right !== null && parent.right !== value) {
+        return false;
+      }
+      parent.right = value;
+    } else {
+      return false;
+    }
+    hasParent.add(value);
+  }
+
+  const roots = Array.from(nodeByValue.keys()).filter((value) => !hasParent.has(value));
+  if (roots.length === 0) {
+    return false;
+  }
+
+  const visited = new Set<number>();
+  const dfs = (value: number, min: number, max: number): boolean => {
+    if (!Number.isFinite(value) || value <= min || value >= max) {
+      return false;
+    }
+    if (visited.has(value)) {
+      return false;
+    }
+    visited.add(value);
+    const node = nodeByValue.get(value);
+    if (!node) {
+      return false;
+    }
+    if (node.left !== null && !dfs(node.left, min, value)) {
+      return false;
+    }
+    if (node.right !== null && !dfs(node.right, value, max)) {
+      return false;
+    }
+    return true;
+  };
+
+  for (const root of roots) {
+    if (!dfs(root, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function rebuildBstParentLinks(treeElements: Array<Record<string, unknown>>): void {
+  const orderedValues: number[] = [];
+  const elementByValue = new Map<number, Record<string, unknown>>();
+  for (const element of treeElements) {
+    const value = treeNodeNumericValue(element);
+    if (value === null || elementByValue.has(value)) {
+      continue;
+    }
+    orderedValues.push(value);
+    elementByValue.set(value, element);
+  }
+  if (orderedValues.length === 0) {
+    return;
+  }
+
+  type BstNode = { value: number; left: BstNode | null; right: BstNode | null };
+  let root: BstNode | null = null;
+  const parentByValue = new Map<number, number | null>();
+
+  for (const value of orderedValues) {
+    if (!root) {
+      root = { value, left: null, right: null };
+      parentByValue.set(value, null);
+      continue;
+    }
+
+    let current: BstNode | null = root;
+    let parent: BstNode | null = null;
+    while (current) {
+      parent = current;
+      if (value < current.value) {
+        current = current.left;
+      } else if (value > current.value) {
+        current = current.right;
+      } else {
+        parent = null;
+        break;
+      }
+    }
+
+    if (!parent) {
+      continue;
+    }
+    const nextNode: BstNode = { value, left: null, right: null };
+    if (value < parent.value) {
+      parent.left = nextNode;
+    } else {
+      parent.right = nextNode;
+    }
+    parentByValue.set(value, parent.value);
+  }
+
+  for (const [value, element] of elementByValue.entries()) {
+    element.value = value;
+    element.label = asText(element.label) || String(value);
+    element.parent_value = parentByValue.get(value) ?? null;
+  }
+}
+
+function repairBstStep(step: GeminiCanvasStep): GeminiCanvasStep {
+  const elements = step.canvas_instructions.elements.map((element) => ({ ...(element as Record<string, unknown>) }));
+  const treeElements = elements.filter(
+    (element) => asText(element.type).toLowerCase().replace(/\s+/g, "_") === "tree_node"
+  );
+  if (treeElements.length === 0) {
+    return step;
+  }
+
+  const { explicitChildren, parentsClaimingTwoChildren } = parseTreeHintsFromSubtitle(step.subtitle);
+  for (const [parentValue, childValues] of explicitChildren.entries()) {
+    ensureTreeNodeElement(treeElements, parentValue, null);
+    for (const childValue of childValues) {
+      ensureTreeNodeElement(treeElements, childValue, parentValue);
+    }
+  }
+
+  rebuildBstParentLinks(treeElements);
+
+  for (const [parentValue, childValues] of explicitChildren.entries()) {
+    for (const childValue of childValues) {
+      const child = treeElements.find((element) => treeNodeNumericValue(element) === childValue);
+      if (child) {
+        const previousParent = Number.parseFloat(asText(child.parent_value));
+        child.parent_value = parentValue;
+        if (!validateBstByParentLinks(treeElements)) {
+          child.parent_value = Number.isFinite(previousParent) ? previousParent : null;
+        }
+      }
+    }
+  }
+
+  for (const parentValue of parentsClaimingTwoChildren.values()) {
+    const currentChildren = treeElements.filter(
+      (element) => Number.parseFloat(asText(element.parent_value)) === parentValue
+    );
+    if (currentChildren.length >= 2) {
+      continue;
+    }
+    const candidateValues = treeElements
+      .map((element) => treeNodeNumericValue(element))
+      .filter((value): value is number => value !== null && value !== parentValue)
+      .sort((a, b) => a - b);
+    const leftCandidate = [...candidateValues].reverse().find((value) => value < parentValue) ?? null;
+    const rightCandidate = candidateValues.find((value) => value > parentValue) ?? null;
+    for (const candidate of [leftCandidate, rightCandidate]) {
+      if (candidate === null) {
+        continue;
+      }
+      const child = ensureTreeNodeElement(treeElements, candidate, parentValue);
+      const previousParent = Number.parseFloat(asText(child.parent_value));
+      child.parent_value = parentValue;
+      if (!validateBstByParentLinks(treeElements)) {
+        child.parent_value = Number.isFinite(previousParent) ? previousParent : null;
+      }
+    }
+  }
+
+  if (!validateBstByParentLinks(treeElements)) {
+    rebuildBstParentLinks(treeElements);
+  }
+
+  return {
+    ...step,
+    canvas_instructions: {
+      elements: elements as GeminiCanvasElement[]
+    }
+  };
+}
+
+function validateAndRepairBstSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  return steps.map((step) => repairBstStep(step));
+}
+
 function normalizeNarration(lines: string[]): string[] {
   return lines
     .map((line) => line.trim().slice(0, 260))
@@ -1770,13 +2078,15 @@ STRICT RULES:
     throw new Error("Simulation generation failed: Bedrock did not return valid steps.");
   }
 
+  const validatedSteps = validateAndRepairBstSteps(generatedSteps);
+
   try {
-    await saveSimulationS3Cache(topic, { steps: generatedSteps });
+    await saveSimulationS3Cache(topic, { steps: validatedSteps });
   } catch (error) {
     console.warn("[Simulation] Unable to cache generated steps to S3. Continuing without cache.", error);
   }
 
-  return { steps: generatedSteps };
+  return { steps: validatedSteps };
 }
 
 function toCanvasPercentX(x: number): number {
