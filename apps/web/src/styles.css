@@ -1906,6 +1906,39 @@ textarea {
   text-align: center;
 }
 
+.simulation-complete-overlay {
+  position: absolute;
+  inset: 24px;
+  z-index: 190;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 20px;
+  border-radius: 14px;
+  background: rgba(9, 16, 31, 0.78);
+  border: 1px solid rgba(150, 192, 255, 0.38);
+  text-align: center;
+  color: #f5f9ff;
+}
+
+.simulation-complete-overlay h3 {
+  margin: 0;
+  font-size: 1.24rem;
+}
+
+.simulation-complete-overlay p {
+  margin: 0;
+  max-width: 640px;
+  color: rgba(240, 248, 255, 0.93);
+}
+
+.simulation-complete-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 @keyframes simSpin {
   from {
     transform: rotate(0deg);

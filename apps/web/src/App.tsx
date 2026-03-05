@@ -178,6 +178,18 @@ function loadSubtitlePreference(): boolean {
   return localStorage.getItem("itt_subtitles") !== "false";
 }
 
+function resolveLearnerName(nameCandidate: string, emailCandidate: string): string {
+  const cleanedName = (nameCandidate || "").trim();
+  if (cleanedName && !cleanedName.includes("@")) {
+    return cleanedName;
+  }
+  const cleanedEmail = (emailCandidate || "").trim();
+  if (cleanedEmail.includes("@")) {
+    return cleanedEmail.split("@")[0] || "Learner";
+  }
+  return cleanedName || "Learner";
+}
+
 function inject3DElements(topic: string, steps: SimulationCanvasStep[]): SimulationCanvasStep[] {
   const normalizedTopic = topic.toLowerCase();
   const threeKeywords = [
@@ -297,6 +309,7 @@ export default function App(): JSX.Element {
   const [simulationRendererLoading, setSimulationRendererLoading] = useState(false);
   const [simulationLoadingTopic, setSimulationLoadingTopic] = useState("");
   const [simulationError, setSimulationError] = useState("");
+  const [simulationComplete, setSimulationComplete] = useState(false);
   const [voiceCommandFlash, setVoiceCommandFlash] = useState("");
   const [voiceMicState, setVoiceMicState] = useState<"idle" | "listening" | "processing" | "speaking">("idle");
   const [voiceInterimText, setVoiceInterimText] = useState("");
@@ -363,6 +376,7 @@ export default function App(): JSX.Element {
     () => topics.find((topic) => topic.id === selectedTopicId) ?? null,
     [topics, selectedTopicId]
   );
+  const welcomeName = useMemo(() => resolveLearnerName(userName, userEmail), [userEmail, userName]);
 
   const topicTitleById = useMemo(() => {
     const map = new Map<string, string>();
@@ -634,7 +648,7 @@ export default function App(): JSX.Element {
         if (!userName.trim()) {
           const localEmail = localStorage.getItem("itt_email") ?? "";
           const localName = localStorage.getItem("itt_name") ?? "";
-          setUserName(localName.trim() || localEmail.split("@")[0] || "Learner");
+          setUserName(resolveLearnerName(localName, localEmail));
         }
         if (appViewRef.current !== "simulation") {
           setStatusMessage("Session restored.");
@@ -656,12 +670,18 @@ export default function App(): JSX.Element {
       const route = registerMode ? "/auth/register" : "/auth/login";
       const response = await apiPost<{
         token: string;
-        user: { email: string };
-      }>(route, { email, password });
+        user: { email: string; name?: string };
+      }>(
+        route,
+        registerMode ? { name: displayName, email, password } : { email, password }
+      );
 
-      const fallbackName = response.user.email.split("@")[0] || "Learner";
+      const fallbackName = resolveLearnerName("", response.user.email);
       const storedName = localStorage.getItem("itt_name")?.trim() ?? "";
-      const normalizedName = registerMode ? displayName.trim() || fallbackName : storedName || fallbackName;
+      const normalizedName = resolveLearnerName(
+        response.user.name ?? (registerMode ? displayName : storedName),
+        response.user.email
+      ) || fallbackName;
       setToken(response.token);
       setUserEmail(response.user.email);
       setUserName(normalizedName);
@@ -702,6 +722,7 @@ export default function App(): JSX.Element {
     setChatPanelOpen(false);
     setToolsPanelOpen(false);
     setSimulationPaused(false);
+    setSimulationComplete(false);
     clearNarrationTimers();
     localStorage.removeItem("itt_token");
     localStorage.removeItem("itt_email");
@@ -782,6 +803,7 @@ export default function App(): JSX.Element {
       );
       setSelectedTopicId(response.topic.id);
       simulationStepRef.current = 0;
+      setSimulationComplete(false);
       setSimulationPaused(false);
       setMenuOpen(false);
       setMessages((current) => [...current, { role: "assistant", text: response.openingMessage }]);
@@ -1008,6 +1030,10 @@ export default function App(): JSX.Element {
 
       if (command.includes("next step")) {
         enqueueSimulationCommand("next-step", "Next Step");
+        return true;
+      }
+      if (command.includes("repeat") || command.includes("start over") || command.includes("restart")) {
+        enqueueSimulationCommand("restart", "Repeat");
         return true;
       }
       if (command.includes("previous step") || command.includes("back step")) {
@@ -1592,9 +1618,27 @@ export default function App(): JSX.Element {
   const goHomeDirect = useCallback(() => {
     setMenuOpen(false);
     setToolsPanelOpen(false);
+    setSimulationComplete(false);
     setAppView("home");
     setStatusMessage("Home.");
   }, []);
+
+  const repeatSimulation = useCallback(() => {
+    if (!selectedSimulation?.steps?.length) {
+      return;
+    }
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    commandNonceRef.current += 1;
+    pendingSimulationCommandRef.current = {
+      id: commandNonceRef.current,
+      action: "restart"
+    };
+    setSimulationComplete(false);
+    simulationPausedRef.current = false;
+    setSimulationPaused(false);
+  }, [selectedSimulation]);
 
   const navigateBack = useCallback(() => {
     if (appView === "history-detail") {
@@ -1906,12 +1950,15 @@ export default function App(): JSX.Element {
     let currentStepDurationMs = 3200;
     let lastFrame = performance.now();
     let lastProcessedCommandId = 0;
+    let stepPlaybackStarted = false;
+    let simulationCompletionHandled = false;
     let renderer: SimulationCanvasRenderer | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let initialNarrationTimer: number | null = null;
 
     const setStepNarration = (step: SimulationCanvasStep, index: number, forceReplay = false) => {
       const fullSubtitle = String(step.subtitle ?? "");
+      stepPlaybackStarted = true;
       setCurrentStepText(`Step ${index + 1}: ${step.concept}`);
       currentStepConceptRef.current = step.concept;
       setActiveStepIndex(index);
@@ -1959,6 +2006,31 @@ export default function App(): JSX.Element {
       }
     };
 
+    const handleSimulationComplete = () => {
+      if (simulationCompletionHandled) {
+        return;
+      }
+      simulationCompletionHandled = true;
+      stepPlaybackStarted = false;
+      simulationPausedRef.current = true;
+      setSimulationPaused(true);
+      setSimulationComplete(true);
+      setCurrentStepText("Simulation complete.");
+      stepNarrationCompleteRef.current = true;
+      subtitleDisplayCompleteRef.current = true;
+      resumeNarrationRequestedRef.current = false;
+      pendingSimulationCommandRef.current = null;
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      if (voiceNarrationEnabled) {
+        void speakText(
+          "Simulation complete. Say repeat to start over or go to step N to jump to a specific step.",
+          true
+        );
+      }
+    };
+
     const applyStep = (index: number, options?: { narrate?: boolean }) => {
       if (!renderer) {
         return;
@@ -2002,16 +2074,19 @@ export default function App(): JSX.Element {
     if (simulationStepRef.current >= steps.length) {
       simulationStepRef.current = 0;
     }
+    setSimulationComplete(false);
+    stepNarrationCompleteRef.current = false;
+    subtitleDisplayCompleteRef.current = false;
     stepElapsedMs = 0;
     stepElapsedMsRef.current = 0;
     pausedAtElapsedMsRef.current = 0;
     pausedAtStepRef.current = simulationStepRef.current;
     resumeNarrationRequestedRef.current = false;
-    applyStep(simulationStepRef.current);
+    applyStep(simulationStepRef.current, { narrate: false });
     if (simulationStepRef.current === 0) {
       console.log("[Simulation] initial step narration check", { voiceNarrationEnabled });
       initialNarrationTimer = window.setTimeout(() => {
-        if (disposed || appViewRef.current !== "simulation" || simulationPausedRef.current || !voiceNarrationEnabled) {
+        if (disposed || appViewRef.current !== "simulation" || simulationPausedRef.current) {
           return;
         }
         if ("speechSynthesis" in window && window.speechSynthesis.speaking) {
@@ -2019,7 +2094,9 @@ export default function App(): JSX.Element {
         }
         stepNarrationCompleteRef.current = false;
         setStepNarration(steps[0], 0, true);
-      }, 300);
+      }, 500);
+    } else {
+      setStepNarration(steps[simulationStepRef.current], simulationStepRef.current, true);
     }
 
     const tick = (now: number) => {
@@ -2034,12 +2111,18 @@ export default function App(): JSX.Element {
       if (pendingCommand && pendingCommand.id > lastProcessedCommandId) {
         lastProcessedCommandId = pendingCommand.id;
         if (pendingCommand.action === "next-step") {
-          simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
-          stepElapsedMs = 0;
-          stepElapsedMsRef.current = 0;
-          pausedAtElapsedMsRef.current = 0;
-          applyStep(simulationStepRef.current);
+          if (simulationStepRef.current >= steps.length - 1) {
+            handleSimulationComplete();
+          } else {
+            setSimulationComplete(false);
+            simulationStepRef.current = simulationStepRef.current + 1;
+            stepElapsedMs = 0;
+            stepElapsedMsRef.current = 0;
+            pausedAtElapsedMsRef.current = 0;
+            applyStep(simulationStepRef.current);
+          }
         } else if (pendingCommand.action === "previous-step") {
+          setSimulationComplete(false);
           simulationStepRef.current = (simulationStepRef.current - 1 + steps.length) % steps.length;
           stepElapsedMs = 0;
           stepElapsedMsRef.current = 0;
@@ -2053,6 +2136,7 @@ export default function App(): JSX.Element {
           stepNarrationCompleteRef.current = true;
           resumeNarrationRequestedRef.current = false;
         } else if (pendingCommand.action === "play") {
+          setSimulationComplete(false);
           stepElapsedMs = pausedAtElapsedMsRef.current;
           stepElapsedMsRef.current = stepElapsedMs;
           simulationStepRef.current = pausedAtStepRef.current;
@@ -2062,11 +2146,14 @@ export default function App(): JSX.Element {
           setSimulationPaused(false);
         } else if (pendingCommand.action === "restart") {
           simulationStepRef.current = 0;
+          simulationCompletionHandled = false;
+          setSimulationComplete(false);
           stepElapsedMs = 0;
           stepElapsedMsRef.current = 0;
           pausedAtElapsedMsRef.current = 0;
           applyStep(simulationStepRef.current);
         } else if (pendingCommand.action === "jump-step") {
+          setSimulationComplete(false);
           const wasPausedBeforeJump = simulationPausedRef.current;
           const targetIndex = Math.max(0, Math.min(steps.length - 1, Number(pendingCommand.stepIndex ?? 0)));
           simulationStepRef.current = targetIndex;
@@ -2112,7 +2199,7 @@ export default function App(): JSX.Element {
 
       const pausedNow = simulationPausedRef.current || document.hidden;
       renderer.setPaused(pausedNow, now);
-      if (!pausedNow) {
+      if (!pausedNow && stepPlaybackStarted) {
         stepElapsedMs += delta;
         stepElapsedMsRef.current = stepElapsedMs;
         if (
@@ -2121,11 +2208,15 @@ export default function App(): JSX.Element {
           subtitleDisplayCompleteRef.current &&
           renderer.isAnimationComplete(now)
         ) {
-          stepElapsedMs = 0;
-          stepElapsedMsRef.current = 0;
-          pausedAtElapsedMsRef.current = 0;
-          simulationStepRef.current = (simulationStepRef.current + 1) % steps.length;
-          applyStep(simulationStepRef.current);
+          if (simulationStepRef.current >= steps.length - 1) {
+            handleSimulationComplete();
+          } else {
+            stepElapsedMs = 0;
+            stepElapsedMsRef.current = 0;
+            pausedAtElapsedMsRef.current = 0;
+            simulationStepRef.current = simulationStepRef.current + 1;
+            applyStep(simulationStepRef.current);
+          }
         }
       }
 
@@ -2157,8 +2248,10 @@ export default function App(): JSX.Element {
     };
   }, [
     appView,
+    speakText,
     selectedSimulation,
     selectedTopic,
+    setSimulationComplete,
     subtitlesEnabled,
     voiceNarrationEnabled
   ]);
@@ -2481,7 +2574,7 @@ export default function App(): JSX.Element {
       disposed = true;
       cleanup();
     };
-  }, [appView, topicListening]);
+  }, [appView, token, topicListening]);
 
   useEffect(() => {
     return () => {
@@ -2637,7 +2730,7 @@ export default function App(): JSX.Element {
         <div className="home-content">
           <div className="home-hero">
             <div className="home-hero-copy">
-              <h1>Welcome, {userName || "Learner"}</h1>
+              <h1>Welcome, {welcomeName}</h1>
               <p>Enter any technical topic and get a dynamic simulation with step-by-step visual flow.</p>
             </div>
             <div className="hero-character-wrap" aria-hidden="true">
@@ -2942,10 +3035,27 @@ export default function App(): JSX.Element {
             </div>
           ) : null}
           {voiceCommandFlash ? <div className="voice-command-flash">{voiceCommandFlash}</div> : null}
+          {simulationComplete ? (
+            <div className="simulation-complete-overlay">
+              <h3>Simulation Complete</h3>
+              <p>Say "repeat" to start over or "go to step N" to jump to a specific step.</p>
+              <div className="simulation-complete-actions">
+                <button className="chat-send-btn" onClick={repeatSimulation}>
+                  Repeat
+                </button>
+                <button className="ghost" onClick={goHomeDirect}>
+                  Back to Home
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="sim-bottom-bar">
             <button
               className="sim-play-toggle nav-icon-btn"
               onClick={() => {
+                if (simulationComplete) {
+                  return;
+                }
                 if (!simulationPausedRef.current) {
                   pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
                   pausedAtStepRef.current = simulationStepRef.current;

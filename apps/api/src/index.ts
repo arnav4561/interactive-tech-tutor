@@ -397,6 +397,11 @@ async function requestBedrockJson(prompt: string, options: BedrockJsonRequestOpt
 }
 
 const registerSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  email: z.string().email(),
+  password: z.string().min(8)
+});
+const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8)
 });
@@ -1534,6 +1539,40 @@ function validateAndRepairBstSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[
   return steps.map((step) => repairBstStep(step));
 }
 
+function enforceMeaningfulElementLabels(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  const placeholderLabelPattern =
+    /^(text|rectangle|circle|ellipse|triangle|bar|matrix|axis|plot[_ ]?point|arrow|line|element)\s*\d*$/i;
+  const isConfusionMatrixTopic = /confusion matrix/i.test(topic);
+  const confusionLabels = ["True Positive", "False Positive", "False Negative", "True Negative"];
+
+  return steps.map((step) => {
+    let confusionCursor = 0;
+    const elements = (step.canvas_instructions?.elements ?? []).map((element, index) => {
+      const nextElement = { ...(element as Record<string, unknown>) };
+      const rawLabel = asText(nextElement.label);
+      const type = asText(nextElement.type).toLowerCase().replace(/\s+/g, "_");
+      const isPlaceholder = !rawLabel || placeholderLabelPattern.test(rawLabel);
+      if (!isPlaceholder) {
+        return nextElement as GeminiCanvasElement;
+      }
+      if (isConfusionMatrixTopic) {
+        nextElement.label = confusionLabels[confusionCursor % confusionLabels.length];
+        confusionCursor += 1;
+        return nextElement as GeminiCanvasElement;
+      }
+      const prettyType = type ? type.replace(/_/g, " ") : "concept";
+      nextElement.label = `${prettyType} detail ${index + 1}`.slice(0, 180);
+      return nextElement as GeminiCanvasElement;
+    });
+    return {
+      ...step,
+      canvas_instructions: {
+        elements
+      }
+    };
+  });
+}
+
 function normalizeNarration(lines: string[]): string[] {
   return lines
     .map((line) => line.trim().slice(0, 260))
@@ -2276,6 +2315,9 @@ STRICT RULES:
 - Only use these exact types: tree_node, bar, text, arrow, circle, matrix, axis, plot_point, flowchart_diamond.
 - Every step must visually match its subtitle.
 - Never return markdown or prose outside JSON.
+- NEVER use placeholder labels like "text 1", "text 2", "rectangle 1", "rectangle 2", "circle 1", or similar numbered placeholders.
+- Every element label must be meaningful and topic-specific.
+- For confusion matrix topics, labels must use real quadrant terms: TP/FP/TN/FN or True Positive/False Positive/True Negative/False Negative.
 `.trim();
 
   const payload = await requestBedrockJson(simulationFormatPrompt, {
@@ -2303,14 +2345,15 @@ STRICT RULES:
   const validatedSteps = isBstTopic(topic)
     ? validateAndRepairBstSteps(generatedSteps)
     : generatedSteps;
+  const labeledSteps = enforceMeaningfulElementLabels(topic, validatedSteps);
 
   try {
-    await saveSimulationS3Cache(topic, { steps: validatedSteps });
+    await saveSimulationS3Cache(topic, { steps: labeledSteps });
   } catch (error) {
     console.warn("[Simulation] Unable to cache generated steps to S3. Continuing without cache.", error);
   }
 
-  return { steps: validatedSteps };
+  return { steps: labeledSteps };
 }
 
 function toCanvasPercentX(x: number): number {
@@ -2622,6 +2665,7 @@ function getNextLevel(level: DifficultyLevel): DifficultyLevel | null {
 
 type DynamoUserRecord = {
   userId: string;
+  name: string;
   email: string;
   passwordHash: string;
   createdAt: string;
@@ -2648,6 +2692,7 @@ async function findUserByEmail(email: string): Promise<DynamoUserRecord | null> 
   }
   return {
     userId: String(item.userId ?? ""),
+    name: String(item.name ?? ""),
     email: String(item.email ?? ""),
     passwordHash: String(item.passwordHash ?? ""),
     createdAt: String(item.createdAt ?? ""),
@@ -2696,8 +2741,9 @@ app.post(
     return;
   }
 
-  const { email, password } = parsed.data;
+  const { name, email, password } = parsed.data;
   const normalizedEmail = email.toLowerCase().trim();
+  const normalizedName = (name?.trim() || normalizedEmail.split("@")[0] || "Learner").slice(0, 80);
   const now = new Date().toISOString();
   const existing = await findUserByEmail(normalizedEmail);
   if (existing) {
@@ -2708,6 +2754,7 @@ app.post(
   const userId = randomUUID();
   await saveUserRecord({
     userId,
+    name: normalizedName,
     email: normalizedEmail,
     passwordHash: hashPassword(password),
     createdAt: now,
@@ -2730,7 +2777,7 @@ app.post(
   await saveSessionRecord(token, userId);
   res.status(201).json({
     token,
-    user: { id: userId, email: normalizedEmail, lastLoginAt: now }
+    user: { id: userId, name: normalizedName, email: normalizedEmail, lastLoginAt: now }
   });
   })
 );
@@ -2738,7 +2785,7 @@ app.post(
 app.post(
   "/api/auth/login",
   asyncHandler(async (req, res) => {
-  const parsed = registerSchema.safeParse(req.body);
+  const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid login payload." });
     return;
@@ -2769,7 +2816,7 @@ app.post(
 
   const token = createToken({ userId: user.userId, email: user.email });
   await saveSessionRecord(token, user.userId);
-  res.json({ token, user: { id: user.userId, email: user.email, lastLoginAt: now } });
+  res.json({ token, user: { id: user.userId, name: user.name, email: user.email, lastLoginAt: now } });
   })
 );
 
