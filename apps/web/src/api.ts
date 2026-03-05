@@ -1,7 +1,15 @@
+function normalizeApiBaseUrl(rawBaseUrl: string): string {
+  const trimmed = rawBaseUrl.trim().replace(/\/$/, "");
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.endsWith("/api") ? trimmed : `${trimmed}/api`;
+}
+
 const API_BASE_URL = (() => {
   const fromEnv = import.meta.env.VITE_API_URL;
   if (fromEnv) {
-    return fromEnv.replace(/\/$/, "");
+    return normalizeApiBaseUrl(fromEnv);
   }
   if (typeof window !== "undefined") {
     return `${window.location.protocol}//${window.location.hostname}:4000/api`;
@@ -11,7 +19,7 @@ const API_BASE_URL = (() => {
 const API_BASE_URLS = (() => {
   const fromEnv = import.meta.env.VITE_API_URL;
   if (fromEnv) {
-    return [fromEnv.replace(/\/$/, "")];
+    return [normalizeApiBaseUrl(fromEnv)];
   }
   if (typeof window === "undefined") {
     return [API_BASE_URL];
