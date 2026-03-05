@@ -249,13 +249,22 @@ export class SimulationCanvasRenderer {
 
     const verticalBars = bars.filter((bar) => this.str(bar.el.orientation, "vertical").toLowerCase() !== "horizontal");
     if (verticalBars.length > 0) {
-      const labelValues = verticalBars.map((bar) => Number.parseFloat(this.str(bar.el.label, this.str(bar.el.value_label, ""))));
-      const allLabelsNumeric = labelValues.every((value) => Number.isFinite(value));
-      if (allLabelsNumeric) {
-        const maxLabelValue = Math.max(...labelValues);
+      const barValues = verticalBars.map((bar) => {
+        const candidates = [bar.el.label, bar.el.value, bar.el.text];
+        for (const candidate of candidates) {
+          const parsed = Number.parseFloat(this.str(candidate, ""));
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+        return null;
+      });
+      const allBarsNumeric = barValues.every((value) => value !== null && Number.isFinite(value));
+      if (allBarsNumeric) {
+        const maxLabelValue = Math.max(...(barValues as number[]));
         if (maxLabelValue > 0) {
           verticalBars.forEach((bar, index) => {
-            const value = labelValues[index];
+            const value = (barValues[index] as number);
             bar.el.height = Math.max(8, (value / maxLabelValue) * 70);
           });
         }
@@ -696,6 +705,13 @@ export class SimulationCanvasRenderer {
 
   private draw(el: StepElement, elapsed: number): void {
     const t = this.type(el);
+    if (t === "tree_node") {
+      const firstTreeNode = this.getElements().find((candidate) => this.type(candidate) === "tree_node");
+      if (firstTreeNode === el) {
+        this.treeNodeRecursive(el, elapsed);
+      }
+      return;
+    }
     const s = this.state(el, elapsed);
     const c = this.brighten(this.color(el), s.highlight * 0.35);
     const label = this.str(el.label);
@@ -730,14 +746,9 @@ export class SimulationCanvasRenderer {
         let barW = w;
         let barH = h;
         if (orientation !== "horizontal") {
-          const barScale = this.barScaleMetrics();
-          if (barScale) {
-            const rawBarHeight = this.h(this.num(el, ["height"], 0));
-            const normalizedHeight = Math.max(2, (rawBarHeight / barScale.maxHeightPx) * this.height * 0.7);
-            const baselineY = Math.min(this.height - 4, Math.max(4, barScale.baselineYPx));
-            barH = normalizedHeight;
-            barY = Math.max(4, baselineY - barH);
-          }
+          const baselineY = this.height * 0.85;
+          barH = Math.max(2, Math.min(this.h(this.num(el, ["height"], 0)), baselineY - 4));
+          barY = Math.max(4, baselineY - barH);
         }
         this.roundRect(barX, barY, barW, barH, 6);
         this.ctx.fill();
@@ -793,6 +804,12 @@ export class SimulationCanvasRenderer {
         this.ctx.fill();
         this.label(el, label, x + w / 2, y, "above", { x, y, w, h });
       } else if (t === "line" || t === "dashed_line" || t === "arrow") {
+        if (t === "arrow") {
+          const arrowLabel = this.str((el as Record<string, unknown>).label, "").trim();
+          if (!arrowLabel || /^(arrow|line)\s*\d*$/i.test(arrowLabel)) {
+            return;
+          }
+        }
         const x1 = this.x(this.num(el, ["x1"], x));
         const y1 = this.y(this.num(el, ["y1"], y));
         const x2 = this.x(this.num(el, ["x2"], x + w));
@@ -806,15 +823,12 @@ export class SimulationCanvasRenderer {
         this.ctx.stroke();
         this.ctx.restore();
         if (t === "arrow") this.arrowHead(x1, y1, end.x, end.y, c, lineWidth + 2);
-        const isPlaceholderArrowLabel = t === "arrow" && /^arrow(?:\s*\d+)?$/i.test(label.trim());
-        if (!isPlaceholderArrowLabel) {
-          this.label(el, label, (x1 + x2) / 2, (y1 + y2) / 2, "above", {
-            x: Math.min(x1, x2),
-            y: Math.min(y1, y2),
-            w: Math.abs(x2 - x1) || 1,
-            h: Math.abs(y2 - y1) || 1
-          });
-        }
+        this.label(el, label, (x1 + x2) / 2, (y1 + y2) / 2, "above", {
+          x: Math.min(x1, x2),
+          y: Math.min(y1, y2),
+          w: Math.abs(x2 - x1) || 1,
+          h: Math.abs(y2 - y1) || 1
+        });
       } else if (t === "curved_arrow") {
         const x1 = this.x(this.num(el, ["x1"], x));
         const y1 = this.y(this.num(el, ["y1"], y));
@@ -901,34 +915,8 @@ export class SimulationCanvasRenderer {
         this.neuralLayer(el, x, y, w, h, c);
       } else if (t === "neural_network") {
         this.neuralNetwork(el, x, y, w, h, c, s.highlight > 0 || s.scale !== 1);
-      } else if (t === "tree_node") {
-        this.treeNodeRecursive(el, c, s);
       }
     });
-  }
-
-  private barScaleMetrics(): { maxHeightPx: number; baselineYPx: number } | null {
-    const bars = this.getElements().filter((candidate) => {
-      const type = this.type(candidate);
-      const orientation = this.str(candidate.orientation, "vertical").toLowerCase();
-      return type === "bar" && orientation !== "horizontal";
-    });
-    if (bars.length === 0) {
-      return null;
-    }
-
-    let maxHeightPx = 0;
-    let baselineYPx = 0;
-    for (const bar of bars) {
-      const rawY = this.y(this.num(bar, ["y"], 0));
-      const rawH = this.h(this.num(bar, ["height"], 0));
-      maxHeightPx = Math.max(maxHeightPx, rawH);
-      baselineYPx = Math.max(baselineYPx, rawY + rawH);
-    }
-    if (maxHeightPx <= 0) {
-      return null;
-    }
-    return { maxHeightPx, baselineYPx };
   }
 
   private roundRect(x: number, y: number, w: number, h: number, r: number): void {
@@ -1218,66 +1206,170 @@ export class SimulationCanvasRenderer {
     }
   }
 
-  private treeNodeRecursive(el: StepElement, c: string, s: AnimState): void {
+  private treeNodeRecursive(el: StepElement, elapsed: number): void {
+    type FlatTreeNode = {
+      value: number;
+      color: string;
+      source: StepElement;
+      parentValue: number | null;
+    };
     type TreeNode = {
-      key: string;
-      value: string;
-      children: TreeNode[];
+      value: number;
+      color: string;
+      source: StepElement;
+      left: TreeNode | null;
+      right: TreeNode | null;
       depth: number;
-      index: number;
+      slot: number;
     };
 
-    const buildNode = (nodeLike: unknown, depth: number, index: number): TreeNode => {
-      const o = this.obj(nodeLike);
-      const childrenRaw = this.arr(o.children).slice(0, 2);
-      return {
-        key: `${depth}-${index}`,
-        value: this.str(o.value, this.str(o.label, "N")),
-        children: childrenRaw.map((child, childIdx) => buildNode(child, depth + 1, index * 2 + childIdx)),
-        depth,
-        index
-      };
-    };
-
-    const root = buildNode(el, 0, 0);
-    const minSiblingGapPct = 18;
-    const levelY = (depth: number) => 15 + depth * 20;
-    const levelX = (depth: number, index: number) => {
-      if (depth === 0) return 50;
-      if (depth === 1) return index === 0 ? 30 : 70;
-      if (depth === 2) return [20, 40, 60, 80][Math.max(0, Math.min(3, index))];
-      const nodesAtLevel = Math.pow(2, depth);
-      const start = 50 - ((nodesAtLevel - 1) * minSiblingGapPct) / 2;
-      return Math.max(8, Math.min(92, start + index * minSiblingGapPct));
-    };
-
-    const toScreen = (node: TreeNode): { x: number; y: number } => ({
-      x: this.x(levelX(node.depth, node.index)),
-      y: this.y(levelY(node.depth))
-    });
-
-    const findAnimatedInsertionKey = (node: TreeNode): string => {
-      let best = node;
-      const visit = (current: TreeNode) => {
-        if (current.depth > best.depth || (current.depth === best.depth && current.index > best.index)) {
-          best = current;
+    const parseNodeValue = (node: StepElement): number | null => {
+      const candidates = [node.value, node.label, node.text];
+      for (const candidate of candidates) {
+        const parsed = Number.parseFloat(this.str(candidate, ""));
+        if (Number.isFinite(parsed)) {
+          return parsed;
         }
-        current.children.forEach(visit);
-      };
-      visit(node);
-      return best.key;
+      }
+      return null;
     };
 
-    const animType = this.str(this.anim(el).type, "none").toLowerCase().replace(/\s+/g, "_");
-    const animateInsertion = animType === "fade_in" || animType === "scale_up";
-    const insertionKey = animateInsertion ? findAnimatedInsertionKey(root) : "";
+    const treeElements = this.getElements().filter((candidate) => this.type(candidate) === "tree_node");
+    if (treeElements.length === 0) {
+      return;
+    }
+
+    const flatNodes: FlatTreeNode[] = [];
+    const seen = new Set<number>();
+    for (const node of treeElements) {
+      const value = parseNodeValue(node);
+      if (value === null || seen.has(value)) {
+        continue;
+      }
+      seen.add(value);
+      const parentCandidate = Number.parseFloat(this.str((node as Record<string, unknown>).parent_value, ""));
+      flatNodes.push({
+        value,
+        color: this.color(node),
+        source: node,
+        parentValue: Number.isFinite(parentCandidate) ? parentCandidate : null
+      });
+    }
+
+    if (flatNodes.length === 0) {
+      return;
+    }
+
+    const byValue = new Map<number, TreeNode>(
+      flatNodes.map((node) => [
+        node.value,
+        {
+          value: node.value,
+          color: node.color,
+          source: node.source,
+          left: null,
+          right: null,
+          depth: 0,
+          slot: 0
+        }
+      ])
+    );
+
+    const attachUsingParents = (): TreeNode | null => {
+      let linked = 0;
+      const hasParent = new Set<number>();
+      for (const flatNode of flatNodes) {
+        if (flatNode.parentValue === null) {
+          continue;
+        }
+        const child = byValue.get(flatNode.value);
+        const parent = byValue.get(flatNode.parentValue);
+        if (!child || !parent || child === parent) {
+          continue;
+        }
+        if (child.value < parent.value) {
+          parent.left = child;
+        } else {
+          parent.right = child;
+        }
+        linked += 1;
+        hasParent.add(child.value);
+      }
+      const roots: TreeNode[] = [];
+      for (const flatNode of flatNodes) {
+        const maybeRoot = byValue.get(flatNode.value);
+        if (maybeRoot && !hasParent.has(maybeRoot.value)) {
+          roots.push(maybeRoot);
+        }
+      }
+      if (linked >= Math.max(1, flatNodes.length - 1) && roots.length > 0) {
+        return roots[0];
+      }
+      return null;
+    };
+
+    const buildMedianTree = (sortedValues: number[]): TreeNode | null => {
+      if (sortedValues.length === 0) {
+        return null;
+      }
+      const mid = Math.floor(sortedValues.length / 2);
+      const value = sortedValues[mid];
+      const current = byValue.get(value) ?? null;
+      if (!current) {
+        return null;
+      }
+      current.left = buildMedianTree(sortedValues.slice(0, mid));
+      current.right = buildMedianTree(sortedValues.slice(mid + 1));
+      return current;
+    };
+
+    const root = attachUsingParents() ?? buildMedianTree(flatNodes.map((node) => node.value).sort((a, b) => a - b));
+    if (!root) {
+      return;
+    }
+
+    const assignPositions = (node: TreeNode, depth: number, slot: number): void => {
+      node.depth = depth;
+      node.slot = slot;
+      if (node.left) {
+        assignPositions(node.left, depth + 1, slot * 2);
+      }
+      if (node.right) {
+        assignPositions(node.right, depth + 1, slot * 2 + 1);
+      }
+    };
+    assignPositions(root, 0, 0);
+
+    const xLayouts: Record<number, number[]> = {
+      0: [50],
+      1: [25, 75],
+      2: [12, 38, 62, 88],
+      3: [6, 19, 31, 44, 56, 69, 81, 94]
+    };
+    const yLayouts: Record<number, number> = {
+      0: 12,
+      1: 30,
+      2: 50,
+      3: 68
+    };
+
+    const positionFor = (node: TreeNode): { x: number; y: number } => {
+      const xLevel = xLayouts[node.depth];
+      const yValue = yLayouts[node.depth] ?? Math.min(88, 68 + (node.depth - 3) * 14);
+      const xValue = xLevel
+        ? xLevel[Math.max(0, Math.min(xLevel.length - 1, node.slot))]
+        : Math.max(6, Math.min(94, ((node.slot + 1) / (Math.pow(2, node.depth) + 1)) * 100));
+      return { x: this.x(xValue), y: this.y(yValue) };
+    };
 
     const nodeRadius = Math.max(8, this.px(2.2));
-    const drawEdges = (node: TreeNode) => {
-      const parent = toScreen(node);
-      for (const child of node.children) {
-        const childPos = toScreen(child);
+    const drawEdges = (node: TreeNode): void => {
+      const parent = positionFor(node);
+      const children = [node.left, node.right].filter((child): child is TreeNode => Boolean(child));
+      for (const child of children) {
+        const childPos = positionFor(child);
         this.ctx.strokeStyle = "#99b7e8";
+        this.ctx.lineWidth = 2;
         this.ctx.beginPath();
         this.ctx.moveTo(parent.x, parent.y + nodeRadius);
         this.ctx.lineTo(childPos.x, childPos.y - nodeRadius);
@@ -1286,11 +1378,12 @@ export class SimulationCanvasRenderer {
       }
     };
 
-    const drawNodes = (node: TreeNode) => {
-      const p = toScreen(node);
-      const isInsertionNode = animateInsertion && node.key === insertionKey;
-      const nodeAlpha = isInsertionNode && animType === "fade_in" ? Math.max(0, Math.min(1, s.alpha)) : 1;
-      const nodeScale = isInsertionNode && animType === "scale_up" ? Math.max(0.01, s.scale) : 1;
+    const drawNodes = (node: TreeNode): void => {
+      const p = positionFor(node);
+      const nodeState = this.state(node.source, elapsed);
+      const animType = this.str(this.anim(node.source).type, "none").toLowerCase().replace(/\s+/g, "_");
+      const nodeAlpha = animType === "fade_in" ? Math.max(0.01, Math.min(1, nodeState.alpha)) : 1;
+      const nodeScale = animType === "scale_up" ? Math.max(0.01, nodeState.scale) : 1;
 
       this.ctx.save();
       this.ctx.globalAlpha *= nodeAlpha;
@@ -1299,19 +1392,26 @@ export class SimulationCanvasRenderer {
       this.ctx.translate(-p.x, -p.y);
 
       this.ctx.beginPath();
-      this.ctx.fillStyle = c;
+      this.ctx.fillStyle = node.color;
       this.ctx.arc(p.x, p.y, nodeRadius, 0, Math.PI * 2);
       this.ctx.fill();
+
       this.ctx.fillStyle = "#f4f8ff";
       this.ctx.textAlign = "center";
       this.ctx.textBaseline = "middle";
       this.ctx.font = "600 11px Inter, Segoe UI, sans-serif";
-      this.ctx.fillText(node.value.slice(0, 8), p.x, p.y);
+      this.ctx.fillText(String(node.value), p.x, p.y);
       this.ctx.restore();
 
-      node.children.forEach(drawNodes);
+      if (node.left) {
+        drawNodes(node.left);
+      }
+      if (node.right) {
+        drawNodes(node.right);
+      }
     };
 
+    void el;
     drawEdges(root);
     drawNodes(root);
   }

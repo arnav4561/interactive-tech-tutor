@@ -1733,6 +1733,10 @@ STRICT RULES:
 - Every step MUST have at least 5 canvas elements. Never generate a step with fewer than 4 elements.
 - For binary search tree topics, each step must show the full tree with all nodes inserted so far, and the current operation node must be highlighted in orange (#FF6B35).
 - For sorting topics, each step must show all bars and explicit comparison indicators so compared values are visually obvious.
+- For bar elements, always set label to the numeric value being represented (example: label: "5").
+- For bar elements, always set y to 85 so all bars share the same baseline.
+- For bar elements, set height proportionally using: height = (value / max_value) * 60.
+- Never place bars at y values less than 50.
 - For concept topics, each step must show a central diagram with labeled components connected by arrows.
 - Before generating each step's elements, reason about what the subtitle says and make the visual match it exactly.
 - If a subtitle mentions a specific node value being inserted or highlighted, that exact node must be highlighted in orange (#FF6B35).
