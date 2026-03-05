@@ -703,6 +703,21 @@ export class SimulationCanvasRenderer {
     this.labelBoxes.push(box);
   }
 
+  private centeredInElementLabel(text: string, centerX: number, centerY: number, maxW: number, maxH: number): void {
+    if (!text) return;
+    const safeText = text.slice(0, 48);
+    const width = Math.max(16, maxW);
+    const height = Math.max(12, maxH);
+    const byWidth = width / Math.max(4, safeText.length * 0.58);
+    const byHeight = height * 0.44;
+    const fontPx = Math.max(10, Math.min(16, Math.floor(Math.min(byWidth, byHeight))));
+    this.ctx.fillStyle = "#FFFFFF";
+    this.ctx.font = `600 ${fontPx}px Inter, Segoe UI, sans-serif`;
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+    this.ctx.fillText(safeText, centerX, centerY);
+  }
+
   private draw(el: StepElement, elapsed: number): void {
     const t = this.type(el);
     if (t === "tree_node") {
@@ -737,8 +752,8 @@ export class SimulationCanvasRenderer {
           this.ctx.stroke();
         } else {
           this.ctx.fill();
+          this.centeredInElementLabel(label, x + w / 2, y + h / 2, w * 0.9, h * 0.8);
         }
-        this.label(el, label, x + w / 2, y, "above", { x, y, w, h });
       } else if (t === "bar") {
         const orientation = this.str(el.orientation, "vertical").toLowerCase();
         let barX = x;
@@ -772,12 +787,16 @@ export class SimulationCanvasRenderer {
         this.ctx.beginPath();
         this.ctx.arc(x, y, Math.max(2, r), 0, Math.PI * 2);
         this.ctx.fill();
-        this.label(el, label, x, y + r, t === "plot_point" ? "right" : "below", {
-          x: x - Math.max(2, r),
-          y: y - Math.max(2, r),
-          w: Math.max(2, r) * 2,
-          h: Math.max(2, r) * 2
-        });
+        if (t === "circle") {
+          this.centeredInElementLabel(label, x, y, Math.max(2, r) * 1.6, Math.max(2, r) * 1.6);
+        } else {
+          this.label(el, label, x, y + r, "right", {
+            x: x - Math.max(2, r),
+            y: y - Math.max(2, r),
+            w: Math.max(2, r) * 2,
+            h: Math.max(2, r) * 2
+          });
+        }
       } else if (t === "ellipse") {
         this.ctx.beginPath();
         this.ctx.ellipse(x, y, Math.max(2, w / 2), Math.max(2, h / 2), 0, 0, Math.PI * 2);

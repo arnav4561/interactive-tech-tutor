@@ -2077,9 +2077,9 @@ export default function App(): JSX.Element {
     setSimulationComplete(false);
     stepNarrationCompleteRef.current = false;
     subtitleDisplayCompleteRef.current = false;
-    stepElapsedMs = 0;
-    stepElapsedMsRef.current = 0;
-    pausedAtElapsedMsRef.current = 0;
+    stepElapsedMs = -500;
+    stepElapsedMsRef.current = -500;
+    pausedAtElapsedMsRef.current = -500;
     pausedAtStepRef.current = simulationStepRef.current;
     resumeNarrationRequestedRef.current = false;
     applyStep(simulationStepRef.current, { narrate: false });
