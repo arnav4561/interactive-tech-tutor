@@ -2797,6 +2797,22 @@ export default function App(): JSX.Element {
             </div>
           </div>
           <div className="navbar-actions">
+            {appView === "simulation" ? (
+              <div className="nav-voice-wrap">
+                {voiceInterimText ? <span className="nav-voice-interim">{voiceInterimText}</span> : null}
+                <button
+                  className={`sim-mic-btn nav-mic-btn state-${voiceMicState}`}
+                  onClick={() => setVoiceCaptureEnabled((value) => !value)}
+                  aria-label={listening ? "Turn microphone off" : "Turn microphone on"}
+                  title={listening ? "Turn microphone off" : "Turn microphone on"}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" />
+                    <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
+                  </svg>
+                </button>
+              </div>
+            ) : null}
             <button
               className="nav-icon-btn"
               onClick={goHomeDirect}
@@ -2880,29 +2896,6 @@ export default function App(): JSX.Element {
               </button>
             </div>
           ) : null}
-          <div className="sim-voice-corner">
-            {voiceInterimText ? <div className="sim-interim-bubble">{voiceInterimText}</div> : null}
-            <button
-              className={`sim-mic-btn state-${voiceMicState}`}
-              onClick={() => setVoiceCaptureEnabled((value) => !value)}
-              aria-label={listening ? "Turn microphone off" : "Turn microphone on"}
-              title={listening ? "Turn microphone off" : "Turn microphone on"}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" />
-                <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
-              </svg>
-            </button>
-            <span className={voiceMicState === "listening" ? "sim-mic-label active" : "sim-mic-label"}>
-              {voiceMicState === "listening"
-                ? "Listening..."
-                : voiceMicState === "processing"
-                  ? "Processing..."
-                  : voiceMicState === "speaking"
-                    ? "Speaking..."
-                    : "Mic Off"}
-            </span>
-          </div>
           {voiceCommandFlash ? <div className="voice-command-flash">{voiceCommandFlash}</div> : null}
           <div className="sim-bottom-bar">
             <button

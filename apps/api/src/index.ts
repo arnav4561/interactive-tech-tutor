@@ -1730,6 +1730,14 @@ STRICT RULES:
   Each tree_node must have: type='tree_node', value (number), x (0-100), y (0-100), color, parent_value (number or null for root).
   The renderer will draw connection lines automatically.
 - For sorting topics: use ONLY bar elements with numeric labels.
+- Every step MUST have at least 5 canvas elements. Never generate a step with fewer than 4 elements.
+- For binary search tree topics, each step must show the full tree with all nodes inserted so far, and the current operation node must be highlighted in orange (#FF6B35).
+- For sorting topics, each step must show all bars and explicit comparison indicators so compared values are visually obvious.
+- For concept topics, each step must show a central diagram with labeled components connected by arrows.
+- Before generating each step's elements, reason about what the subtitle says and make the visual match it exactly.
+- If a subtitle mentions a specific node value being inserted or highlighted, that exact node must be highlighted in orange (#FF6B35).
+- If a subtitle mentions comparing two values, those two elements must use a distinct highlight color so the comparison is visually clear.
+- The visual for each step must be a faithful diagram of exactly what the subtitle describes.
 - NEVER invent new element types.
 - Only use these exact types: tree_node, bar, text, arrow, circle, matrix, axis, plot_point, flowchart_diamond.
 - Every step must visually match its subtitle.
