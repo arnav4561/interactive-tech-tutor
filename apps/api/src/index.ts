@@ -6,6 +6,7 @@ import express from "express";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import { CreateTableCommand, DescribeTableCommand, DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { z } from "zod";
 import { authMiddleware, AuthenticatedRequest, createToken, hashPassword } from "./auth.js";
@@ -74,6 +75,11 @@ const dynamoDbClient = new DynamoDBClient({
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!
+  }
+});
+const dynamoDocClient = DynamoDBDocumentClient.from(dynamoDbClient, {
+  marshallOptions: {
+    removeUndefinedValues: true
   }
 });
 const simulationResponseCache = new Map<
@@ -2593,6 +2599,69 @@ function getNextLevel(level: DifficultyLevel): DifficultyLevel | null {
   return LEVELS[index + 1];
 }
 
+type DynamoUserRecord = {
+  userId: string;
+  email: string;
+  passwordHash: string;
+  createdAt: string;
+  preferences?: Record<string, unknown>;
+};
+
+async function findUserByEmail(email: string): Promise<DynamoUserRecord | null> {
+  const response = await dynamoDocClient.send(
+    new ScanCommand({
+      TableName: DYNAMODB_USERS_TABLE,
+      FilterExpression: "#email = :email",
+      ExpressionAttributeNames: {
+        "#email": "email"
+      },
+      ExpressionAttributeValues: {
+        ":email": email
+      },
+      Limit: 1
+    })
+  );
+  const item = response.Items?.[0] as Record<string, unknown> | undefined;
+  if (!item) {
+    return null;
+  }
+  return {
+    userId: String(item.userId ?? ""),
+    email: String(item.email ?? ""),
+    passwordHash: String(item.passwordHash ?? ""),
+    createdAt: String(item.createdAt ?? ""),
+    preferences:
+      item.preferences && typeof item.preferences === "object" && !Array.isArray(item.preferences)
+        ? (item.preferences as Record<string, unknown>)
+        : {}
+  };
+}
+
+async function saveUserRecord(user: DynamoUserRecord): Promise<void> {
+  await dynamoDocClient.send(
+    new PutCommand({
+      TableName: DYNAMODB_USERS_TABLE,
+      Item: user
+    })
+  );
+}
+
+async function saveSessionRecord(sessionToken: string, userId: string): Promise<void> {
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60 * 1000);
+  await dynamoDocClient.send(
+    new PutCommand({
+      TableName: DYNAMODB_SESSIONS_TABLE,
+      Item: {
+        sessionToken,
+        userId,
+        createdAt: createdAt.toISOString(),
+        expiresAt: expiresAt.toISOString()
+      }
+    })
+  );
+}
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "interactive-tech-tutor-api" });
 });
@@ -2609,42 +2678,39 @@ app.post(
   const { email, password } = parsed.data;
   const normalizedEmail = email.toLowerCase().trim();
   const now = new Date().toISOString();
-
-  const result = await updateStore((store) => {
-    const existing = store.users.find((user) => user.email === normalizedEmail);
-    if (existing) {
-      return { error: "User already exists." as const };
-    }
-
-    const user = {
-      id: randomUUID(),
-      email: normalizedEmail,
-      passwordHash: hashPassword(password),
-      createdAt: now,
-      lastLoginAt: now
-    };
-
-    const preferences: UserPreferences = {
-      userId: user.id,
-      interactionMode: "both",
-      voiceSettings: defaultVoiceSettings()
-    };
-
-    store.users.push(user);
-    store.preferences.push(preferences);
-
-    return {
-      user: { id: user.id, email: user.email, lastLoginAt: user.lastLoginAt }
-    };
-  });
-
-  if ("error" in result) {
-    res.status(409).json(result);
+  const existing = await findUserByEmail(normalizedEmail);
+  if (existing) {
+    res.status(409).json({ error: "User already exists." });
     return;
   }
 
-  const token = createToken({ userId: result.user.id, email: result.user.email });
-  res.status(201).json({ token, user: result.user });
+  const userId = randomUUID();
+  await saveUserRecord({
+    userId,
+    email: normalizedEmail,
+    passwordHash: hashPassword(password),
+    createdAt: now,
+    preferences: {}
+  });
+
+  await updateStore((store) => {
+    const hasPreferences = store.preferences.some((item) => item.userId === userId);
+    if (!hasPreferences) {
+      const preferences: UserPreferences = {
+        userId,
+        interactionMode: "both",
+        voiceSettings: defaultVoiceSettings()
+      };
+      store.preferences.push(preferences);
+    }
+  });
+
+  const token = createToken({ userId, email: normalizedEmail });
+  await saveSessionRecord(token, userId);
+  res.status(201).json({
+    token,
+    user: { id: userId, email: normalizedEmail, lastLoginAt: now }
+  });
   })
 );
 
@@ -2662,24 +2728,27 @@ app.post(
   const passwordHash = hashPassword(password);
   const now = new Date().toISOString();
 
-  const result = await updateStore((store) => {
-    const user = store.users.find((candidate) => candidate.email === normalizedEmail);
-    if (!user || user.passwordHash !== passwordHash) {
-      return { error: "Invalid email or password." as const };
-    }
-    user.lastLoginAt = now;
-    return {
-      user: { id: user.id, email: user.email, lastLoginAt: user.lastLoginAt }
-    };
-  });
-
-  if ("error" in result) {
-    res.status(401).json(result);
+  const user = await findUserByEmail(normalizedEmail);
+  if (!user || user.passwordHash !== passwordHash) {
+    res.status(401).json({ error: "Invalid email or password." });
     return;
   }
 
-  const token = createToken({ userId: result.user.id, email: result.user.email });
-  res.json({ token, user: result.user });
+  await updateStore((store) => {
+    const hasPreferences = store.preferences.some((item) => item.userId === user.userId);
+    if (!hasPreferences) {
+      const preferences: UserPreferences = {
+        userId: user.userId,
+        interactionMode: "both",
+        voiceSettings: defaultVoiceSettings()
+      };
+      store.preferences.push(preferences);
+    }
+  });
+
+  const token = createToken({ userId: user.userId, email: user.email });
+  await saveSessionRecord(token, user.userId);
+  res.json({ token, user: { id: user.userId, email: user.email, lastLoginAt: now } });
   })
 );
 
