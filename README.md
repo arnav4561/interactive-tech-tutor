@@ -27,15 +27,15 @@ Interactive Tech Tutor lets you learn any technical concept through:
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   AWS Amplify (Frontend)                     │
-│              React + Vite + TypeScript                       │
+│                   AWS Amplify (Frontend)                    │
+│              React + Vite + TypeScript                      │
 │         https://master.d3kfpuqsbfsujm.amplifyapp.com        │
 └──────────────────────┬──────────────────────────────────────┘
                        │ HTTPS API calls
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   Node.js / Express API                      │
-│                      (Render.com)                            │
+│                   Node.js / Express API                     │
+│                      (Render.com)                           │
 └────────┬──────────────────┬────────────────────┬────────────┘
          │                  │                    │
          ▼                  ▼                    ▼
