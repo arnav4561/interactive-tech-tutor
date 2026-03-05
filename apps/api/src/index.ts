@@ -147,73 +147,86 @@ async function initializeCacheState(): Promise<void> {
 }
 
 async function initializeDynamoDBTables(): Promise<void> {
-  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
-    throw new Error("DynamoDB is not configured. Missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY.");
-  }
-
-  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-  const ensureTable = async (
-    tableName: string,
-    keySchema: Array<{ AttributeName: string; KeyType: "HASH" | "RANGE" }>,
-    attributeDefinitions: Array<{ AttributeName: string; AttributeType: "S" | "N" | "B" }>
-  ) => {
-    try {
-      await dynamoDbClient.send(new DescribeTableCommand({ TableName: tableName }));
-      return;
-    } catch (error) {
-      const name = (error as { name?: string }).name ?? "";
-      if (name !== "ResourceNotFoundException") {
-        throw error;
-      }
+  try {
+    console.log("[DynamoDB] Initializing tables...");
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      throw new Error("DynamoDB is not configured. Missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY.");
     }
 
-    await dynamoDbClient.send(
-      new CreateTableCommand({
-        TableName: tableName,
-        BillingMode: "PAY_PER_REQUEST",
-        KeySchema: keySchema,
-        AttributeDefinitions: attributeDefinitions
-      })
-    );
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      await sleep(1500);
+    const ensureTable = async (
+      tableName: string,
+      keySchema: Array<{ AttributeName: string; KeyType: "HASH" | "RANGE" }>,
+      attributeDefinitions: Array<{ AttributeName: string; AttributeType: "S" | "N" | "B" }>
+    ) => {
+      let created = false;
       try {
-        const description = await dynamoDbClient.send(
-          new DescribeTableCommand({ TableName: tableName })
-        );
-        if (description.Table?.TableStatus === "ACTIVE") {
-          return;
+        await dynamoDbClient.send(new DescribeTableCommand({ TableName: tableName }));
+      } catch (error) {
+        const name = (error as { name?: string }).name ?? "";
+        if (name !== "ResourceNotFoundException") {
+          throw error;
         }
-      } catch (_error) {
-        // keep polling
+        created = true;
       }
-    }
-    throw new Error(`Timed out waiting for DynamoDB table ${tableName} to become ACTIVE.`);
-  };
 
-  await ensureTable(
-    DYNAMODB_USERS_TABLE,
-    [{ AttributeName: "userId", KeyType: "HASH" }],
-    [{ AttributeName: "userId", AttributeType: "S" }]
-  );
-  await ensureTable(
-    DYNAMODB_SESSIONS_TABLE,
-    [{ AttributeName: "sessionToken", KeyType: "HASH" }],
-    [{ AttributeName: "sessionToken", AttributeType: "S" }]
-  );
-  await ensureTable(
-    DYNAMODB_SIM_HISTORY_TABLE,
-    [
-      { AttributeName: "userId", KeyType: "HASH" },
-      { AttributeName: "timestamp", KeyType: "RANGE" }
-    ],
-    [
-      { AttributeName: "userId", AttributeType: "S" },
-      { AttributeName: "timestamp", AttributeType: "S" }
-    ]
-  );
+      if (created) {
+        await dynamoDbClient.send(
+          new CreateTableCommand({
+            TableName: tableName,
+            BillingMode: "PAY_PER_REQUEST",
+            KeySchema: keySchema,
+            AttributeDefinitions: attributeDefinitions
+          })
+        );
+
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await sleep(1500);
+          try {
+            const description = await dynamoDbClient.send(
+              new DescribeTableCommand({ TableName: tableName })
+            );
+            if (description.Table?.TableStatus === "ACTIVE") {
+              console.log(`[DynamoDB] Table ${tableName} ready`);
+              return;
+            }
+          } catch (_error) {
+            // keep polling
+          }
+        }
+        throw new Error(`Timed out waiting for DynamoDB table ${tableName} to become ACTIVE.`);
+      }
+
+      console.log(`[DynamoDB] Table ${tableName} ready`);
+    };
+
+    await ensureTable(
+      DYNAMODB_USERS_TABLE,
+      [{ AttributeName: "userId", KeyType: "HASH" }],
+      [{ AttributeName: "userId", AttributeType: "S" }]
+    );
+    await ensureTable(
+      DYNAMODB_SESSIONS_TABLE,
+      [{ AttributeName: "sessionToken", KeyType: "HASH" }],
+      [{ AttributeName: "sessionToken", AttributeType: "S" }]
+    );
+    await ensureTable(
+      DYNAMODB_SIM_HISTORY_TABLE,
+      [
+        { AttributeName: "userId", KeyType: "HASH" },
+        { AttributeName: "timestamp", KeyType: "RANGE" }
+      ],
+      [
+        { AttributeName: "userId", AttributeType: "S" },
+        { AttributeName: "timestamp", AttributeType: "S" }
+      ]
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[DynamoDB] ERROR: ${message}`);
+    throw error;
+  }
 }
 
 app.use(
