@@ -14,6 +14,10 @@ services:
         generateValue: true
       - key: FRONTEND_ORIGINS
         sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
       - key: AWS_REGION
         value: us-east-1
       - key: AWS_BEDROCK_REGION

@@ -30,17 +30,38 @@ const GEMINI_BASE_URL = (
   process.env.GEMINI_BASE_URL?.trim() ?? "https://generativelanguage.googleapis.com/v1beta"
 ).replace(/\/$/, "");
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS ?? 30000);
-const configuredOrigins = (process.env.FRONTEND_ORIGINS ?? "")
+const configuredOrigins = [
+  process.env.FRONTEND_ORIGINS ?? "",
+  process.env.ALLOWED_ORIGINS ?? "",
+  process.env.CORS_ORIGIN ?? ""
+]
+  .join(",")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
 const allowedOrigins = new Set([
+  "https://interactive-tech-tutor.vercel.app",
+  "https://master.d3kfpuqsbfsujm.amplifyapp.com",
+  "https://*.amplifyapp.com",
   "http://localhost:5173",
   "http://127.0.0.1:5173",
   "http://localhost:4173",
   "http://127.0.0.1:4173",
   ...configuredOrigins
 ]);
+const wildcardOriginRegexes = Array.from(allowedOrigins)
+  .filter((origin) => origin.includes("*"))
+  .map((origin) => {
+    const escaped = origin.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, "[^.]+");
+    return new RegExp(`^${escaped}$`, "i");
+  });
+
+function isAllowedOrigin(origin: string): boolean {
+  if (allowedOrigins.has(origin)) {
+    return true;
+  }
+  return wildcardOriginRegexes.some((pattern) => pattern.test(origin));
+}
 const CACHE_VERSION = process.env.CACHE_VERSION?.trim() || "2";
 const SIMULATION_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const SIMULATION_CACHE_SCHEMA_VERSION = `canvas-json-v3::v${CACHE_VERSION}`;
@@ -238,7 +259,7 @@ async function initializeDynamoDBTables(): Promise<void> {
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.has(origin)) {
+      if (!origin || isAllowedOrigin(origin)) {
         callback(null, true);
         return;
       }
