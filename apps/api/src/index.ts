@@ -2533,21 +2533,25 @@ function convertTemplateToCanvasSteps(topic: Topic): GeminiCanvasStep[] {
 async function generateChatReplyFromGemini(
   topicTitle: string,
   message: string,
-  mode: "voice" | "text"
+  mode: "voice" | "text",
+  context: Array<{ role: "user" | "assistant"; text: string; timestamp?: string }>
 ): Promise<string | null> {
   void GEMINI_API_KEY;
   void GEMINI_MODEL;
 
-  const prompt = `
-You are a precise technical tutor helping with topic "${topicTitle}".
-User mode: ${mode}.
-User message: "${message}".
+  const recentContext = context.slice(-5);
+  const contextText = recentContext
+    .map((entry) => `${entry.role === "assistant" ? "Tutor" : "User"}: ${entry.text.slice(0, 500)}`)
+    .join("\n");
 
-Reply with:
-- 2 to 4 short sentences
-- practical, accurate explanation
-- one immediate next action the learner should take
-- no markdown
+  const systemPrompt = `You are an expert tutor teaching the topic: ${topicTitle}. Answer the user's question clearly and concisely in 2-3 sentences. Stay focused on the topic.`;
+  const prompt = `
+${systemPrompt}
+User mode: ${mode}
+Conversation context (last 5 messages):
+${contextText || "No previous messages."}
+Current user question: "${message}"
+Return plain text only.
 `.trim();
 
   const body = JSON.stringify({
@@ -3117,7 +3121,16 @@ app.post(
   const schema = z.object({
     topicId: z.string().min(1),
     message: z.string().min(1),
-    mode: z.enum(["voice", "text"]).default("text")
+    mode: z.enum(["voice", "text"]).default("text"),
+    context: z
+      .array(
+        z.object({
+          role: z.enum(["user", "assistant"]),
+          text: z.string().min(1),
+          timestamp: z.string().optional()
+        })
+      )
+      .default([])
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -3125,7 +3138,7 @@ app.post(
     return;
   }
 
-  const { topicId, message, mode } = parsed.data;
+  const { topicId, message, mode, context } = parsed.data;
   const topic = TOPICS.find((item) => item.id === topicId);
   const topicTitle = topic?.title ?? topicId;
   let responseText = topic
@@ -3133,7 +3146,7 @@ app.post(
     : `I can help with that question. Start by clarifying the current topic and desired difficulty level.`;
 
   try {
-    const geminiReply = await generateChatReplyFromGemini(topicTitle, message, mode);
+    const geminiReply = await generateChatReplyFromGemini(topicTitle, message, mode, context);
     if (geminiReply) {
       responseText = geminiReply;
     }

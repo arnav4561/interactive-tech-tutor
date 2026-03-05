@@ -318,7 +318,7 @@ export default function App(): JSX.Element {
   const simulationHostRef = useRef<HTMLDivElement | null>(null);
   const simulationThreeHostRef = useRef<HTMLDivElement | null>(null);
   const homeMascotRef = useRef<HTMLDivElement | null>(null);
-  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
   const recognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionActiveRef = useRef(false);
@@ -377,6 +377,13 @@ export default function App(): JSX.Element {
     [topics, selectedTopicId]
   );
   const welcomeName = useMemo(() => resolveLearnerName(userName, userEmail), [userEmail, userName]);
+  const formatChatTimestamp = useCallback((timestamp: string): string => {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+    return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+  }, []);
 
   const topicTitleById = useMemo(() => {
     const map = new Map<string, string>();
@@ -806,7 +813,7 @@ export default function App(): JSX.Element {
       setSimulationComplete(false);
       setSimulationPaused(false);
       setMenuOpen(false);
-      setMessages((current) => [...current, { role: "assistant", text: response.openingMessage }]);
+      setMessages([]);
       if (subtitlesEnabled) {
         setSubtitle(response.openingMessage);
       }
@@ -972,7 +979,18 @@ export default function App(): JSX.Element {
         return;
       }
 
-      setMessages((current) => [...current, { role: "user", text: message }]);
+      const userMessageEntry: ChatMessage = {
+        role: "user",
+        text: message,
+        timestamp: new Date().toISOString()
+      };
+      const contextMessages = [...messages.slice(-5), userMessageEntry].map((entry) => ({
+        role: entry.role,
+        text: entry.text,
+        timestamp: entry.timestamp
+      }));
+
+      setMessages((current) => [...current, userMessageEntry]);
       setChatInput("");
 
       try {
@@ -981,11 +999,17 @@ export default function App(): JSX.Element {
           {
             topicId: selectedTopicId,
             message,
-            mode
+            mode,
+            context: contextMessages
           },
           token
         );
-        setMessages((current) => [...current, { role: "assistant", text: response.response }]);
+        const assistantMessageEntry: ChatMessage = {
+          role: "assistant",
+          text: response.response,
+          timestamp: new Date().toISOString()
+        };
+        setMessages((current) => [...current, assistantMessageEntry]);
         if (appViewRef.current === "simulation") {
           if (subtitlesEnabled) {
             pushSubtitle(response.response, 3200);
@@ -996,7 +1020,7 @@ export default function App(): JSX.Element {
         setStatusMessage((error as Error).message);
       }
     },
-    [chatInput, loadHistory, pushSubtitle, selectedTopicId, subtitlesEnabled, token]
+    [chatInput, loadHistory, messages, pushSubtitle, selectedTopicId, subtitlesEnabled, token]
   );
 
   const processVoiceCommand = useCallback(
@@ -1363,7 +1387,6 @@ export default function App(): JSX.Element {
             }
           } else {
             if (action.spoken_response) {
-              setMessages((current) => [...current, { role: "assistant", text: action.spoken_response ?? "" }]);
               await respond(action.spoken_response);
             }
             toast = action.action_type === "answer_question" ? "Answering your question" : "Responding";
@@ -1718,15 +1741,6 @@ export default function App(): JSX.Element {
       setVoiceInterimText("");
     }
   }, [appView, voiceCaptureEnabled]);
-
-  useEffect(() => {
-    const textarea = chatInputRef.current;
-    if (!textarea) {
-      return;
-    }
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(220, Math.max(88, textarea.scrollHeight))}px`;
-  }, [chatInput]);
 
   useEffect(() => {
     setVoiceNarrationEnabled(preferences.voiceSettings.narrationEnabled);
@@ -3170,25 +3184,54 @@ export default function App(): JSX.Element {
 
       {chatPanelOpen ? (
         <aside className="interaction-panel">
-          <section className="panel-section">
-            <h3>Topic Chat</h3>
+          <section className="panel-section chat-panel-section">
+            <header className="chat-panel-header">
+              <h3>Topic Chat</h3>
+            </header>
             <div className="chat-window">
               {messages.slice(-16).map((message, index) => (
                 <article key={`${message.role}-${index}`} className={`chat-bubble chat-${message.role}`}>
-                  <span className="chat-label">{message.role === "user" ? "You" : "Tutor"}</span>
-                  <p>{message.text}</p>
+                  <p className="chat-text">{message.text}</p>
+                  <span className="chat-time">{formatChatTimestamp(message.timestamp)}</span>
                 </article>
               ))}
             </div>
-            <textarea
-              ref={chatInputRef}
-              value={chatInput}
-              onChange={(event) => setChatInput(event.target.value)}
-              placeholder="Ask a question about the active simulation..."
-            />
-            <button className="chat-send-btn" onClick={() => void sendChat("text")}>
-              Send
-            </button>
+            <div className="chat-input-bar">
+              <button
+                className="chat-voice-btn"
+                onClick={() => void sendChat("voice")}
+                aria-label="Send as voice mode"
+                title="Send as voice mode"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" />
+                  <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
+                </svg>
+              </button>
+              <input
+                ref={chatInputRef}
+                className="chat-input-field"
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void sendChat("text");
+                  }
+                }}
+                placeholder="Ask about this topic..."
+              />
+              <button
+                className="chat-send-icon-btn"
+                onClick={() => void sendChat("text")}
+                aria-label="Send message"
+                title="Send message"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3.2 11.2 19.6 3.4a.9.9 0 0 1 1.26 1.08l-3.1 15.1a.9.9 0 0 1-1.54.45l-3.5-3.55-2.87 3.12a.9.9 0 0 1-1.56-.57v-5.06L3.5 12.9a.9.9 0 0 1-.3-1.7Zm4.9 1.58 2.02.58c.38.11.65.46.65.86v2.47l1.58-1.72a.9.9 0 0 1 1.3-.02l2.66 2.69 2.22-10.83-10.43 4.96Z" />
+                </svg>
+              </button>
+            </div>
           </section>
 
           <section className="panel-section">
