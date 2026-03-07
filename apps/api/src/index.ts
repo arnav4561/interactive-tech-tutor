@@ -2686,8 +2686,7 @@ async function findUserByEmail(email: string): Promise<DynamoUserRecord | null> 
       },
       ExpressionAttributeValues: {
         ":email": email
-      },
-      Limit: 1
+      }
     })
   );
   const item = response.Items?.[0] as Record<string, unknown> | undefined;
