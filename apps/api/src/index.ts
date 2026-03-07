@@ -2747,6 +2747,11 @@ app.post(
 
   const { name, email, password } = parsed.data;
   const normalizedEmail = email.toLowerCase().trim();
+  const normalizedPassword = password.trim();
+  if (normalizedPassword.length < 8) {
+    res.status(400).json({ error: "Password must be at least 8 characters after trimming." });
+    return;
+  }
   const normalizedName = (name?.trim() || normalizedEmail.split("@")[0] || "Learner").slice(0, 80);
   const now = new Date().toISOString();
   const existing = await findUserByEmail(normalizedEmail);
@@ -2760,7 +2765,7 @@ app.post(
     userId,
     name: normalizedName,
     email: normalizedEmail,
-    passwordHash: hashPassword(password),
+    passwordHash: hashPassword(normalizedPassword),
     createdAt: now,
     preferences: {}
   });
@@ -2797,7 +2802,12 @@ app.post(
 
   const { email, password } = parsed.data;
   const normalizedEmail = email.toLowerCase().trim();
-  const passwordHash = hashPassword(password);
+  const normalizedPassword = password.trim();
+  if (normalizedPassword.length < 8) {
+    res.status(400).json({ error: "Invalid email or password." });
+    return;
+  }
+  const passwordHash = hashPassword(normalizedPassword);
   const now = new Date().toISOString();
 
   const user = await findUserByEmail(normalizedEmail);
