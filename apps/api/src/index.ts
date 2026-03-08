@@ -1595,7 +1595,7 @@ function repairRegressionSteps(topic: string, steps: GeminiCanvasStep[]): Gemini
       const width = Number(next.width);
       const height = Number(next.height);
       next.x = clamp(Number.isFinite(x) ? x : 50, 25, 90);
-      next.y = clamp(Number.isFinite(y) ? y : 45, 15, 78);
+      next.y = clamp(Number.isFinite(y) ? y : 45, 20, 65);
       next.width = Number.isFinite(width) && width > 0 ? Math.min(width, 3) : 3;
       next.height = Number.isFinite(height) && height > 0 ? Math.min(height, 3) : 3;
       return next as GeminiCanvasElement;
@@ -1616,20 +1616,40 @@ function repairOsSchedulingSteps(topic: string, steps: GeminiCanvasStep[]): Gemi
 
   const defaults = ["New", "Ready", "Running", "Waiting", "Terminated"];
   const stateXs = [15, 32, 50, 68, 85];
+  const stateKeywords = [
+    "new",
+    "ready",
+    "running",
+    "waiting",
+    "terminated",
+    "blocked",
+    "suspended",
+    "dispatch"
+  ];
+  const isProcessStateLabel = (label: string): boolean =>
+    stateKeywords.some((keyword) => label.toLowerCase().includes(keyword));
 
   return steps.map((step) => {
     const existing = (step.canvas_instructions?.elements ?? []).map(
       (element) => ({ ...(element as Record<string, unknown>) }) as GeminiCanvasElement
     );
-    if (existing.length >= 4) {
+    const stateCandidates = existing.filter((element) => {
+      const type = normalizeElementType(element.type);
+      if (type !== "circle" && type !== "rectangle") {
+        return false;
+      }
+      const label = asText((element as Record<string, unknown>).label);
+      return Boolean(label) && isProcessStateLabel(label);
+    });
+    if (stateCandidates.length >= 5) {
       return step;
     }
 
-    const existingLabels = existing
+    const existingLabels = stateCandidates
       .map((element) => asText(element.label))
       .filter((label) => Boolean(label))
       .slice(0, 5);
-    const existingColors = existing
+    const existingColors = stateCandidates
       .map((element) => normalizeHexColor(asText(element.color), "#4A90E2"))
       .slice(0, 5);
 
@@ -1685,15 +1705,82 @@ function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): G
     { x: 30, y: 58 },
     { x: 55, y: 58 }
   ];
+  const defaultLabels = ["TP", "FP", "FN", "TN"];
+  const parseConfusionLabel = (label: string): string | null => {
+    const normalized = label.toLowerCase().trim();
+    if (!normalized) {
+      return null;
+    }
+    if (normalized === "tp" || normalized.includes("true positive")) {
+      return "TP";
+    }
+    if (normalized === "fp" || normalized.includes("false positive")) {
+      return "FP";
+    }
+    if (normalized === "fn" || normalized.includes("false negative")) {
+      return "FN";
+    }
+    if (normalized === "tn" || normalized.includes("true negative")) {
+      return "TN";
+    }
+    return null;
+  };
 
   return steps.map((step) => {
     const elements = (step.canvas_instructions?.elements ?? []).map((element) => ({
       ...(element as Record<string, unknown>)
     }));
+    const matrixIndexes = elements
+      .map((element, index) => ({ type: normalizeElementType(element.type), index }))
+      .filter((item) => item.type === "matrix")
+      .map((item) => item.index);
     const rectangleIndexes = elements
       .map((element, index) => ({ type: normalizeElementType(element.type), index }))
       .filter((item) => item.type === "rectangle")
       .map((item) => item.index);
+
+    if (matrixIndexes.length > 0) {
+      const aiLabels = elements
+        .map((element) => parseConfusionLabel(asText(element.label)))
+        .filter((label): label is string => Boolean(label));
+      const uniqueLabels = Array.from(new Set(aiLabels));
+      const labels = defaultLabels.map((fallback, index) => uniqueLabels[index] ?? fallback);
+      const aiColors = elements
+        .map((element) => normalizeHexColor(asText(element.color), ""))
+        .filter((color) => /^#[0-9a-f]{6}$/i.test(color));
+      const matrixColor =
+        matrixIndexes
+          .map((index) => normalizeHexColor(asText(elements[index].color), ""))
+          .find((color) => /^#[0-9a-f]{6}$/i.test(color)) ?? "#4A90E2";
+      const colors = defaultLabels.map((_, index) => aiColors[index] ?? matrixColor);
+
+      const retainedElements = elements.filter(
+        (_element, index) => !matrixIndexes.includes(index) && !rectangleIndexes.includes(index)
+      );
+      const injectedRectangles: GeminiCanvasElement[] = gridPositions.map((position, index) => ({
+        type: "rectangle",
+        x: position.x,
+        y: position.y,
+        width: 20,
+        height: 18,
+        color: colors[index],
+        label: labels[index],
+        label_position: "above",
+        animation: {
+          type: "fade_in",
+          duration: 800 + index * 80,
+          direction: "none",
+          represents: `shows confusion matrix quadrant ${labels[index]}`
+        }
+      }));
+
+      return {
+        ...step,
+        canvas_instructions: {
+          elements: [...retainedElements, ...injectedRectangles] as GeminiCanvasElement[]
+        }
+      };
+    }
 
     if (rectangleIndexes.length === 0) {
       return step;
