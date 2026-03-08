@@ -2405,7 +2405,7 @@ Global quality rules:
 - Every non-connector element must have a meaningful label from the topic (real term, value, or symbol).
 - Never use placeholder labels such as "text 1", "rectangle 2", "circle 3", "element 1", "tree_node 1", "bar 2".
 - Layout must be clean and readable; no random filler.
-- Use ONLY these element types: tree_node, bar, text, arrow, circle, matrix, axis, plot_point, flowchart_diamond.
+- Use ONLY these element types: tree_node, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, flowchart_diamond.
 - Do not output markdown or prose outside JSON.
 
 Topic-to-visual mapping (mandatory):
@@ -2421,9 +2421,17 @@ Topic-to-visual mapping (mandatory):
 - Confusion matrix:
   - Use matrix + labels TP, FP, FN, TN (or full forms).
 - Regression/statistics/functions:
-  - Use axis + plot_point (and text/arrow only when needed for explanation).
+  - Use only plot_point, axis, text, and line elements (never circle or ellipse).
+  - plot_point width and height must each be between 2 and 4.
+  - axis elements must span at least 60% of canvas width/height.
+  - plot_point x and y values must be inside axis bounds, never on canvas edges.
+  - Place equation/formula text at top-left with x=15, y=10, width=25, height=6.
 - Process/decision topics:
   - Use flowchart_diamond + arrow + text with real stage names.
+- OS scheduling and process-state topics:
+  - Each step must include at least 5 labeled rectangle or circle elements for New, Ready, Running, Waiting, Terminated.
+  - Connect process-state elements with arrows showing valid state transitions.
+  - Never generate a step with only 1 or 2 text elements for OS/process topics.
 
 Fidelity rules:
 - Visuals must exactly match each subtitle.
