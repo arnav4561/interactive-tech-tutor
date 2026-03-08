@@ -1542,27 +1542,31 @@ function validateAndRepairBstSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[
 function enforceMeaningfulElementLabels(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
   const placeholderLabelPattern =
     /^(text|rectangle|circle|ellipse|triangle|bar|matrix|axis|plot[_ ]?point|arrow|line|element)\s*\d*$/i;
+  const skipPlaceholderLabelTypes = new Set(["arrow", "line", "dashed_line", "curved_arrow"]);
   const isConfusionMatrixTopic = /confusion matrix/i.test(topic);
   const confusionLabels = ["True Positive", "False Positive", "False Negative", "True Negative"];
 
   return steps.map((step) => {
     let confusionCursor = 0;
-    const elements = (step.canvas_instructions?.elements ?? []).map((element, index) => {
+    const elements = (step.canvas_instructions?.elements ?? []).flatMap((element, index) => {
       const nextElement = { ...(element as Record<string, unknown>) };
       const rawLabel = asText(nextElement.label);
       const type = asText(nextElement.type).toLowerCase().replace(/\s+/g, "_");
       const isPlaceholder = !rawLabel || placeholderLabelPattern.test(rawLabel);
       if (!isPlaceholder) {
-        return nextElement as GeminiCanvasElement;
+        return [nextElement as GeminiCanvasElement];
+      }
+      if (skipPlaceholderLabelTypes.has(type)) {
+        return [];
       }
       if (isConfusionMatrixTopic) {
         nextElement.label = confusionLabels[confusionCursor % confusionLabels.length];
         confusionCursor += 1;
-        return nextElement as GeminiCanvasElement;
+        return [nextElement as GeminiCanvasElement];
       }
       const prettyType = type ? type.replace(/_/g, " ") : "concept";
       nextElement.label = `${prettyType} detail ${index + 1}`.slice(0, 180);
-      return nextElement as GeminiCanvasElement;
+      return [nextElement as GeminiCanvasElement];
     });
     return {
       ...step,
