@@ -1641,7 +1641,7 @@ function repairOsSchedulingSteps(topic: string, steps: GeminiCanvasStep[]): Gemi
       const label = asText((element as Record<string, unknown>).label);
       return Boolean(label) && isProcessStateLabel(label);
     });
-    if (stateCandidates.length >= 5) {
+    if (existing.length >= 5) {
       return step;
     }
 
@@ -1706,6 +1706,24 @@ function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): G
     { x: 55, y: 58 }
   ];
   const defaultLabels = ["TP", "FP", "FN", "TN"];
+  const HIGHLIGHT_COLOR = "#22c55e";
+  const BASE_COLOR = "#1E3A5F";
+  const resolveHighlightIndex = (conceptText: string): number | null => {
+    const concept = conceptText.toLowerCase();
+    if (/\btrue positive\b|\btp\b/i.test(concept)) {
+      return 0;
+    }
+    if (/\bfalse positive\b|\bfp\b/i.test(concept)) {
+      return 1;
+    }
+    if (/\bfalse negative\b|\bfn\b/i.test(concept)) {
+      return 2;
+    }
+    if (/\btrue negative\b|\btn\b/i.test(concept)) {
+      return 3;
+    }
+    return null;
+  };
   const parseConfusionLabel = (label: string): string | null => {
     const normalized = label.toLowerCase().trim();
     if (!normalized) {
@@ -1739,6 +1757,8 @@ function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): G
       .filter((item) => item.type === "rectangle")
       .map((item) => item.index);
 
+    const highlightIndex = resolveHighlightIndex(asText(step.concept));
+
     if (matrixIndexes.length > 0) {
       const aiLabels = elements
         .map((element) => parseConfusionLabel(asText(element.label)))
@@ -1752,7 +1772,12 @@ function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): G
         matrixIndexes
           .map((index) => normalizeHexColor(asText(elements[index].color), ""))
           .find((color) => /^#[0-9a-f]{6}$/i.test(color)) ?? "#4A90E2";
-      const colors = defaultLabels.map((_, index) => aiColors[index] ?? matrixColor);
+      const colors = defaultLabels.map((_, index) => {
+        if (highlightIndex !== null) {
+          return index === highlightIndex ? HIGHLIGHT_COLOR : BASE_COLOR;
+        }
+        return aiColors[index] ?? matrixColor;
+      });
 
       const retainedElements = elements.filter(
         (_element, index) => !matrixIndexes.includes(index) && !rectangleIndexes.includes(index)
@@ -1807,7 +1832,10 @@ function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): G
         x: target.x,
         y: target.y,
         width: 20,
-        height: 18
+        height: 18,
+        ...(highlightIndex !== null
+          ? { color: idx % gridPositions.length === highlightIndex ? HIGHLIGHT_COLOR : BASE_COLOR }
+          : {})
       };
     });
 
