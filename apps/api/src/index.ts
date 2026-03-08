@@ -965,6 +965,43 @@ function defaultElementSize(type: CanvasElementType): { width: number; height: n
   return { width: 12, height: 10 };
 }
 
+function parseNumericValueFromUnknown(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  const text = asText(value);
+  if (!text) {
+    return null;
+  }
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+  if (!match) {
+    return null;
+  }
+  const parsed = Number.parseFloat(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function numericValueToLabel(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return String(Number(value.toFixed(3)));
+}
+
+function deriveNumericElementLabel(raw: Record<string, unknown>): string {
+  const candidates = [raw.value, raw.val, raw.number, raw.data_value, raw.dataValue, raw.label, raw.text];
+  for (const candidate of candidates) {
+    const parsed = parseNumericValueFromUnknown(candidate);
+    if (parsed !== null) {
+      return numericValueToLabel(parsed);
+    }
+  }
+  return "";
+}
+
 function normalizeCanvasElement(
   candidate: unknown,
   index: number,
@@ -1000,21 +1037,24 @@ function normalizeCanvasElement(
 
   const type = normalizeElementType(raw.type);
   const sizeDefaults = defaultElementSize(type);
-  const label = (
-    asText(raw.label) ||
-    asText(raw.text) ||
-    asText(raw.name) ||
-    `${type.replace(/\s+/g, " ")} ${index + 1}`
-  )
-    .trim()
-    .slice(0, 180);
+  const numericLabel = deriveNumericElementLabel(raw);
+  const connectorTypes = new Set<CanvasElementType>(["arrow", "line", "dashed_line", "curved_arrow"]);
+  const sourceLabel = asText(raw.label) || asText(raw.text) || asText(raw.name);
+  let label = sourceLabel.trim();
+  if (!label && (type === "tree_node" || type === "bar")) {
+    label = numericLabel;
+  }
+  if (!label && connectorTypes.has(type)) {
+    label = "";
+  }
+  const safeLabel = label.trim().slice(0, 180);
   const rawAnimation = asObject(raw.animation) ?? {};
   const animationType = normalizeAnimationType(rawAnimation.type);
   const animationDirection = asText(rawAnimation.direction) || "none";
   const animationRepresents =
     asText(rawAnimation.represents) ||
     asText(rawAnimation.description) ||
-    `${label} appearing to explain ${fallbackText}`.slice(0, 240);
+    `${safeLabel || type.replace(/_/g, " ")} appearing to explain ${fallbackText}`.slice(0, 240);
   const passthrough = { ...raw };
   delete passthrough.type;
   delete passthrough.x;
@@ -1040,7 +1080,7 @@ function normalizeCanvasElement(
     width: toPercent(raw.width ?? raw.w, sizeDefaults.width),
     height: toPercent(raw.height ?? raw.h, sizeDefaults.height),
     color: normalizeHexColor(raw.color, "#00d4ff"),
-    label: label || `Element ${index + 1}`,
+    ...(safeLabel ? { label: safeLabel } : {}),
     label_position: normalizeLabelPosition(raw.label_position ?? raw.labelPosition),
     animation: {
       ...rawAnimation,
@@ -1541,10 +1581,17 @@ function validateAndRepairBstSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[
 
 function enforceMeaningfulElementLabels(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
   const placeholderLabelPattern =
-    /^(text|rectangle|circle|ellipse|triangle|bar|matrix|axis|plot[_ ]?point|arrow|line|element)\s*\d*$/i;
+    /^(text|rectangle|circle|ellipse|triangle|bar|matrix|axis|plot[_ ]?point|arrow|line|element|tree[_ ]?node)\s*\d*$/i;
   const skipPlaceholderLabelTypes = new Set(["arrow", "line", "dashed_line", "curved_arrow"]);
   const isConfusionMatrixTopic = /confusion matrix/i.test(topic);
   const confusionLabels = ["True Positive", "False Positive", "False Negative", "True Negative"];
+  const topicWords = topic
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2)
+    .slice(0, 3);
+  const primaryTopicWord = topicWords[0] || "Concept";
 
   return steps.map((step) => {
     let confusionCursor = 0;
@@ -1559,15 +1606,73 @@ function enforceMeaningfulElementLabels(topic: string, steps: GeminiCanvasStep[]
       if (skipPlaceholderLabelTypes.has(type)) {
         return [];
       }
+      if (type === "tree_node") {
+        const nodeValue = treeNodeNumericValue(nextElement);
+        if (nodeValue !== null) {
+          nextElement.label = numericValueToLabel(nodeValue);
+        } else {
+          nextElement.label = `Node ${index + 1}`;
+        }
+        return [nextElement as GeminiCanvasElement];
+      }
+      if (type === "bar") {
+        const numericLabel = deriveNumericElementLabel(nextElement);
+        nextElement.label = numericLabel || `Value ${index + 1}`;
+        return [nextElement as GeminiCanvasElement];
+      }
       if (isConfusionMatrixTopic) {
         nextElement.label = confusionLabels[confusionCursor % confusionLabels.length];
         confusionCursor += 1;
         return [nextElement as GeminiCanvasElement];
       }
-      const prettyType = type ? type.replace(/_/g, " ") : "concept";
-      nextElement.label = `${prettyType} detail ${index + 1}`.slice(0, 180);
+      if (type === "text") {
+        return [];
+      }
+      if (type === "matrix") {
+        nextElement.label = `${primaryTopicWord} matrix`.slice(0, 180);
+        return [nextElement as GeminiCanvasElement];
+      }
+      if (type === "axis") {
+        nextElement.label = "Axis";
+        return [nextElement as GeminiCanvasElement];
+      }
+      if (type === "plot_point") {
+        nextElement.label = `Point ${index + 1}`;
+        return [nextElement as GeminiCanvasElement];
+      }
+      if (type === "flowchart_diamond") {
+        nextElement.label = "Decision";
+        return [nextElement as GeminiCanvasElement];
+      }
+      if (type === "circle") {
+        nextElement.label = `${primaryTopicWord} node ${index + 1}`.slice(0, 180);
+        return [nextElement as GeminiCanvasElement];
+      }
+      if (type === "rectangle") {
+        nextElement.label = `${primaryTopicWord} block ${index + 1}`.slice(0, 180);
+        return [nextElement as GeminiCanvasElement];
+      }
+      nextElement.label = `${primaryTopicWord} ${index + 1}`.slice(0, 180);
       return [nextElement as GeminiCanvasElement];
     });
+    if (elements.length === 0) {
+      elements.push({
+        type: "text",
+        x: 50,
+        y: 50,
+        width: 30,
+        height: 6,
+        color: "#00d4ff",
+        label: step.concept.slice(0, 180),
+        label_position: "above",
+        animation: {
+          type: "fade_in",
+          duration: 800,
+          direction: "none",
+          represents: step.subtitle.slice(0, 240)
+        }
+      } as GeminiCanvasElement);
+    }
     return {
       ...step,
       canvas_instructions: {
@@ -2269,59 +2374,61 @@ async function generateSimulationFromGemini(
 
   void level;
   const simulationFormatPrompt = `
-You are a world class technical educator creating a visual simulation for the topic: ${topic}.
+You are an expert technical educator and diagram designer.
+Topic: ${topic}
 
-Return ONLY a JSON object with a steps array.
-Each step must include:
-- step (number)
+Return ONLY valid JSON in this shape:
+{
+  "steps": [
+    {
+      "step": 1,
+      "concept": "short concept name",
+      "subtitle": "3-4 beginner-friendly factual sentences",
+      "duration_ms": 16000,
+      "canvas_instructions": {
+        "elements": [ ... ]
+      }
+    }
+  ]
+}
+
+Required per step:
+- step (integer)
 - concept (string)
-- subtitle (3-4 sentence explanation)
-- duration_ms (word_count * 400, minimum 12000, maximum 35000)
-- canvas_instructions with an elements array
+- subtitle (3-4 complete sentences)
+- duration_ms = min(35000, max(12000, word_count(subtitle) * 400))
+- canvas_instructions.elements (array)
 
-STRICT RULES:
-- CRITICAL RULE — BINARY SEARCH TREE: If the topic is binary search tree or BST, you MUST generate tree_node elements for every node in the tree.
-  A tree_node element looks exactly like this:
-  {"type": "tree_node", "value": 50, "x": 50, "y": 12, "color": "#4A90E2", "parent_value": null}
-  {"type": "tree_node", "value": 30, "x": 25, "y": 30, "color": "#4A90E2", "parent_value": 50}
-  {"type": "tree_node", "value": 70, "x": 75, "y": 30, "color": "#4A90E2", "parent_value": 50}
-  NEVER generate type text with label Left Subtree or Right Subtree.
-  NEVER generate placeholder text elements for tree parts.
-  Every node in the tree must be its own tree_node element with a numeric value, x position, y position, color, and parent_value.
-  The root node has parent_value null.
-  All other nodes have parent_value set to their parent node value.
-  For a BST with values [50,30,70,20,40,60,80]:
-  50 is root at (50,12),
-  30 is left child of 50 at (25,30),
-  70 is right child of 50 at (75,30),
-  20 is left child of 30 at (12,50),
-  40 is right child of 30 at (38,50),
-  60 is left child of 70 at (62,50),
-  80 is right child of 70 at (88,50).
-  Use this exact pattern for every BST simulation step.
-- For binary search tree topics: use ONLY tree_node elements (never line, never rectangle).
-  Each tree_node must have: type='tree_node', value (number), x (0-100), y (0-100), color, parent_value (number or null for root).
-  The renderer will draw connection lines automatically.
-- For sorting topics: use ONLY bar elements with numeric labels.
-- Every step MUST have at least 5 canvas elements. Never generate a step with fewer than 4 elements.
-- For binary search tree topics, each step must show the full tree with all nodes inserted so far, and the current operation node must be highlighted in orange (#FF6B35).
-- For sorting topics, each step must show all bars and explicit comparison indicators so compared values are visually obvious.
-- For bar elements, always set label to the numeric value being represented (example: label: "5").
-- For bar elements, always set y to 85 so all bars share the same baseline.
-- For bar elements, set height proportionally using: height = (value / max_value) * 60.
-- Never place bars at y values less than 50.
-- For concept topics, each step must show a central diagram with labeled components connected by arrows.
-- Before generating each step's elements, reason about what the subtitle says and make the visual match it exactly.
-- If a subtitle mentions a specific node value being inserted or highlighted, that exact node must be highlighted in orange (#FF6B35).
-- If a subtitle mentions comparing two values, those two elements must use a distinct highlight color so the comparison is visually clear.
-- The visual for each step must be a faithful diagram of exactly what the subtitle describes.
-- NEVER invent new element types.
-- Only use these exact types: tree_node, bar, text, arrow, circle, matrix, axis, plot_point, flowchart_diamond.
-- Every step must visually match its subtitle.
-- Never return markdown or prose outside JSON.
-- NEVER use placeholder labels like "text 1", "text 2", "rectangle 1", "rectangle 2", "circle 1", or similar numbered placeholders.
-- Every element label must be meaningful and topic-specific.
-- For confusion matrix topics, labels must use real quadrant terms: TP/FP/TN/FN or True Positive/False Positive/True Negative/False Negative.
+Global quality rules:
+- Generate 6-8 steps unless the topic is extremely simple; never fewer than 5.
+- Every step must contain at least 5 elements.
+- Every non-connector element must have a meaningful label from the topic (real term, value, or symbol).
+- Never use placeholder labels such as "text 1", "rectangle 2", "circle 3", "element 1", "tree_node 1", "bar 2".
+- Layout must be clean and readable; no random filler.
+- Use ONLY these element types: tree_node, bar, text, arrow, circle, matrix, axis, plot_point, flowchart_diamond.
+- Do not output markdown or prose outside JSON.
+
+Topic-to-visual mapping (mandatory):
+- Binary Search Tree / BST:
+  - Use ONLY tree_node elements (no line/arrow/rectangle).
+  - Each tree_node includes: type, value, x, y, color, parent_value.
+  - Root has parent_value null; children point to numeric parent value.
+  - Use numeric labels equal to node values.
+- Sorting algorithms:
+  - Use ONLY bar elements with numeric labels.
+  - Set all bars to y = 85 baseline.
+  - Heights must be proportional to values.
+- Confusion matrix:
+  - Use matrix + labels TP, FP, FN, TN (or full forms).
+- Regression/statistics/functions:
+  - Use axis + plot_point (and text/arrow only when needed for explanation).
+- Process/decision topics:
+  - Use flowchart_diamond + arrow + text with real stage names.
+
+Fidelity rules:
+- Visuals must exactly match each subtitle.
+- If subtitle mentions a specific value/node being highlighted or compared, highlight that exact element in orange (#FF6B35).
+- If subtitle mentions comparison between two values, visually mark both values with contrasting highlight colors.
 `.trim();
 
   const payload = await requestBedrockJson(simulationFormatPrompt, {
@@ -3326,3 +3433,4 @@ void startServer().catch((error) => {
   console.error("Failed to start Interactive Tech Tutor API:", error);
   process.exit(1);
 });
+
