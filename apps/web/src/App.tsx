@@ -705,7 +705,23 @@ export default function App(): JSX.Element {
     }
   }, [displayName, email, password, registerMode]);
 
+  const stopSimulationAndNarration = useCallback(() => {
+    pendingSimulationCommandRef.current = null;
+    pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
+    pausedAtStepRef.current = simulationStepRef.current;
+    resumeNarrationRequestedRef.current = false;
+    stepNarrationCompleteRef.current = true;
+    subtitleDisplayCompleteRef.current = true;
+    simulationPausedRef.current = true;
+    setSimulationPaused(true);
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    clearNarrationTimers();
+  }, [clearNarrationTimers]);
+
   const handleLogout = useCallback(() => {
+    stopSimulationAndNarration();
     voiceCaptureDesiredRef.current = false;
     if (recognitionRef.current) {
       recognitionRef.current.stop();
@@ -737,7 +753,7 @@ export default function App(): JSX.Element {
     localStorage.removeItem("itt_voice_capture");
     localStorage.removeItem("itt_subtitles");
     setStatusMessage("Logged out.");
-  }, [clearNarrationTimers]);
+  }, [stopSimulationAndNarration]);
 
   useEffect(() => {
     const onForceLogout = (event: Event) => {
@@ -1259,6 +1275,7 @@ export default function App(): JSX.Element {
       }
 
       void (async () => {
+        let shouldRunActionFeedback = true;
         try {
           const stepConcept = currentStepConceptRef.current || "Current step";
           const action = await apiPost<VoiceActionResponse>(
@@ -1313,17 +1330,26 @@ export default function App(): JSX.Element {
             pendingSimulationCommandRef.current = { id: commandNonceRef.current, action: "restart" };
             toast = "Restarting simulation";
           } else if (action.action_type === "jump_to_step") {
+            shouldRunActionFeedback = false;
             const totalSteps = selectedSimulation?.steps?.length ?? 0;
             const rawStep = Number(params.step_number ?? params.step ?? params.index ?? Number.NaN);
             const requestedStep = Number.isFinite(rawStep) ? Math.trunc(rawStep) : Number.NaN;
             if (totalSteps > 0 && Number.isFinite(requestedStep)) {
               const clampedStep = Math.min(totalSteps, Math.max(1, requestedStep));
+              const targetIndex = clampedStep - 1;
+              const targetStep = selectedSimulation?.steps?.[targetIndex];
               commandNonceRef.current += 1;
               pendingSimulationCommandRef.current = {
                 id: commandNonceRef.current,
                 action: "jump-step",
-                stepIndex: clampedStep - 1
+                stepIndex: targetIndex
               };
+              if (targetStep) {
+                setActiveStepIndex(targetIndex);
+                setCurrentStepText(`Step ${targetIndex + 1}: ${targetStep.concept}`);
+                setSubtitle(String(targetStep.subtitle ?? ""));
+                subtitleDisplayCompleteRef.current = false;
+              }
               const jumpMessage = `Going to step ${clampedStep}`;
               toast = jumpMessage;
               setVoiceInterimText(jumpMessage);
@@ -1397,6 +1423,7 @@ export default function App(): JSX.Element {
             action.action_type !== "answer_question" &&
             action.action_type !== "general_answer" &&
             action.action_type !== "not_possible" &&
+            action.action_type !== "jump_to_step" &&
             action.action_type !== "move_element" &&
             action.action_type !== "modify_element"
           ) {
@@ -1409,7 +1436,9 @@ export default function App(): JSX.Element {
           setStatusMessage((error as Error).message);
           processVoiceCommand(transcript);
         } finally {
-          void runActionFeedback("voice-command", transcript);
+          if (shouldRunActionFeedback) {
+            void runActionFeedback("voice-command", transcript);
+          }
           if (voiceCaptureEnabled && appViewRef.current === "simulation") {
             setVoiceMicState("listening");
             voiceCaptureDesiredRef.current = true;
@@ -1639,12 +1668,13 @@ export default function App(): JSX.Element {
   }, []);
 
   const goHomeDirect = useCallback(() => {
+    stopSimulationAndNarration();
     setMenuOpen(false);
     setToolsPanelOpen(false);
     setSimulationComplete(false);
     setAppView("home");
     setStatusMessage("Home.");
-  }, []);
+  }, [stopSimulationAndNarration]);
 
   const repeatSimulation = useCallback(() => {
     if (!selectedSimulation?.steps?.length) {
@@ -1677,12 +1707,6 @@ export default function App(): JSX.Element {
       return;
     }
     if (appView === "simulation") {
-      pausedAtElapsedMsRef.current = stepElapsedMsRef.current;
-      pausedAtStepRef.current = simulationStepRef.current;
-      setSimulationPaused(true); window.speechSynthesis.cancel();
-      stepNarrationCompleteRef.current = true;
-      resumeNarrationRequestedRef.current = false;
-      setToolsPanelOpen(false);
       goHomeDirect();
     }
   }, [appView, goHomeDirect]);
@@ -2200,7 +2224,7 @@ export default function App(): JSX.Element {
         } else if (pendingCommand.action === "toggle-controls") {
           setToolsPanelOpen((value) => !value);
         } else if (pendingCommand.action === "go-home") {
-          setAppView("home");
+          goHomeDirect();
         }
         pendingSimulationCommandRef.current = null;
       }
@@ -2262,6 +2286,7 @@ export default function App(): JSX.Element {
     };
   }, [
     appView,
+    goHomeDirect,
     speakText,
     selectedSimulation,
     selectedTopic,
