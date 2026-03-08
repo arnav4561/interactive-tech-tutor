@@ -1579,6 +1579,160 @@ function validateAndRepairBstSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[
   return steps.map((step) => repairBstStep(step));
 }
 
+function repairRegressionSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  if (!/(regression|linear)/i.test(topic)) {
+    return steps;
+  }
+  return steps.map((step) => {
+    const elements = (step.canvas_instructions?.elements ?? []).map((element) => {
+      const next = { ...(element as Record<string, unknown>) };
+      const type = normalizeElementType(next.type);
+      if (type !== "plot_point") {
+        return next as GeminiCanvasElement;
+      }
+      const x = Number(next.x);
+      const y = Number(next.y);
+      const width = Number(next.width);
+      const height = Number(next.height);
+      next.x = clamp(Number.isFinite(x) ? x : 50, 25, 90);
+      next.y = clamp(Number.isFinite(y) ? y : 45, 15, 78);
+      next.width = Number.isFinite(width) && width > 0 ? Math.min(width, 3) : 3;
+      next.height = Number.isFinite(height) && height > 0 ? Math.min(height, 3) : 3;
+      return next as GeminiCanvasElement;
+    }) as GeminiCanvasElement[];
+    return {
+      ...step,
+      canvas_instructions: {
+        elements
+      }
+    };
+  });
+}
+
+function repairOsSchedulingSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  if (!/(os scheduling|process scheduling)/i.test(topic)) {
+    return steps;
+  }
+
+  const defaults = ["New", "Ready", "Running", "Waiting", "Terminated"];
+  const stateXs = [15, 32, 50, 68, 85];
+
+  return steps.map((step) => {
+    const existing = (step.canvas_instructions?.elements ?? []).map(
+      (element) => ({ ...(element as Record<string, unknown>) }) as GeminiCanvasElement
+    );
+    if (existing.length >= 4) {
+      return step;
+    }
+
+    const existingLabels = existing
+      .map((element) => asText(element.label))
+      .filter((label) => Boolean(label))
+      .slice(0, 5);
+    const existingColors = existing
+      .map((element) => normalizeHexColor(asText(element.color), "#4A90E2"))
+      .slice(0, 5);
+
+    const injectedStates: GeminiCanvasElement[] = defaults.map((defaultLabel, index) => ({
+      type: "circle",
+      x: stateXs[index],
+      y: 45,
+      width: 10,
+      height: 10,
+      color: existingColors[index] ?? "#4A90E2",
+      label: existingLabels[index] || defaultLabel,
+      label_position: "above",
+      animation: {
+        type: "fade_in",
+        duration: 800 + index * 80,
+        direction: "none",
+        represents: `shows process state ${existingLabels[index] || defaultLabel}`
+      }
+    }));
+
+    const injectedArrows: GeminiCanvasElement[] = stateXs.slice(0, -1).map((x, index) => {
+      const nextX = stateXs[index + 1];
+      return {
+        type: "arrow",
+        x: Number(((x + nextX) / 2).toFixed(2)),
+        y: 45,
+        x1: x + 5,
+        y1: 45,
+        x2: nextX - 5,
+        y2: 45,
+        width: Math.max(6, nextX - x - 10),
+        height: 2,
+        color: "#93c5fd"
+      };
+    });
+
+    return {
+      ...step,
+      canvas_instructions: {
+        elements: [...existing, ...injectedStates, ...injectedArrows]
+      }
+    };
+  });
+}
+
+function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  if (!/confusion matrix/i.test(topic)) {
+    return steps;
+  }
+  const gridPositions = [
+    { x: 30, y: 35 },
+    { x: 55, y: 35 },
+    { x: 30, y: 58 },
+    { x: 55, y: 58 }
+  ];
+
+  return steps.map((step) => {
+    const elements = (step.canvas_instructions?.elements ?? []).map((element) => ({
+      ...(element as Record<string, unknown>)
+    }));
+    const rectangleIndexes = elements
+      .map((element, index) => ({ type: normalizeElementType(element.type), index }))
+      .filter((item) => item.type === "rectangle")
+      .map((item) => item.index);
+
+    if (rectangleIndexes.length === 0) {
+      return step;
+    }
+
+    const xs = rectangleIndexes
+      .map((index) => Number(elements[index].x))
+      .filter((value) => Number.isFinite(value));
+    const ys = rectangleIndexes
+      .map((index) => Number(elements[index].y))
+      .filter((value) => Number.isFinite(value));
+    const spreadX = xs.length > 0 ? Math.max(...xs) - Math.min(...xs) : 0;
+    const spreadY = ys.length > 0 ? Math.max(...ys) - Math.min(...ys) : 0;
+    const scattered = spreadX > 50 || spreadY > 50;
+
+    if (!scattered) {
+      return step;
+    }
+
+    rectangleIndexes.forEach((elementIndex, idx) => {
+      const target = gridPositions[idx % gridPositions.length];
+      elements[elementIndex] = {
+        ...elements[elementIndex],
+        x: target.x,
+        y: target.y,
+        width: 20,
+        height: 18
+      };
+    });
+
+    return {
+      ...step,
+      canvas_instructions: {
+        elements: elements as GeminiCanvasElement[]
+      }
+    };
+  });
+}
+
 function enforceMeaningfulElementLabels(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
   const placeholderLabelPattern =
     /^(text|rectangle|circle|ellipse|triangle|bar|matrix|axis|plot[_ ]?point|arrow|line|element|tree[_ ]?node)\s*\d*$/i;
@@ -2465,14 +2619,17 @@ Fidelity rules:
     ? validateAndRepairBstSteps(generatedSteps)
     : generatedSteps;
   const labeledSteps = enforceMeaningfulElementLabels(topic, validatedSteps);
+  const regressionRepairedSteps = repairRegressionSteps(topic, labeledSteps);
+  const osRepairedSteps = repairOsSchedulingSteps(topic, regressionRepairedSteps);
+  const repairedSteps = repairConfusionMatrixSteps(topic, osRepairedSteps);
 
   try {
-    await saveSimulationS3Cache(topic, { steps: labeledSteps });
+    await saveSimulationS3Cache(topic, { steps: repairedSteps });
   } catch (error) {
     console.warn("[Simulation] Unable to cache generated steps to S3. Continuing without cache.", error);
   }
 
-  return { steps: labeledSteps };
+  return { steps: repairedSteps };
 }
 
 function toCanvasPercentX(x: number): number {
