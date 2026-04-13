@@ -1771,6 +1771,213 @@ function applyTopicRepairs(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
   return repairMatrixGridSteps(axisPlotRepairedSteps);
 }
 
+const SUBTITLE_ALIGNMENT_STOP_WORDS = new Set([
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "to",
+  "of",
+  "in",
+  "on",
+  "for",
+  "with",
+  "by",
+  "from",
+  "into",
+  "through",
+  "during",
+  "this",
+  "that",
+  "these",
+  "those",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "being",
+  "been",
+  "as",
+  "it",
+  "its",
+  "at",
+  "we",
+  "you",
+  "your",
+  "our",
+  "they",
+  "their",
+  "then",
+  "than",
+  "also",
+  "can",
+  "will",
+  "step",
+  "topic",
+  "concept",
+  "shows",
+  "explains"
+]);
+
+function extractSubtitleKeywords(subtitle: string): string[] {
+  const words = subtitle
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length >= 3 && !SUBTITLE_ALIGNMENT_STOP_WORDS.has(word));
+  return Array.from(new Set(words)).slice(0, 16);
+}
+
+function extractSubtitleNumbers(subtitle: string): string[] {
+  const matches = subtitle.match(/-?\d+(?:\.\d+)?/g) ?? [];
+  return Array.from(new Set(matches));
+}
+
+function numericElementLabel(element: Record<string, unknown>): string | null {
+  const numeric = deriveNumericElementLabel(element);
+  if (numeric) {
+    return numeric;
+  }
+  const parsed = treeNodeNumericValue(element);
+  if (parsed === null) {
+    return null;
+  }
+  return numericValueToLabel(parsed);
+}
+
+function stepElementCorpus(step: GeminiCanvasStep): string {
+  const elements = step.canvas_instructions?.elements ?? [];
+  const fragments: string[] = [];
+  for (const element of elements) {
+    const raw = element as Record<string, unknown>;
+    const type = normalizeElementType(raw.type);
+    const label = asText(raw.label);
+    const animationRepresents = asText(asObject(raw.animation)?.represents);
+    const numeric = numericElementLabel(raw);
+    if (type) {
+      fragments.push(type.replace(/_/g, " "));
+    }
+    if (label) {
+      fragments.push(label.toLowerCase());
+    }
+    if (numeric) {
+      fragments.push(numeric.toLowerCase());
+    }
+    if (animationRepresents) {
+      fragments.push(animationRepresents.toLowerCase());
+    }
+  }
+  return fragments.join(" ");
+}
+
+function scoreSubtitleVisualAlignment(step: GeminiCanvasStep): number {
+  const elements = step.canvas_instructions?.elements ?? [];
+  if (elements.length === 0) {
+    return 0;
+  }
+
+  const subtitle = asText(step.subtitle).toLowerCase();
+  const keywords = extractSubtitleKeywords(subtitle);
+  const numbers = extractSubtitleNumbers(subtitle);
+  const corpus = stepElementCorpus(step);
+
+  const keywordHits = keywords.filter((keyword) => corpus.includes(keyword)).length;
+  const keywordCoverage = keywords.length > 0 ? keywordHits / keywords.length : 1;
+
+  const numericHits = numbers.filter((value) => {
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(^|[^0-9.-])${escaped}([^0-9.-]|$)`);
+    return regex.test(corpus);
+  }).length;
+  const numericCoverage = numbers.length > 0 ? numericHits / numbers.length : 1;
+
+  const types = new Set(
+    elements.map((element) => normalizeElementType((element as Record<string, unknown>).type))
+  );
+  const hasHighlight = elements.some((element) => {
+    const raw = element as Record<string, unknown>;
+    const color = normalizeHexColor(asText(raw.color), "").toLowerCase();
+    const animationType = normalizeAnimationType(asObject(raw.animation)?.type);
+    return color === "#ff6b35" || animationType === "highlight";
+  });
+  const hasMotion = elements.some((element) => {
+    const animationType = normalizeAnimationType(asObject((element as Record<string, unknown>).animation)?.type);
+    return animationType !== "none" && animationType !== "fade_in";
+  });
+
+  let cueScore = 1;
+  if (/(compare|comparison|between|versus|\bvs\b|swap)/i.test(subtitle)) {
+    cueScore *= hasHighlight ? 1 : 0.6;
+  }
+  if (/(insert|enqueue|push|add|move|shift|transition)/i.test(subtitle)) {
+    cueScore *= hasMotion ? 1 : 0.7;
+  }
+  if (/(tree|root|left|right|child|bst)/i.test(subtitle)) {
+    cueScore *= types.has("tree_node") ? 1 : 0.5;
+  }
+  if (/(sort|array|ascending|descending)/i.test(subtitle)) {
+    cueScore *= types.has("bar") ? 1 : 0.55;
+  }
+  if (/(regression|axis|plot|slope|intercept|point)/i.test(subtitle)) {
+    cueScore *= types.has("axis") && types.has("plot_point") ? 1 : 0.5;
+  }
+  if (/(matrix|confusion|true positive|false negative|tp|fp|fn|tn)/i.test(subtitle)) {
+    cueScore *= types.has("matrix") || types.has("rectangle") ? 1 : 0.6;
+  }
+  if (/(state|running|waiting|ready|terminated|transition|scheduler)/i.test(subtitle)) {
+    cueScore *= types.has("arrow") || types.has("line") ? 1 : 0.7;
+  }
+
+  const rawScore = keywordCoverage * 45 + numericCoverage * 35 + cueScore * 20;
+  return clamp(Math.round(rawScore), 0, 100);
+}
+
+function enforceSubtitleVisualAlignment(step: GeminiCanvasStep): GeminiCanvasStep {
+  const elements = (step.canvas_instructions?.elements ?? []).map((element) => ({
+    ...(element as Record<string, unknown>)
+  }));
+  if (elements.length === 0) {
+    return step;
+  }
+
+  const subtitle = asText(step.subtitle);
+  const focusPattern =
+    /(?:highlight|focus(?:ing)? on|consider|target|pivot|insert(?:ing)?|current(?:ly)?(?: value| node)?)[^\d-]*(-?\d+(?:\.\d+)?)/i;
+  const comparePattern =
+    /(?:compare|between|swap|versus|\bvs\b)[^\d-]*(-?\d+(?:\.\d+)?)[^\d-]+(-?\d+(?:\.\d+)?)/i;
+  const focusMatch = subtitle.match(focusPattern);
+  const compareMatch = subtitle.match(comparePattern);
+
+  const paintElement = (value: string, color: string) => {
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(^|[^0-9.-])${escaped}([^0-9.-]|$)`);
+    for (const element of elements) {
+      const label = asText(element.label);
+      const numeric = numericElementLabel(element);
+      if (regex.test(label) || (numeric ? regex.test(numeric) : false)) {
+        element.color = color;
+      }
+    }
+  };
+
+  if (focusMatch?.[1]) {
+    paintElement(focusMatch[1], "#FF6B35");
+  }
+  if (compareMatch?.[1] && compareMatch?.[2]) {
+    paintElement(compareMatch[1], "#FF6B35");
+    paintElement(compareMatch[2], "#00D4FF");
+  }
+
+  return {
+    ...step,
+    canvas_instructions: {
+      elements: elements as GeminiCanvasElement[]
+    }
+  };
+}
+
 function countStepPlaceholderLabels(step: GeminiCanvasStep): number {
   const placeholderLabelPattern =
     /^(text|rectangle|circle|ellipse|triangle|bar|matrix|axis|plot[_ ]?point|arrow|line|element|tree[_ ]?node)\s*\d*$/i;
@@ -1803,24 +2010,33 @@ function scoreStepQuality(step: GeminiCanvasStep): number {
   return clamp(score, 0, 100);
 }
 
-function shouldRegenerateStep(step: GeminiCanvasStep, score: number): boolean {
+function shouldRegenerateStep(step: GeminiCanvasStep, score: number, alignmentScore: number): boolean {
   const elements = step.canvas_instructions?.elements ?? [];
   const subtitleWords = asText(step.subtitle)
     .split(/\s+/)
     .filter((word) => word.length > 0).length;
+  const subtitleNumbers = extractSubtitleNumbers(asText(step.subtitle));
+  const lowNumericCoverage = subtitleNumbers.length > 0 && alignmentScore < 70;
   return (
     score < 55 ||
+    alignmentScore < 62 ||
     elements.length < 5 ||
     subtitleWords < 24 ||
+    lowNumericCoverage ||
     countStepPlaceholderLabels(step) > 0
   );
 }
 
 async function regenerateLowQualitySteps(topic: string, steps: GeminiCanvasStep[]): Promise<GeminiCanvasStep[]> {
-  const scored = steps.map((step, index) => ({ index, step, score: scoreStepQuality(step) }));
+  const scored = steps.map((step, index) => ({
+    index,
+    step,
+    score: scoreStepQuality(step),
+    alignmentScore: scoreSubtitleVisualAlignment(step)
+  }));
   const targets = scored
-    .filter((item) => shouldRegenerateStep(item.step, item.score))
-    .sort((a, b) => a.score - b.score)
+    .filter((item) => shouldRegenerateStep(item.step, item.score, item.alignmentScore))
+    .sort((a, b) => (a.alignmentScore + a.score) - (b.alignmentScore + b.score))
     .slice(0, 3);
 
   if (targets.length === 0) {
@@ -1846,6 +2062,9 @@ Requirements:
 - Every non-connector element must have a meaningful label.
 - No placeholder labels like "text 1", "circle 2", "tree_node 1".
 - Use only: tree_node, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, flowchart_diamond.
+- Build visuals from the subtitle sentence-by-sentence. Every key noun/value in subtitle must appear as a labeled element.
+- If subtitle includes numeric values, those same numeric values must appear in element labels/values.
+- If subtitle says compare/swap two values, highlight those exact values with contrasting colors and motion.
 - Ensure visuals match subtitle exactly.
 
 Current draft step JSON:
@@ -2722,6 +2941,10 @@ Fidelity rules:
 - Visuals must exactly match each subtitle.
 - If subtitle mentions a specific value/node being highlighted or compared, highlight that exact element in orange (#FF6B35).
 - If subtitle mentions comparison between two values, visually mark both values with contrasting highlight colors.
+- Subtitle-first contract: design visuals directly from subtitle content, not from generic templates.
+- For every subtitle sentence, include at least one corresponding visual relation (position, color, connection, or animation) that proves the sentence on canvas.
+- If subtitle references direction (left/right/up/down), data flow, insertion, comparison, swap, transition, or hierarchy, the canvas must show that exact behavior.
+- Do not reuse the same layout across steps; each step layout must reflect that step subtitle specifically.
 `.trim();
 
   const payload = await requestBedrockJson(simulationFormatPrompt, {
@@ -2754,17 +2977,19 @@ Fidelity rules:
   const validatedSteps = hasTreeNodes ? validateAndRepairBstSteps(generatedSteps) : generatedSteps;
   const labeledSteps = enforceMeaningfulElementLabels(topic, validatedSteps);
   const repairedSteps = applyTopicRepairs(labeledSteps);
-  const qualityImprovedSteps = await regenerateLowQualitySteps(topic, repairedSteps);
+  const alignedSteps = repairedSteps.map((step) => enforceSubtitleVisualAlignment(step));
+  const qualityImprovedSteps = await regenerateLowQualitySteps(topic, alignedSteps);
   const finalLabeledSteps = enforceMeaningfulElementLabels(topic, qualityImprovedSteps);
   const finalRepairedSteps = applyTopicRepairs(finalLabeledSteps);
+  const finalAlignedSteps = finalRepairedSteps.map((step) => enforceSubtitleVisualAlignment(step));
 
   try {
-    await saveSimulationS3Cache(topic, { steps: finalRepairedSteps });
+    await saveSimulationS3Cache(topic, { steps: finalAlignedSteps });
   } catch (error) {
     console.warn("[Simulation] Unable to cache generated steps to S3. Continuing without cache.", error);
   }
 
-  return { steps: finalRepairedSteps };
+  return { steps: finalAlignedSteps };
 }
 
 function toCanvasPercentX(x: number): number {
