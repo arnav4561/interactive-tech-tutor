@@ -1830,6 +1830,30 @@ function extractSubtitleKeywords(subtitle: string): string[] {
   return Array.from(new Set(words)).slice(0, 16);
 }
 
+function extractSubtitlePhrases(subtitle: string): string[] {
+  const chunks = subtitle
+    .split(/[.!?;:]+/)
+    .map((chunk) => chunk.trim())
+    .filter((chunk) => chunk.length > 0);
+  const phrases: string[] = [];
+  for (const chunk of chunks) {
+    const words = chunk
+      .split(/\s+/)
+      .map((word) => word.replace(/[^a-zA-Z0-9_-]/g, ""))
+      .filter((word) => word.length > 0);
+    if (words.length === 0) {
+      continue;
+    }
+    const meaningful = words.filter((word) => !SUBTITLE_ALIGNMENT_STOP_WORDS.has(word.toLowerCase()));
+    const source = meaningful.length >= 2 ? meaningful : words;
+    const phrase = source.slice(0, 6).join(" ");
+    if (phrase.length > 0) {
+      phrases.push(phrase);
+    }
+  }
+  return Array.from(new Set(phrases)).slice(0, 6);
+}
+
 function extractSubtitleNumbers(subtitle: string): string[] {
   const matches = subtitle.match(/-?\d+(?:\.\d+)?/g) ?? [];
   return Array.from(new Set(matches));
@@ -2006,6 +2030,25 @@ function scoreStepQuality(step: GeminiCanvasStep): number {
   score += Math.min(20, uniqueTypes * 5);
   score += Math.min(20, Math.floor(subtitleWords / 3));
   score -= Math.min(25, placeholderCount * 6);
+  const lowSignalLabels = elements.reduce((count, element) => {
+    const type = normalizeElementType((element as Record<string, unknown>).type);
+    if (isConnectorElementType(type)) {
+      return count;
+    }
+    const label = asText((element as Record<string, unknown>).label).trim();
+    if (!label) {
+      return count + 1;
+    }
+    if (/^-?\d+(?:\.\d+)?$/.test(label)) {
+      return count;
+    }
+    const words = label.split(/\s+/).filter(Boolean);
+    if (words.length <= 1) {
+      return count + 1;
+    }
+    return count;
+  }, 0);
+  score -= Math.min(20, lowSignalLabels * 4);
 
   return clamp(score, 0, 100);
 }
@@ -2014,7 +2057,7 @@ function isConnectorElementType(type: string): boolean {
   return type === "arrow" || type === "line" || type === "dashed_line" || type === "curved_arrow";
 }
 
-function ensureRenderableElementsForStep(step: GeminiCanvasStep): GeminiCanvasStep {
+function ensureRenderableElementsForStep(topic: string, step: GeminiCanvasStep): GeminiCanvasStep {
   const currentElements = (step.canvas_instructions?.elements ?? []).map((element) => ({
     ...(element as Record<string, unknown>)
   })) as GeminiCanvasElement[];
@@ -2034,7 +2077,21 @@ function ensureRenderableElementsForStep(step: GeminiCanvasStep): GeminiCanvasSt
     const type = normalizeElementType((element as Record<string, unknown>).type);
     return type !== "text" && !isConnectorElementType(type);
   }).length;
-  if (trimmedElements.length >= 5 && informativeVisualCount >= 2) {
+  const lowSignalCount = trimmedElements.reduce((count, element) => {
+    const type = normalizeElementType((element as Record<string, unknown>).type);
+    if (isConnectorElementType(type)) {
+      return count;
+    }
+    const label = asText((element as Record<string, unknown>).label).trim();
+    if (!label) {
+      return count + 1;
+    }
+    if (/^-?\d+(?:\.\d+)?$/.test(label)) {
+      return count;
+    }
+    return label.split(/\s+/).filter(Boolean).length <= 1 ? count + 1 : count;
+  }, 0);
+  if (trimmedElements.length >= 5 && informativeVisualCount >= 2 && lowSignalCount <= 2) {
     return {
       ...step,
       canvas_instructions: {
@@ -2043,16 +2100,17 @@ function ensureRenderableElementsForStep(step: GeminiCanvasStep): GeminiCanvasSt
     };
   }
 
-  const keywords = extractSubtitleKeywords(step.subtitle).slice(0, 5);
+  const phrases = extractSubtitlePhrases(step.subtitle);
+  const keywords = extractSubtitleKeywords(step.subtitle).slice(0, 6);
   const subtitleNumbers = extractSubtitleNumbers(step.subtitle).slice(0, 5);
-  const fallbackWords = step.concept
+  const fallbackWords = `${topic} ${step.concept}`
     .toLowerCase()
     .split(/\s+/)
-    .filter((word) => word.length > 2)
+    .filter((word) => word.length > 2 && !SUBTITLE_ALIGNMENT_STOP_WORDS.has(word))
     .slice(0, 5);
-  const labels = (keywords.length > 0 ? keywords : fallbackWords).slice(0, 5);
+  const labels = (phrases.length > 0 ? phrases : keywords.length > 0 ? keywords : fallbackWords).slice(0, 5);
   if (labels.length === 0) {
-    labels.push("concept", "flow", "state");
+    labels.push("core concept", "key relation", "next transition");
   }
 
   const palette = ["#4A90E2", "#00D4FF", "#8B5CF6", "#4CAF50", "#FF6B35"];
@@ -2071,7 +2129,7 @@ function ensureRenderableElementsForStep(step: GeminiCanvasStep): GeminiCanvasSt
     width: 22,
     height: 13,
     color: palette[index % palette.length],
-    label: label.slice(0, 28),
+    label: label.slice(0, 42),
     label_position: "above",
     animation: {
       type: "fade_in",
@@ -2133,7 +2191,7 @@ function ensureRenderableElementsForStep(step: GeminiCanvasStep): GeminiCanvasSt
       width: 12,
       height: 5,
       color: "#d9e6ff",
-      label: (labels[synthesized.length % labels.length] || "concept").slice(0, 20),
+      label: (labels[synthesized.length % labels.length] || "concept detail").slice(0, 36),
       label_position: "right",
       animation: {
         type: "fade_in",
@@ -2144,16 +2202,34 @@ function ensureRenderableElementsForStep(step: GeminiCanvasStep): GeminiCanvasSt
     });
   }
 
+  const merged = [...trimmedElements, ...synthesized];
+  const deduped = merged.filter((element, index) => {
+    const type = normalizeElementType((element as Record<string, unknown>).type);
+    const label = asText((element as Record<string, unknown>).label).toLowerCase().trim();
+    const x = Number((element as Record<string, unknown>).x);
+    const y = Number((element as Record<string, unknown>).y);
+    return !merged.some((other, otherIndex) => {
+      if (otherIndex >= index) {
+        return false;
+      }
+      const otherType = normalizeElementType((other as Record<string, unknown>).type);
+      const otherLabel = asText((other as Record<string, unknown>).label).toLowerCase().trim();
+      const otherX = Number((other as Record<string, unknown>).x);
+      const otherY = Number((other as Record<string, unknown>).y);
+      return otherType === type && otherLabel === label && Math.abs(otherX - x) < 1 && Math.abs(otherY - y) < 1;
+    });
+  });
+
   return {
     ...step,
     canvas_instructions: {
-      elements: synthesized
+      elements: deduped.slice(0, 24)
     }
   };
 }
 
-function ensureRenderableElementsFromSubtitle(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
-  return steps.map((step) => ensureRenderableElementsForStep(step));
+function ensureRenderableElementsFromSubtitle(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  return steps.map((step) => ensureRenderableElementsForStep(topic, step));
 }
 
 function shouldRegenerateStep(step: GeminiCanvasStep, score: number, alignmentScore: number): boolean {
@@ -2162,6 +2238,20 @@ function shouldRegenerateStep(step: GeminiCanvasStep, score: number, alignmentSc
     .split(/\s+/)
     .filter((word) => word.length > 0).length;
   const subtitleNumbers = extractSubtitleNumbers(asText(step.subtitle));
+  const lowSignalLabels = (step.canvas_instructions?.elements ?? []).reduce((count, element) => {
+    const type = normalizeElementType((element as Record<string, unknown>).type);
+    if (isConnectorElementType(type)) {
+      return count;
+    }
+    const label = asText((element as Record<string, unknown>).label).trim();
+    if (!label) {
+      return count + 1;
+    }
+    if (/^-?\d+(?:\.\d+)?$/.test(label)) {
+      return count;
+    }
+    return label.split(/\s+/).filter(Boolean).length <= 1 ? count + 1 : count;
+  }, 0);
   const lowNumericCoverage = subtitleNumbers.length > 0 && alignmentScore < 70;
   return (
     score < 55 ||
@@ -2169,6 +2259,7 @@ function shouldRegenerateStep(step: GeminiCanvasStep, score: number, alignmentSc
     elements.length < 5 ||
     subtitleWords < 24 ||
     lowNumericCoverage ||
+    lowSignalLabels > 2 ||
     countStepPlaceholderLabels(step) > 0
   );
 }
@@ -3218,7 +3309,7 @@ Fidelity rules:
   const finalLabeledSteps = enforceMeaningfulElementLabels(topic, qualityImprovedSteps);
   const finalRepairedSteps = applyTopicRepairs(finalLabeledSteps);
   const finalAlignedSteps = finalRepairedSteps.map((step) => enforceSubtitleVisualAlignment(step));
-  const finalRenderableSteps = ensureRenderableElementsFromSubtitle(finalAlignedSteps);
+  const finalRenderableSteps = ensureRenderableElementsFromSubtitle(topic, finalAlignedSteps);
 
   try {
     await saveSimulationS3Cache(topic, { steps: finalRenderableSteps });
