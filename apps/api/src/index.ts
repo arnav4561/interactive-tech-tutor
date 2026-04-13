@@ -1848,6 +1848,120 @@ function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): G
   });
 }
 
+function applyTopicRepairs(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  const regressionRepairedSteps = repairRegressionSteps(topic, steps);
+  const osRepairedSteps = repairOsSchedulingSteps(topic, regressionRepairedSteps);
+  return repairConfusionMatrixSteps(topic, osRepairedSteps);
+}
+
+function countStepPlaceholderLabels(step: GeminiCanvasStep): number {
+  const placeholderLabelPattern =
+    /^(text|rectangle|circle|ellipse|triangle|bar|matrix|axis|plot[_ ]?point|arrow|line|element|tree[_ ]?node)\s*\d*$/i;
+  return (step.canvas_instructions?.elements ?? []).reduce((count, element) => {
+    const label = asText((element as Record<string, unknown>).label);
+    if (!label || placeholderLabelPattern.test(label)) {
+      return count + 1;
+    }
+    return count;
+  }, 0);
+}
+
+function scoreStepQuality(step: GeminiCanvasStep): number {
+  const elements = step.canvas_instructions?.elements ?? [];
+  const elementCount = elements.length;
+  const uniqueTypes = new Set(
+    elements.map((element) => normalizeElementType((element as Record<string, unknown>).type))
+  ).size;
+  const placeholderCount = countStepPlaceholderLabels(step);
+  const subtitleWords = asText(step.subtitle)
+    .split(/\s+/)
+    .filter((word) => word.length > 0).length;
+
+  let score = 0;
+  score += Math.min(40, elementCount * 6);
+  score += Math.min(20, uniqueTypes * 5);
+  score += Math.min(20, Math.floor(subtitleWords / 3));
+  score -= Math.min(25, placeholderCount * 6);
+
+  return clamp(score, 0, 100);
+}
+
+function shouldRegenerateStep(step: GeminiCanvasStep, score: number): boolean {
+  const elements = step.canvas_instructions?.elements ?? [];
+  const subtitleWords = asText(step.subtitle)
+    .split(/\s+/)
+    .filter((word) => word.length > 0).length;
+  return (
+    score < 55 ||
+    elements.length < 5 ||
+    subtitleWords < 24 ||
+    countStepPlaceholderLabels(step) > 0
+  );
+}
+
+async function regenerateLowQualitySteps(topic: string, steps: GeminiCanvasStep[]): Promise<GeminiCanvasStep[]> {
+  const scored = steps.map((step, index) => ({ index, step, score: scoreStepQuality(step) }));
+  const targets = scored
+    .filter((item) => shouldRegenerateStep(item.step, item.score))
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 3);
+
+  if (targets.length === 0) {
+    return steps;
+  }
+
+  const nextSteps = [...steps];
+  for (const target of targets) {
+    const current = nextSteps[target.index];
+    const improvePrompt = `
+You are improving one low-quality simulation step.
+Topic: ${topic}
+Current step number: ${current.step}
+Current concept: ${current.concept}
+Current subtitle: ${current.subtitle}
+
+Requirements:
+- Return exactly one improved step in JSON.
+- Keep the same step number and concept.
+- Subtitle must be 3-4 complete beginner-friendly sentences.
+- Include duration_ms using word_count * 400 (min 12000, max 35000).
+- Include at least 5 elements.
+- Every non-connector element must have a meaningful label.
+- No placeholder labels like "text 1", "circle 2", "tree_node 1".
+- Use only: tree_node, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, flowchart_diamond.
+- Ensure visuals match subtitle exactly.
+
+Current draft step JSON:
+${JSON.stringify(current)}
+`.trim();
+
+    try {
+      const payload = await requestBedrockJson(improvePrompt, {
+        useCache: false,
+        saveCache: false,
+        maxTokens: 2400,
+        temperature: 0.1
+      });
+      const payloadObject = asObject(payload);
+      const payloadSteps = payloadObject && Array.isArray(payloadObject.steps) ? payloadObject.steps : null;
+      const rawStep = (payloadObject?.step ?? (payloadSteps ? payloadSteps[0] : undefined) ?? payload) as unknown;
+      const parsed = simCanvasStepSchema.safeParse(normalizeCanvasStep(rawStep, target.index));
+      if (!parsed.success) {
+        continue;
+      }
+      const improved = parsed.data;
+      const improvedScore = scoreStepQuality(improved);
+      if (improvedScore > target.score) {
+        nextSteps[target.index] = improved;
+      }
+    } catch (_error) {
+      // Keep original step if targeted regeneration fails.
+    }
+  }
+
+  return nextSteps;
+}
+
 function enforceMeaningfulElementLabels(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
   const placeholderLabelPattern =
     /^(text|rectangle|circle|ellipse|triangle|bar|matrix|axis|plot[_ ]?point|arrow|line|element|tree[_ ]?node)\s*\d*$/i;
@@ -2734,17 +2848,18 @@ Fidelity rules:
     ? validateAndRepairBstSteps(generatedSteps)
     : generatedSteps;
   const labeledSteps = enforceMeaningfulElementLabels(topic, validatedSteps);
-  const regressionRepairedSteps = repairRegressionSteps(topic, labeledSteps);
-  const osRepairedSteps = repairOsSchedulingSteps(topic, regressionRepairedSteps);
-  const repairedSteps = repairConfusionMatrixSteps(topic, osRepairedSteps);
+  const repairedSteps = applyTopicRepairs(topic, labeledSteps);
+  const qualityImprovedSteps = await regenerateLowQualitySteps(topic, repairedSteps);
+  const finalLabeledSteps = enforceMeaningfulElementLabels(topic, qualityImprovedSteps);
+  const finalRepairedSteps = applyTopicRepairs(topic, finalLabeledSteps);
 
   try {
-    await saveSimulationS3Cache(topic, { steps: repairedSteps });
+    await saveSimulationS3Cache(topic, { steps: finalRepairedSteps });
   } catch (error) {
     console.warn("[Simulation] Unable to cache generated steps to S3. Continuing without cache.", error);
   }
 
-  return { steps: repairedSteps };
+  return { steps: finalRepairedSteps };
 }
 
 function toCanvasPercentX(x: number): number {
