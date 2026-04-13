@@ -62,7 +62,7 @@ function isAllowedOrigin(origin: string): boolean {
   }
   return wildcardOriginRegexes.some((pattern) => pattern.test(origin));
 }
-const CACHE_VERSION = process.env.CACHE_VERSION?.trim() || "2";
+const CACHE_VERSION = process.env.CACHE_VERSION?.trim() || "3";
 const SIMULATION_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const SIMULATION_CACHE_SCHEMA_VERSION = `canvas-json-v3::v${CACHE_VERSION}`;
 const bedrockRegion = process.env.AWS_BEDROCK_REGION?.trim() || process.env.AWS_REGION?.trim() || "us-west-2";
@@ -2019,7 +2019,7 @@ function shouldRegenerateStep(step: GeminiCanvasStep, score: number, alignmentSc
   const lowNumericCoverage = subtitleNumbers.length > 0 && alignmentScore < 70;
   return (
     score < 55 ||
-    alignmentScore < 62 ||
+    alignmentScore < 76 ||
     elements.length < 5 ||
     subtitleWords < 24 ||
     lowNumericCoverage ||
@@ -2036,8 +2036,7 @@ async function regenerateLowQualitySteps(topic: string, steps: GeminiCanvasStep[
   }));
   const targets = scored
     .filter((item) => shouldRegenerateStep(item.step, item.score, item.alignmentScore))
-    .sort((a, b) => (a.alignmentScore + a.score) - (b.alignmentScore + b.score))
-    .slice(0, 3);
+    .sort((a, b) => (a.alignmentScore + a.score) - (b.alignmentScore + b.score));
 
   if (targets.length === 0) {
     return steps;
@@ -2096,6 +2095,92 @@ ${JSON.stringify(current)}
   }
 
   return nextSteps;
+}
+
+async function alignSimulationStepsToSubtitles(
+  topic: string,
+  steps: GeminiCanvasStep[]
+): Promise<GeminiCanvasStep[]> {
+  if (steps.length === 0) {
+    return steps;
+  }
+
+  const outline = steps.map((step) => ({
+    step: step.step,
+    concept: step.concept,
+    subtitle: step.subtitle,
+    duration_ms: step.duration_ms ?? 16000
+  }));
+
+  const prompt = `
+You are a subtitle-grounded simulation visualizer.
+Topic: ${topic}
+
+Given this exact step outline:
+${JSON.stringify(outline)}
+
+Return ONLY valid JSON:
+{
+  "steps": [
+    {
+      "step": 1,
+      "concept": "must match outline exactly",
+      "subtitle": "must match outline exactly",
+      "duration_ms": 16000,
+      "canvas_instructions": {
+        "elements": []
+      }
+    }
+  ]
+}
+
+Hard requirements:
+- Keep step count exactly ${steps.length}.
+- Keep each step number, concept, subtitle, and duration_ms exactly as provided.
+- Generate ONLY canvas_instructions.elements for each step.
+- Each step must have at least 5 elements.
+- Visuals must be directly derived from that step subtitle, not from generic templates.
+- Every numeric value mentioned in subtitle must appear in element labels/values.
+- If subtitle describes compare/swap/insert/highlight, show that exact action visually.
+- Use only: tree_node, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, flowchart_diamond.
+- No placeholder labels like "text 1", "rectangle 2", "node 1".
+- Output only JSON and nothing else.
+`.trim();
+
+  try {
+    const payload = await requestBedrockJson(prompt, {
+      useCache: false,
+      saveCache: false,
+      maxTokens: 8000,
+      temperature: 0
+    });
+    const candidates = extractStepCandidates(payload);
+    if (!candidates.length) {
+      return steps;
+    }
+
+    const alignedSteps = steps.map((original, index) => {
+      const parsed = simCanvasStepSchema.safeParse(normalizeCanvasStep(candidates[index], index));
+      if (!parsed.success) {
+        return original;
+      }
+      const generated = parsed.data;
+      const generatedElements = generated.canvas_instructions?.elements ?? [];
+      if (generatedElements.length < 5) {
+        return original;
+      }
+      return {
+        ...original,
+        canvas_instructions: {
+          elements: generatedElements
+        }
+      };
+    });
+
+    return alignedSteps;
+  } catch (_error) {
+    return steps;
+  }
 }
 
 function enforceMeaningfulElementLabels(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
@@ -2949,7 +3034,7 @@ Fidelity rules:
 
   const payload = await requestBedrockJson(simulationFormatPrompt, {
     topicKey: topic,
-    useCache: true,
+    useCache: false,
     saveCache: false,
     maxTokens: 8000,
     temperature: 0
@@ -2977,7 +3062,10 @@ Fidelity rules:
   const validatedSteps = hasTreeNodes ? validateAndRepairBstSteps(generatedSteps) : generatedSteps;
   const labeledSteps = enforceMeaningfulElementLabels(topic, validatedSteps);
   const repairedSteps = applyTopicRepairs(labeledSteps);
-  const alignedSteps = repairedSteps.map((step) => enforceSubtitleVisualAlignment(step));
+  const modelAlignedSteps = await alignSimulationStepsToSubtitles(topic, repairedSteps);
+  const postModelAlignedLabeledSteps = enforceMeaningfulElementLabels(topic, modelAlignedSteps);
+  const postModelAlignedRepairedSteps = applyTopicRepairs(postModelAlignedLabeledSteps);
+  const alignedSteps = postModelAlignedRepairedSteps.map((step) => enforceSubtitleVisualAlignment(step));
   const qualityImprovedSteps = await regenerateLowQualitySteps(topic, alignedSteps);
   const finalLabeledSteps = enforceMeaningfulElementLabels(topic, qualityImprovedSteps);
   const finalRepairedSteps = applyTopicRepairs(finalLabeledSteps);
