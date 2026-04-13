@@ -2057,173 +2057,200 @@ function isConnectorElementType(type: string): boolean {
   return type === "arrow" || type === "line" || type === "dashed_line" || type === "curved_arrow";
 }
 
+function compressElementLabel(raw: string, fallback: string): string {
+  const cleaned = raw
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[^a-zA-Z0-9+\-_/().%\s]/g, "");
+  if (!cleaned) {
+    return fallback;
+  }
+  if (/^-?\d+(?:\.\d+)?$/.test(cleaned)) {
+    return cleaned;
+  }
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (words.length <= 4) {
+    return cleaned.slice(0, 42);
+  }
+  return words.slice(0, 4).join(" ").slice(0, 42);
+}
+
+function inferStepVisualFamily(topic: string, step: GeminiCanvasStep): "activation" | "plot" | "matrix" | "tree" | "sorting" | "flow" {
+  const text = `${topic} ${step.concept} ${step.subtitle}`.toLowerCase();
+  if (/(softmax|sigmoid|relu|activation|probability|logit|normalize|normalization)/.test(text)) {
+    return "activation";
+  }
+  if (/(regression|plot|slope|intercept|axis|curve|function|distribution)/.test(text)) {
+    return "plot";
+  }
+  if (/(matrix|confusion|grid|table|tp|fp|fn|tn)/.test(text)) {
+    return "matrix";
+  }
+  if (/(tree|bst|binary search tree|root|child|left subtree|right subtree)/.test(text)) {
+    return "tree";
+  }
+  if (/(sort|array|swap|bubble|quick|merge|insertion sort|selection sort)/.test(text)) {
+    return "sorting";
+  }
+  return "flow";
+}
+
+function buildFamilyFallbackElements(topic: string, step: GeminiCanvasStep): GeminiCanvasElement[] {
+  const family = inferStepVisualFamily(topic, step);
+  const nums = extractSubtitleNumbers(step.subtitle).map((n) => Number.parseFloat(n)).filter((n) => Number.isFinite(n));
+  const numbers = nums.length >= 3 ? nums.slice(0, 6) : [2, 1, 0];
+  if (family === "activation") {
+    const maxValue = Math.max(...numbers.map((n) => Math.abs(n)), 1);
+    return [
+      { type: "rectangle", x: 12, y: 18, width: 20, height: 10, color: "#4A90E2", label: "Input logits", label_position: "above" },
+      { type: "rectangle", x: 40, y: 18, width: 20, height: 10, color: "#8B5CF6", label: "Exponential", label_position: "above" },
+      { type: "rectangle", x: 68, y: 18, width: 20, height: 10, color: "#00D4FF", label: "Normalize sum", label_position: "above" },
+      { type: "arrow", x1: 32, y1: 23, x2: 40, y2: 23, width: 1, height: 1, color: "#9db2ce", label: "", label_position: "above" },
+      { type: "arrow", x1: 60, y1: 23, x2: 68, y2: 23, width: 1, height: 1, color: "#9db2ce", label: "", label_position: "above" },
+      ...numbers.slice(0, 3).map((value, index) => ({
+        type: "bar" as const,
+        x: 18 + index * 12,
+        y: 85,
+        width: 8,
+        height: Math.max(10, (Math.abs(value) / maxValue) * 60),
+        color: index === 0 ? "#FF6B35" : "#4A90E2",
+        label: String(value),
+        label_position: "above",
+        animation: {
+          type: "fade_in" as const,
+          duration: 700 + index * 120,
+          direction: "none",
+          represents: "shows logit contribution"
+        }
+      }))
+    ] as GeminiCanvasElement[];
+  }
+  if (family === "plot") {
+    const points = numbers.length >= 4 ? numbers : [1, 2, 3, 4];
+    return [
+      { type: "axis", x: 16, y: 20, width: 68, height: 58, color: "#9dc3ff", label: "x-y axes", label_position: "above" },
+      ...points.slice(0, 4).map((_, index) => ({
+        type: "plot_point" as const,
+        x: 26 + index * 14,
+        y: clamp(62 - points[index] * 4, 24, 70),
+        width: 3,
+        height: 3,
+        color: index === 1 ? "#FF6B35" : "#00D4FF",
+        label: `P${index + 1}`,
+        label_position: "above"
+      })),
+      { type: "line", x1: 24, y1: 62, x2: 78, y2: 38, width: 1, height: 1, color: "#8B5CF6", label: "", label_position: "above" }
+    ] as GeminiCanvasElement[];
+  }
+  if (family === "matrix") {
+    return [
+      { type: "rectangle", x: 30, y: 35, width: 20, height: 18, color: "#22c55e", label: "TP", label_position: "above" },
+      { type: "rectangle", x: 55, y: 35, width: 20, height: 18, color: "#1E3A5F", label: "FP", label_position: "above" },
+      { type: "rectangle", x: 30, y: 58, width: 20, height: 18, color: "#1E3A5F", label: "FN", label_position: "above" },
+      { type: "rectangle", x: 55, y: 58, width: 20, height: 18, color: "#1E3A5F", label: "TN", label_position: "above" },
+      { type: "text", x: 12, y: 10, width: 32, height: 6, color: "#d9e6ff", label: "Confusion matrix", label_position: "right" }
+    ] as GeminiCanvasElement[];
+  }
+  if (family === "tree") {
+    return [
+      { type: "tree_node", x: 50, y: 12, width: 10, height: 10, color: "#4A90E2", label: "50", value: 50, parent_value: null, label_position: "below" },
+      { type: "tree_node", x: 25, y: 30, width: 10, height: 10, color: "#4A90E2", label: "30", value: 30, parent_value: 50, label_position: "below" },
+      { type: "tree_node", x: 75, y: 30, width: 10, height: 10, color: "#4A90E2", label: "70", value: 70, parent_value: 50, label_position: "below" },
+      { type: "tree_node", x: 12, y: 50, width: 10, height: 10, color: "#FF6B35", label: "20", value: 20, parent_value: 30, label_position: "below" },
+      { type: "tree_node", x: 38, y: 50, width: 10, height: 10, color: "#4A90E2", label: "40", value: 40, parent_value: 30, label_position: "below" }
+    ] as GeminiCanvasElement[];
+  }
+  if (family === "sorting") {
+    const arr = numbers.length >= 5 ? numbers.slice(0, 5) : [5, 3, 8, 1, 4];
+    const maxValue = Math.max(...arr.map((n) => Math.abs(n)), 1);
+    return arr.map((value, index) => ({
+      type: "bar",
+      x: 12 + index * 14,
+      y: 85,
+      width: 10,
+      height: Math.max(8, (Math.abs(value) / maxValue) * 60),
+      color: index < 2 ? "#FF6B35" : "#4A90E2",
+      label: String(value),
+      label_position: "above",
+      animation: index < 2
+        ? {
+            type: "swap",
+            duration: 900,
+            direction: "none",
+            represents: "swap compared values",
+            with: { x: 12 + (1 - index) * 14, y: 85 }
+          }
+        : {
+            type: "fade_in",
+            duration: 700,
+            direction: "none",
+            represents: "value in array"
+          }
+    })) as GeminiCanvasElement[];
+  }
+  const phrases = extractSubtitlePhrases(step.subtitle);
+  const labels = (phrases.length > 0 ? phrases : [step.concept, "Key relation", "Outcome"])
+    .map((label) => compressElementLabel(label, "Concept"))
+    .slice(0, 4);
+  return [
+    { type: "rectangle", x: 14, y: 26, width: 24, height: 12, color: "#4A90E2", label: labels[0] || "Input", label_position: "above" },
+    { type: "rectangle", x: 44, y: 26, width: 24, height: 12, color: "#00D4FF", label: labels[1] || "Process", label_position: "above" },
+    { type: "rectangle", x: 74, y: 26, width: 18, height: 12, color: "#8B5CF6", label: labels[2] || "Output", label_position: "above" },
+    { type: "arrow", x1: 38, y1: 32, x2: 44, y2: 32, width: 1, height: 1, color: "#9db2ce", label: "", label_position: "above" },
+    { type: "arrow", x1: 68, y1: 32, x2: 74, y2: 32, width: 1, height: 1, color: "#9db2ce", label: "", label_position: "above" },
+    { type: "text", x: 16, y: 12, width: 28, height: 6, color: "#d9e6ff", label: labels[3] || "Main idea", label_position: "right" }
+  ] as GeminiCanvasElement[];
+}
+
 function ensureRenderableElementsForStep(topic: string, step: GeminiCanvasStep): GeminiCanvasStep {
   const currentElements = (step.canvas_instructions?.elements ?? []).map((element) => ({
     ...(element as Record<string, unknown>)
   })) as GeminiCanvasElement[];
-  const trimmedElements = currentElements.map((element) => {
-    const clone = { ...(element as Record<string, unknown>) };
-    const type = normalizeElementType(clone.type);
-    if (type === "text") {
-      const label = asText(clone.label);
-      if (label.length > 160) {
-        clone.label = label.slice(0, 160);
-      }
-    }
-    return clone as GeminiCanvasElement;
-  });
 
-  const informativeVisualCount = trimmedElements.filter((element) => {
+  const sanitized = currentElements
+    .flatMap((element, index) => {
+      const next = { ...(element as Record<string, unknown>) };
+      const type = normalizeElementType(next.type);
+      const rawLabel = asText(next.label);
+
+      if (type === "text" && rawLabel.length > 180) {
+        return [];
+      }
+
+      if (isConnectorElementType(type)) {
+        next.label = "";
+      } else {
+        next.label = compressElementLabel(rawLabel, `${type.replace(/_/g, " ")} ${index + 1}`);
+      }
+
+      if (type === "plot_point") {
+        next.width = Math.min(4, Math.max(2, Number(next.width) || 3));
+        next.height = Math.min(4, Math.max(2, Number(next.height) || 3));
+      }
+
+      return [next as GeminiCanvasElement];
+    })
+    .slice(0, 30);
+
+  const informativeVisualCount = sanitized.filter((element) => {
     const type = normalizeElementType((element as Record<string, unknown>).type);
     return type !== "text" && !isConnectorElementType(type);
   }).length;
-  const lowSignalCount = trimmedElements.reduce((count, element) => {
-    const type = normalizeElementType((element as Record<string, unknown>).type);
-    if (isConnectorElementType(type)) {
-      return count;
-    }
-    const label = asText((element as Record<string, unknown>).label).trim();
-    if (!label) {
-      return count + 1;
-    }
-    if (/^-?\d+(?:\.\d+)?$/.test(label)) {
-      return count;
-    }
-    return label.split(/\s+/).filter(Boolean).length <= 1 ? count + 1 : count;
-  }, 0);
-  if (trimmedElements.length >= 5 && informativeVisualCount >= 2 && lowSignalCount <= 2) {
+
+  if (sanitized.length >= 5 && informativeVisualCount >= 3) {
     return {
       ...step,
       canvas_instructions: {
-        elements: trimmedElements
+        elements: sanitized
       }
     };
   }
 
-  const phrases = extractSubtitlePhrases(step.subtitle);
-  const keywords = extractSubtitleKeywords(step.subtitle).slice(0, 6);
-  const subtitleNumbers = extractSubtitleNumbers(step.subtitle).slice(0, 5);
-  const fallbackWords = `${topic} ${step.concept}`
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((word) => word.length > 2 && !SUBTITLE_ALIGNMENT_STOP_WORDS.has(word))
-    .slice(0, 5);
-  const labels = (phrases.length > 0 ? phrases : keywords.length > 0 ? keywords : fallbackWords).slice(0, 5);
-  if (labels.length === 0) {
-    labels.push("core concept", "key relation", "next transition");
-  }
-
-  const palette = ["#4A90E2", "#00D4FF", "#8B5CF6", "#4CAF50", "#FF6B35"];
-  const cardPositions = [
-    { x: 14, y: 24 },
-    { x: 42, y: 24 },
-    { x: 70, y: 24 },
-    { x: 28, y: 54 },
-    { x: 56, y: 54 }
-  ];
-
-  const synthesized: GeminiCanvasElement[] = labels.map((label, index) => ({
-    type: "rectangle",
-    x: cardPositions[index % cardPositions.length].x,
-    y: cardPositions[index % cardPositions.length].y,
-    width: 22,
-    height: 13,
-    color: palette[index % palette.length],
-    label: label.slice(0, 42),
-    label_position: "above",
-    animation: {
-      type: "fade_in",
-      duration: 700 + index * 120,
-      direction: "none",
-      represents: `shows ${label} from subtitle`
-    }
-  }));
-
-  for (let index = 0; index < Math.max(0, labels.length - 1); index += 1) {
-    const from = cardPositions[index % cardPositions.length];
-    const to = cardPositions[(index + 1) % cardPositions.length];
-    synthesized.push({
-      type: "arrow",
-      x1: from.x + 20,
-      y1: from.y + 6,
-      x2: to.x,
-      y2: to.y + 6,
-      width: 1,
-      height: 1,
-      color: "#9db2ce",
-      label: "",
-      label_position: "above",
-      animation: {
-        type: "draw",
-        duration: 800,
-        direction: "left_to_right",
-        represents: "shows relation between subtitle concepts"
-      }
-    });
-  }
-
-  if (subtitleNumbers.length > 0) {
-    subtitleNumbers.forEach((value, index) => {
-      synthesized.push({
-        type: "circle",
-        x: clamp(18 + index * 16, 12, 88),
-        y: 82,
-        width: 8,
-        height: 8,
-        color: index === 0 ? "#FF6B35" : "#4A90E2",
-        label: value,
-        label_position: "below",
-        animation: {
-          type: "scale_up",
-          duration: 700,
-          direction: "none",
-          represents: `shows numeric value ${value} referenced in subtitle`
-        }
-      });
-    });
-  }
-
-  while (synthesized.length < 5) {
-    synthesized.push({
-      type: "text",
-      x: 12 + synthesized.length * 14,
-      y: 84,
-      width: 12,
-      height: 5,
-      color: "#d9e6ff",
-      label: (labels[synthesized.length % labels.length] || "concept detail").slice(0, 36),
-      label_position: "right",
-      animation: {
-        type: "fade_in",
-        duration: 700,
-        direction: "none",
-        represents: "reinforces subtitle term"
-      }
-    });
-  }
-
-  const merged = [...trimmedElements, ...synthesized];
-  const deduped = merged.filter((element, index) => {
-    const type = normalizeElementType((element as Record<string, unknown>).type);
-    const label = asText((element as Record<string, unknown>).label).toLowerCase().trim();
-    const x = Number((element as Record<string, unknown>).x);
-    const y = Number((element as Record<string, unknown>).y);
-    return !merged.some((other, otherIndex) => {
-      if (otherIndex >= index) {
-        return false;
-      }
-      const otherType = normalizeElementType((other as Record<string, unknown>).type);
-      const otherLabel = asText((other as Record<string, unknown>).label).toLowerCase().trim();
-      const otherX = Number((other as Record<string, unknown>).x);
-      const otherY = Number((other as Record<string, unknown>).y);
-      return otherType === type && otherLabel === label && Math.abs(otherX - x) < 1 && Math.abs(otherY - y) < 1;
-    });
-  });
-
+  const fallbackElements = buildFamilyFallbackElements(topic, step);
   return {
     ...step,
     canvas_instructions: {
-      elements: deduped.slice(0, 24)
+      elements: fallbackElements
     }
   };
 }
@@ -2254,12 +2281,12 @@ function shouldRegenerateStep(step: GeminiCanvasStep, score: number, alignmentSc
   }, 0);
   const lowNumericCoverage = subtitleNumbers.length > 0 && alignmentScore < 70;
   return (
-    score < 55 ||
-    alignmentScore < 76 ||
+    score < 68 ||
+    alignmentScore < 82 ||
     elements.length < 5 ||
     subtitleWords < 24 ||
     lowNumericCoverage ||
-    lowSignalLabels > 2 ||
+    lowSignalLabels > 1 ||
     countStepPlaceholderLabels(step) > 0
   );
 }
@@ -2294,13 +2321,19 @@ Requirements:
 - Keep the same step number and concept.
 - Subtitle must be 3-4 complete beginner-friendly sentences.
 - Include duration_ms using word_count * 400 (min 12000, max 35000).
-- Include at least 5 elements.
+- Include 6-10 elements.
 - Every non-connector element must have a meaningful label.
 - No placeholder labels like "text 1", "circle 2", "tree_node 1".
 - Use only: tree_node, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, flowchart_diamond.
 - Build visuals from the subtitle sentence-by-sentence. Every key noun/value in subtitle must appear as a labeled element.
+- Non-text labels must be concise (max 4 words). Avoid sentence fragments in shape labels.
 - If subtitle includes numeric values, those same numeric values must appear in element labels/values.
 - If subtitle says compare/swap two values, highlight those exact values with contrasting colors and motion.
+- Prefer structured figures over text-only layouts:
+  sorting/comparison => bars
+  tree/hierarchy => tree_node
+  probabilities/functions => axis+plot_point or pipeline with bars
+  matrix/grid => matrix or aligned rectangles
 - Ensure visuals match subtitle exactly.
 
 Current draft step JSON:
@@ -2375,12 +2408,19 @@ Hard requirements:
 - Keep step count exactly ${steps.length}.
 - Keep each step number, concept, subtitle, and duration_ms exactly as provided.
 - Generate ONLY canvas_instructions.elements for each step.
-- Each step must have at least 5 elements.
+- Each step must have 6-10 elements, with at least 3 non-text visual elements.
 - Visuals must be directly derived from that step subtitle, not from generic templates.
 - Every numeric value mentioned in subtitle must appear in element labels/values.
 - If subtitle describes compare/swap/insert/highlight, show that exact action visually.
 - Use only: tree_node, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, flowchart_diamond.
 - No placeholder labels like "text 1", "rectangle 2", "node 1".
+- Non-text labels must be concise (max 4 words). Do not place full sentences inside rectangle/circle/bar labels.
+- Topic-specific structure rules:
+  * softmax/sigmoid/relu/activation/probability => show logits -> transform -> normalized output with bars and arrows.
+  * regression/function/curve => axis + plot_point + fitted line.
+  * tree/BST/hierarchy => tree_node layout.
+  * sorting/array/comparison => bars with numeric labels and compare/swap highlight.
+  * confusion matrix => 2x2 labeled grid (TP, FP, FN, TN).
 - Output only JSON and nothing else.
 `.trim();
 
@@ -2403,7 +2443,11 @@ Hard requirements:
       }
       const generated = parsed.data;
       const generatedElements = generated.canvas_instructions?.elements ?? [];
-      if (generatedElements.length < 5) {
+      const nonTextVisuals = generatedElements.filter((element) => {
+        const type = normalizeElementType((element as Record<string, unknown>).type);
+        return type !== "text" && !isConnectorElementType(type);
+      }).length;
+      if (generatedElements.length < 6 || nonTextVisuals < 3) {
         return original;
       }
       return {
@@ -3242,9 +3286,10 @@ Required per step:
 
 Global quality rules:
 - Generate 6-8 steps unless the topic is extremely simple; never fewer than 5.
-- Every step must contain at least 5 elements.
+- Every step must contain 6-10 elements.
 - Every non-connector element must have a meaningful label from the topic (real term, value, or symbol).
 - Never use placeholder labels such as "text 1", "rectangle 2", "circle 3", "element 1", "tree_node 1", "bar 2".
+- Non-text labels must be concise (max 4 words). Never place full sentence fragments inside rectangle/circle/bar labels.
 - Layout must be clean and readable; no random filler.
 - Use ONLY these element types: tree_node, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, flowchart_diamond.
 - Do not output markdown or prose outside JSON.
@@ -3258,6 +3303,11 @@ Visual strategy rules (topic-agnostic):
 - For matrix/grid concepts, use matrix or aligned rectangle grids with cell labels.
 - For formulas, include readable text labels and at least one visual that demonstrates the formula behavior with concrete values.
 - Keep coordinates distributed across the canvas; avoid stacking all elements in one corner.
+- Activation/probability topics (softmax/sigmoid/relu/probability/logits): show pipeline logits -> transform -> normalize with bars/arrows.
+- Regression/function topics: use axis + plot_point + line.
+- Sorting topics: use bars with numeric labels and swap/comparison highlights.
+- Tree topics: use tree_node hierarchy with numeric node values.
+- Confusion matrix topics: use a 2x2 labeled grid (TP/FP/FN/TN).
 
 Fidelity rules:
 - Visuals must exactly match each subtitle.
