@@ -1579,11 +1579,18 @@ function validateAndRepairBstSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[
   return steps.map((step) => repairBstStep(step));
 }
 
-function repairRegressionSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
-  if (!/(regression|linear)/i.test(topic)) {
-    return steps;
-  }
+function repairAxisPlotSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
   return steps.map((step) => {
+    const rawElements = step.canvas_instructions?.elements ?? [];
+    const hasAxis = rawElements.some(
+      (element) => normalizeElementType((element as Record<string, unknown>).type) === "axis"
+    );
+    const hasPlotPoint = rawElements.some(
+      (element) => normalizeElementType((element as Record<string, unknown>).type) === "plot_point"
+    );
+    if (!hasAxis || !hasPlotPoint) {
+      return step;
+    }
     const elements = (step.canvas_instructions?.elements ?? []).map((element) => {
       const next = { ...(element as Record<string, unknown>) };
       const type = normalizeElementType(next.type);
@@ -1609,96 +1616,7 @@ function repairRegressionSteps(topic: string, steps: GeminiCanvasStep[]): Gemini
   });
 }
 
-function repairOsSchedulingSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
-  if (!/(os scheduling|process scheduling)/i.test(topic)) {
-    return steps;
-  }
-
-  const defaults = ["New", "Ready", "Running", "Waiting", "Terminated"];
-  const stateXs = [15, 32, 50, 68, 85];
-  const stateKeywords = [
-    "new",
-    "ready",
-    "running",
-    "waiting",
-    "terminated",
-    "blocked",
-    "suspended",
-    "dispatch"
-  ];
-  const isProcessStateLabel = (label: string): boolean =>
-    stateKeywords.some((keyword) => label.toLowerCase().includes(keyword));
-
-  return steps.map((step) => {
-    const existing = (step.canvas_instructions?.elements ?? []).map(
-      (element) => ({ ...(element as Record<string, unknown>) }) as GeminiCanvasElement
-    );
-    const stateCandidates = existing.filter((element) => {
-      const type = normalizeElementType(element.type);
-      if (type !== "circle" && type !== "rectangle") {
-        return false;
-      }
-      const label = asText((element as Record<string, unknown>).label);
-      return Boolean(label) && isProcessStateLabel(label);
-    });
-    if (existing.length >= 5) {
-      return step;
-    }
-
-    const existingLabels = stateCandidates
-      .map((element) => asText(element.label))
-      .filter((label) => Boolean(label))
-      .slice(0, 5);
-    const existingColors = stateCandidates
-      .map((element) => normalizeHexColor(asText(element.color), "#4A90E2"))
-      .slice(0, 5);
-
-    const injectedStates: GeminiCanvasElement[] = defaults.map((defaultLabel, index) => ({
-      type: "circle",
-      x: stateXs[index],
-      y: 45,
-      width: 10,
-      height: 10,
-      color: existingColors[index] ?? "#4A90E2",
-      label: existingLabels[index] || defaultLabel,
-      label_position: "above",
-      animation: {
-        type: "fade_in",
-        duration: 800 + index * 80,
-        direction: "none",
-        represents: `shows process state ${existingLabels[index] || defaultLabel}`
-      }
-    }));
-
-    const injectedArrows: GeminiCanvasElement[] = stateXs.slice(0, -1).map((x, index) => {
-      const nextX = stateXs[index + 1];
-      return {
-        type: "arrow",
-        x: Number(((x + nextX) / 2).toFixed(2)),
-        y: 45,
-        x1: x + 5,
-        y1: 45,
-        x2: nextX - 5,
-        y2: 45,
-        width: Math.max(6, nextX - x - 10),
-        height: 2,
-        color: "#93c5fd"
-      };
-    });
-
-    return {
-      ...step,
-      canvas_instructions: {
-        elements: [...existing, ...injectedStates, ...injectedArrows]
-      }
-    };
-  });
-}
-
-function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
-  if (!/confusion matrix/i.test(topic)) {
-    return steps;
-  }
+function repairMatrixGridSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
   const gridPositions = [
     { x: 30, y: 35 },
     { x: 55, y: 35 },
@@ -1724,7 +1642,7 @@ function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): G
     }
     return null;
   };
-  const parseConfusionLabel = (label: string): string | null => {
+  const parseMatrixLabel = (label: string): string | null => {
     const normalized = label.toLowerCase().trim();
     if (!normalized) {
       return null;
@@ -1761,7 +1679,7 @@ function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): G
 
     if (matrixIndexes.length > 0) {
       const aiLabels = elements
-        .map((element) => parseConfusionLabel(asText(element.label)))
+        .map((element) => parseMatrixLabel(asText(element.label)))
         .filter((label): label is string => Boolean(label));
       const uniqueLabels = Array.from(new Set(aiLabels));
       const labels = defaultLabels.map((fallback, index) => uniqueLabels[index] ?? fallback);
@@ -1848,10 +1766,9 @@ function repairConfusionMatrixSteps(topic: string, steps: GeminiCanvasStep[]): G
   });
 }
 
-function applyTopicRepairs(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
-  const regressionRepairedSteps = repairRegressionSteps(topic, steps);
-  const osRepairedSteps = repairOsSchedulingSteps(topic, regressionRepairedSteps);
-  return repairConfusionMatrixSteps(topic, osRepairedSteps);
+function applyTopicRepairs(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  const axisPlotRepairedSteps = repairAxisPlotSteps(steps);
+  return repairMatrixGridSteps(axisPlotRepairedSteps);
 }
 
 function countStepPlaceholderLabels(step: GeminiCanvasStep): number {
@@ -2791,30 +2708,15 @@ Global quality rules:
 - Use ONLY these element types: tree_node, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, flowchart_diamond.
 - Do not output markdown or prose outside JSON.
 
-Topic-to-visual mapping (mandatory):
-- Binary Search Tree / BST:
-  - Use ONLY tree_node elements (no line/arrow/rectangle).
-  - Each tree_node includes: type, value, x, y, color, parent_value.
-  - Root has parent_value null; children point to numeric parent value.
-  - Use numeric labels equal to node values.
-- Sorting algorithms:
-  - Use ONLY bar elements with numeric labels.
-  - Set all bars to y = 85 baseline.
-  - Heights must be proportional to values.
-- Confusion matrix:
-  - Use matrix + labels TP, FP, FN, TN (or full forms).
-- Regression/statistics/functions:
-  - Use only plot_point, axis, text, and line elements (never circle or ellipse).
-  - plot_point width and height must each be between 2 and 4.
-  - axis elements must span at least 60% of canvas width/height.
-  - plot_point x and y values must be inside axis bounds, never on canvas edges.
-  - Place equation/formula text at top-left with x=15, y=10, width=25, height=6.
-- Process/decision topics:
-  - Use flowchart_diamond + arrow + text with real stage names.
-- OS scheduling and process-state topics:
-  - Each step must include at least 5 labeled rectangle or circle elements for New, Ready, Running, Waiting, Terminated.
-  - Connect process-state elements with arrows showing valid state transitions.
-  - Never generate a step with only 1 or 2 text elements for OS/process topics.
+Visual strategy rules (topic-agnostic):
+- First infer the concept family for the topic (data structure, algorithm, system design, networking, ML, math/stats, hardware, security, cloud, etc.).
+- Choose element types that semantically match each concept; avoid generic diagrams when a specific visual grammar exists.
+- For ordered values or comparisons, prefer bars/points/axes with numeric labels.
+- For hierarchy, prefer explicit parent-child nodes (tree_node or connected circles with arrows).
+- For pipelines or state transitions, prefer labeled nodes with directional arrows.
+- For matrix/grid concepts, use matrix or aligned rectangle grids with cell labels.
+- For formulas, include readable text labels and at least one visual that demonstrates the formula behavior with concrete values.
+- Keep coordinates distributed across the canvas; avoid stacking all elements in one corner.
 
 Fidelity rules:
 - Visuals must exactly match each subtitle.
@@ -2844,14 +2746,17 @@ Fidelity rules:
     throw new Error("Simulation generation failed: Bedrock did not return valid steps.");
   }
 
-  const validatedSteps = isBstTopic(topic)
-    ? validateAndRepairBstSteps(generatedSteps)
-    : generatedSteps;
+  const hasTreeNodes = generatedSteps.some((step) =>
+    (step.canvas_instructions?.elements ?? []).some(
+      (element) => normalizeElementType((element as Record<string, unknown>).type) === "tree_node"
+    )
+  );
+  const validatedSteps = hasTreeNodes ? validateAndRepairBstSteps(generatedSteps) : generatedSteps;
   const labeledSteps = enforceMeaningfulElementLabels(topic, validatedSteps);
-  const repairedSteps = applyTopicRepairs(topic, labeledSteps);
+  const repairedSteps = applyTopicRepairs(labeledSteps);
   const qualityImprovedSteps = await regenerateLowQualitySteps(topic, repairedSteps);
   const finalLabeledSteps = enforceMeaningfulElementLabels(topic, qualityImprovedSteps);
-  const finalRepairedSteps = applyTopicRepairs(topic, finalLabeledSteps);
+  const finalRepairedSteps = applyTopicRepairs(finalLabeledSteps);
 
   try {
     await saveSimulationS3Cache(topic, { steps: finalRepairedSteps });
