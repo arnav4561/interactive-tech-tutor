@@ -823,12 +823,12 @@ export class SimulationCanvasRenderer {
         this.ctx.fill();
         this.label(el, label, x + w / 2, y, "above", { x, y, w, h });
       } else if (t === "line" || t === "dashed_line" || t === "arrow") {
-        if (t === "arrow") {
-          const arrowLabel = this.str((el as Record<string, unknown>).label, "").trim();
-          if (!arrowLabel || /^(arrow|line)\s*\d*$/i.test(arrowLabel)) {
-            return;
-          }
-        }
+        const shouldHideArrowLabel =
+          t === "arrow" &&
+          (() => {
+            const arrowLabel = this.str((el as Record<string, unknown>).label, "").trim();
+            return !arrowLabel || /^(arrow|line)\s*\d*$/i.test(arrowLabel);
+          })();
         const x1 = this.x(this.num(el, ["x1"], x));
         const y1 = this.y(this.num(el, ["y1"], y));
         const x2 = this.x(this.num(el, ["x2"], x + w));
@@ -842,7 +842,7 @@ export class SimulationCanvasRenderer {
         this.ctx.stroke();
         this.ctx.restore();
         if (t === "arrow") this.arrowHead(x1, y1, end.x, end.y, c, lineWidth + 2);
-        this.label(el, label, (x1 + x2) / 2, (y1 + y2) / 2, "above", {
+        this.label(el, shouldHideArrowLabel ? "" : label, (x1 + x2) / 2, (y1 + y2) / 2, "above", {
           x: Math.min(x1, x2),
           y: Math.min(y1, y2),
           w: Math.abs(x2 - x1) || 1,

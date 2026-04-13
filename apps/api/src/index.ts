@@ -2010,6 +2010,152 @@ function scoreStepQuality(step: GeminiCanvasStep): number {
   return clamp(score, 0, 100);
 }
 
+function isConnectorElementType(type: string): boolean {
+  return type === "arrow" || type === "line" || type === "dashed_line" || type === "curved_arrow";
+}
+
+function ensureRenderableElementsForStep(step: GeminiCanvasStep): GeminiCanvasStep {
+  const currentElements = (step.canvas_instructions?.elements ?? []).map((element) => ({
+    ...(element as Record<string, unknown>)
+  })) as GeminiCanvasElement[];
+  const trimmedElements = currentElements.map((element) => {
+    const clone = { ...(element as Record<string, unknown>) };
+    const type = normalizeElementType(clone.type);
+    if (type === "text") {
+      const label = asText(clone.label);
+      if (label.length > 160) {
+        clone.label = label.slice(0, 160);
+      }
+    }
+    return clone as GeminiCanvasElement;
+  });
+
+  const informativeVisualCount = trimmedElements.filter((element) => {
+    const type = normalizeElementType((element as Record<string, unknown>).type);
+    return type !== "text" && !isConnectorElementType(type);
+  }).length;
+  if (trimmedElements.length >= 5 && informativeVisualCount >= 2) {
+    return {
+      ...step,
+      canvas_instructions: {
+        elements: trimmedElements
+      }
+    };
+  }
+
+  const keywords = extractSubtitleKeywords(step.subtitle).slice(0, 5);
+  const subtitleNumbers = extractSubtitleNumbers(step.subtitle).slice(0, 5);
+  const fallbackWords = step.concept
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word.length > 2)
+    .slice(0, 5);
+  const labels = (keywords.length > 0 ? keywords : fallbackWords).slice(0, 5);
+  if (labels.length === 0) {
+    labels.push("concept", "flow", "state");
+  }
+
+  const palette = ["#4A90E2", "#00D4FF", "#8B5CF6", "#4CAF50", "#FF6B35"];
+  const cardPositions = [
+    { x: 14, y: 24 },
+    { x: 42, y: 24 },
+    { x: 70, y: 24 },
+    { x: 28, y: 54 },
+    { x: 56, y: 54 }
+  ];
+
+  const synthesized: GeminiCanvasElement[] = labels.map((label, index) => ({
+    type: "rectangle",
+    x: cardPositions[index % cardPositions.length].x,
+    y: cardPositions[index % cardPositions.length].y,
+    width: 22,
+    height: 13,
+    color: palette[index % palette.length],
+    label: label.slice(0, 28),
+    label_position: "above",
+    animation: {
+      type: "fade_in",
+      duration: 700 + index * 120,
+      direction: "none",
+      represents: `shows ${label} from subtitle`
+    }
+  }));
+
+  for (let index = 0; index < Math.max(0, labels.length - 1); index += 1) {
+    const from = cardPositions[index % cardPositions.length];
+    const to = cardPositions[(index + 1) % cardPositions.length];
+    synthesized.push({
+      type: "arrow",
+      x1: from.x + 20,
+      y1: from.y + 6,
+      x2: to.x,
+      y2: to.y + 6,
+      width: 1,
+      height: 1,
+      color: "#9db2ce",
+      label: "",
+      label_position: "above",
+      animation: {
+        type: "draw",
+        duration: 800,
+        direction: "left_to_right",
+        represents: "shows relation between subtitle concepts"
+      }
+    });
+  }
+
+  if (subtitleNumbers.length > 0) {
+    subtitleNumbers.forEach((value, index) => {
+      synthesized.push({
+        type: "circle",
+        x: clamp(18 + index * 16, 12, 88),
+        y: 82,
+        width: 8,
+        height: 8,
+        color: index === 0 ? "#FF6B35" : "#4A90E2",
+        label: value,
+        label_position: "below",
+        animation: {
+          type: "scale_up",
+          duration: 700,
+          direction: "none",
+          represents: `shows numeric value ${value} referenced in subtitle`
+        }
+      });
+    });
+  }
+
+  while (synthesized.length < 5) {
+    synthesized.push({
+      type: "text",
+      x: 12 + synthesized.length * 14,
+      y: 84,
+      width: 12,
+      height: 5,
+      color: "#d9e6ff",
+      label: (labels[synthesized.length % labels.length] || "concept").slice(0, 20),
+      label_position: "right",
+      animation: {
+        type: "fade_in",
+        duration: 700,
+        direction: "none",
+        represents: "reinforces subtitle term"
+      }
+    });
+  }
+
+  return {
+    ...step,
+    canvas_instructions: {
+      elements: synthesized
+    }
+  };
+}
+
+function ensureRenderableElementsFromSubtitle(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  return steps.map((step) => ensureRenderableElementsForStep(step));
+}
+
 function shouldRegenerateStep(step: GeminiCanvasStep, score: number, alignmentScore: number): boolean {
   const elements = step.canvas_instructions?.elements ?? [];
   const subtitleWords = asText(step.subtitle)
@@ -3030,6 +3176,8 @@ Fidelity rules:
 - For every subtitle sentence, include at least one corresponding visual relation (position, color, connection, or animation) that proves the sentence on canvas.
 - If subtitle references direction (left/right/up/down), data flow, insertion, comparison, swap, transition, or hierarchy, the canvas must show that exact behavior.
 - Do not reuse the same layout across steps; each step layout must reflect that step subtitle specifically.
+- Do not dump the full subtitle as one giant text element; split information into diagram elements with short labels.
+- Every step must include at least 2 non-text visual elements that directly represent the subtitle concept.
 `.trim();
 
   const payload = await requestBedrockJson(simulationFormatPrompt, {
@@ -3070,14 +3218,15 @@ Fidelity rules:
   const finalLabeledSteps = enforceMeaningfulElementLabels(topic, qualityImprovedSteps);
   const finalRepairedSteps = applyTopicRepairs(finalLabeledSteps);
   const finalAlignedSteps = finalRepairedSteps.map((step) => enforceSubtitleVisualAlignment(step));
+  const finalRenderableSteps = ensureRenderableElementsFromSubtitle(finalAlignedSteps);
 
   try {
-    await saveSimulationS3Cache(topic, { steps: finalAlignedSteps });
+    await saveSimulationS3Cache(topic, { steps: finalRenderableSteps });
   } catch (error) {
     console.warn("[Simulation] Unable to cache generated steps to S3. Continuing without cache.", error);
   }
 
-  return { steps: finalAlignedSteps };
+  return { steps: finalRenderableSteps };
 }
 
 function toCanvasPercentX(x: number): number {
