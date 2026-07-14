@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FORCE_LOGOUT_EVENT, apiDelete, apiGet, apiPost, apiPut, prewarmApi } from "./api";
+import { AuroraBackground } from "./components/ui/AuroraBackground";
+import { MovingBorderButton } from "./components/ui/MovingBorderButton";
+import { SpotlightCard } from "./components/ui/SpotlightCard";
 import { SimulationCanvasRenderer, SimulationCanvasStepLike } from "./SimulationCanvasRenderer";
 import {
   ChatMessage,
@@ -2702,7 +2705,8 @@ export default function App(): JSX.Element {
   if (!token) {
     return (
       <div className="auth-screen">
-        <div className="auth-card">
+        <AuroraBackground className="auth-aurora" />
+        <SpotlightCard className="auth-card">
           <h1>Interactive Tech Tutor</h1>
           <p>{registerMode ? "Create an account to start learning." : "Login to continue your learning session."}</p>
           {registerMode ? (
@@ -2746,7 +2750,7 @@ export default function App(): JSX.Element {
             </div>
           ) : null}
           <div className="status">{statusMessage}</div>
-        </div>
+        </SpotlightCard>
       </div>
     );
   }
@@ -2754,6 +2758,17 @@ export default function App(): JSX.Element {
   if (appView === "home") {
     return (
       <div className="home-shell">
+        <AuroraBackground className="home-aurora" />
+        <header className="home-navbar">
+          <div className="home-brand">
+            <span className="home-brand-mark">IT</span>
+            <span>Interactive Tech Tutor</span>
+          </div>
+          <div className="home-navbar-meta">
+            <span className="home-navbar-dot" />
+            <span>Learning workspace</span>
+          </div>
+        </header>
         {floatingMenuButton}
         {menuPanel}
         <div className="home-ambient" aria-hidden="true">
@@ -2767,16 +2782,35 @@ export default function App(): JSX.Element {
           <span className="ambient-icon i8">ML</span>
         </div>
         <div className="home-content">
+          <div className="home-kicker">
+            <span>PERSONAL LEARNING SPACE</span>
+            <span className="home-kicker-line" />
+            <span>VISUAL EXPLANATIONS, WITHOUT THE NOISE</span>
+          </div>
           <div className="home-hero">
             <div className="home-hero-copy">
-              <h1>Welcome, {welcomeName}</h1>
-              <p>Enter any technical topic and get a dynamic simulation with step-by-step visual flow.</p>
+              <h1>Welcome back, {welcomeName}</h1>
+              <p>
+                Turn difficult technical ideas into clear, interactive explanations you can explore at your own pace.
+              </p>
+              <div className="home-hero-tags" aria-label="Learning features">
+                <span>Any technical topic</span>
+                <span>Visual-first learning</span>
+                <span>Step by step</span>
+              </div>
             </div>
             <div className="hero-character-wrap" aria-hidden="true">
               <div ref={homeMascotRef} className="mentor-3d-stage" />
             </div>
           </div>
-          <div className="home-controls">
+          <SpotlightCard className="home-controls">
+            <div className="home-controls-head">
+              <div>
+                <span className="home-controls-eyebrow">START A NEW SESSION</span>
+                <h2>What would you like to understand?</h2>
+              </div>
+              <span className="home-controls-hint">Press Enter to begin</span>
+            </div>
             <div className="home-controls-row">
               <input
                 className="topic-input"
@@ -2805,15 +2839,15 @@ export default function App(): JSX.Element {
                 </button>
                 {topicListening ? <span className="mic-listening-label">Listening...</span> : null}
               </div>
-              <button
+              <MovingBorderButton
                 className="generate-btn"
                 disabled={generatingTopic || !customTopicInput.trim()}
                 onClick={() => void generateCustomSimulation()}
               >
                 {generatingTopic ? "Generating Simulation..." : "Generate And Open Simulation"}
-              </button>
+              </MovingBorderButton>
             </div>
-          </div>
+          </SpotlightCard>
           {generatingTopic ? (
             <div className="inline-skeleton">
               <div className="skeleton-line sm" />
@@ -3030,7 +3064,7 @@ export default function App(): JSX.Element {
           </p>
         </section>
 
-        <section className="canvas-wrapper">
+        <SpotlightCard as="section" className="canvas-wrapper">
           <div ref={simulationHostRef} className="sim-canvas" />
           <div ref={simulationThreeHostRef} className="sim-canvas-3d-overlay" />
           <div className={mathOverlayLines.length > 0 ? "math-overlay visible" : "math-overlay"}>
@@ -3132,7 +3166,7 @@ export default function App(): JSX.Element {
                 : "Subtitles are muted."}
             </div>
           </div>
-        </section>
+        </SpotlightCard>
 
         <aside className={toolsPanelOpen ? "controls-drawer open" : "controls-drawer"}>
           <h3>Simulation Controls</h3>
