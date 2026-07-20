@@ -4010,3 +4010,32 @@ button:disabled {
     transform: none;
   }
 }
+
+/* Final desktop home visibility guard */
+@media (min-width: 901px) {
+  .home-content {
+    display: grid !important;
+    position: absolute !important;
+    top: 68px !important;
+    right: 32px !important;
+    bottom: 8px !important;
+    left: 32px !important;
+    width: auto !important;
+    max-width: 1120px !important;
+    height: auto !important;
+    margin: 0 auto !important;
+    transform: none !important;
+    z-index: 20 !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+
+  .home-content > * {
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+
+  .home-hero {
+    display: grid !important;
+  }
+}
