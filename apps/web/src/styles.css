@@ -3780,3 +3780,100 @@ button:disabled {
     animation: none;
   }
 }
+
+/* Home viewport correction */
+.home-shell {
+  height: 100dvh;
+  min-height: 100dvh;
+  padding-top: 78px;
+  padding-bottom: 18px;
+  overflow: hidden;
+}
+
+.home-content {
+  width: min(1120px, 100%);
+  min-height: 0;
+  align-content: start;
+  gap: 14px;
+}
+
+.home-hero {
+  min-height: 0;
+  height: clamp(238px, 31vh, 330px);
+  gap: 24px;
+}
+
+.home-hero-copy h1 {
+  font-size: clamp(2.7rem, 5.4vw, 4.7rem);
+}
+
+.home-hero-copy p {
+  margin-top: 16px;
+}
+
+.home-hero-tags {
+  margin-top: 18px;
+}
+
+.hero-character-wrap {
+  height: clamp(220px, 27vh, 292px);
+  margin: 0;
+}
+
+.home-controls {
+  gap: 12px;
+  padding: 16px;
+}
+
+.home-controls-head h2 {
+  font-size: 1.2rem;
+}
+
+.status {
+  margin-top: 0;
+}
+
+@media (max-width: 900px) {
+  .home-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-top: 78px;
+  }
+
+  .home-content {
+    align-content: start;
+  }
+
+  .home-hero {
+    height: auto;
+  }
+
+  .hero-character-wrap {
+    height: 220px;
+  }
+}
+
+@media (min-width: 901px) and (max-height: 800px) {
+  .home-shell {
+    padding-top: 70px;
+    padding-bottom: 12px;
+  }
+
+  .home-hero {
+    height: 220px;
+  }
+
+  .hero-character-wrap {
+    height: 210px;
+  }
+
+  .home-hero-copy h1 {
+    font-size: clamp(2.4rem, 5vw, 4rem);
+  }
+
+  .home-hero-tags {
+    margin-top: 12px;
+  }
+}
