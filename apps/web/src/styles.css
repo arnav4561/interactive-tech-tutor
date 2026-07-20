@@ -3971,3 +3971,42 @@ button:disabled {
     min-height: 44px;
   }
 }
+
+/* Home content visibility correction */
+@media (min-width: 901px) {
+  .home-shell {
+    position: relative;
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .home-content {
+    position: absolute;
+    top: 68px;
+    bottom: 8px;
+    left: 50%;
+    width: min(1120px, calc(100% - 64px));
+    height: auto;
+    margin: 0;
+    transform: translateX(-50%);
+    align-content: start;
+    overflow: visible;
+  }
+
+  .home-hero {
+    height: clamp(190px, 23vh, 260px);
+  }
+}
+
+@media (max-width: 900px) {
+  .home-content {
+    position: relative;
+    left: auto;
+    bottom: auto;
+    width: 100%;
+    height: auto;
+    margin: 0 auto;
+    transform: none;
+  }
+}
