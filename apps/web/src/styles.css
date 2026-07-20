@@ -3877,3 +3877,97 @@ button:disabled {
     margin-top: 12px;
   }
 }
+
+/* Home viewport correction: compact desktop composition */
+.home-shell {
+  max-height: 100dvh;
+  padding-top: 68px;
+  padding-bottom: 8px;
+}
+
+.home-content {
+  gap: 8px;
+}
+
+.home-kicker {
+  font-size: 0.62rem;
+}
+
+.home-hero {
+  height: clamp(190px, 23vh, 260px);
+  gap: 14px;
+}
+
+.home-hero-copy h1 {
+  font-size: clamp(2.4rem, 4.8vw, 4rem);
+}
+
+.home-hero-copy p {
+  max-width: 520px;
+  margin-top: 10px;
+  font-size: 0.96rem;
+  line-height: 1.42;
+}
+
+.home-hero-tags {
+  margin-top: 12px;
+}
+
+.home-hero-tags span {
+  padding: 5px 9px;
+  font-size: 0.7rem;
+}
+
+.hero-character-wrap {
+  height: clamp(175px, 22vh, 240px);
+}
+
+.home-controls {
+  gap: 8px;
+  padding: 12px;
+}
+
+.home-controls-head h2 {
+  font-size: 1.08rem;
+}
+
+.home-controls-row,
+.topic-input,
+.mic-icon-btn,
+.aceternity-moving-border-button {
+  min-height: 42px;
+  height: 42px;
+}
+
+.status {
+  font-size: 0.74rem;
+  padding: 5px 10px;
+}
+
+@media (max-width: 900px) {
+  .home-shell {
+    max-height: none;
+    padding-top: 78px;
+    padding-bottom: 18px;
+  }
+
+  .home-hero {
+    height: auto;
+  }
+
+  .hero-character-wrap {
+    height: 205px;
+  }
+
+  .home-hero-copy h1 {
+    font-size: clamp(2.6rem, 13vw, 4rem);
+  }
+
+  .home-controls-row,
+  .topic-input,
+  .mic-icon-btn,
+  .aceternity-moving-border-button {
+    height: auto;
+    min-height: 44px;
+  }
+}
