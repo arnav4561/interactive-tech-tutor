@@ -322,6 +322,7 @@ export default function App(): JSX.Element {
   const simulationHostRef = useRef<HTMLDivElement | null>(null);
   const simulationThreeHostRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const recognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionActiveRef = useRef(false);
@@ -2830,6 +2831,19 @@ export default function App(): JSX.Element {
         </section>
 
         <SpotlightCard as="section" className="canvas-wrapper">
+          <svg className="simulation-blueprint-grid" viewBox="0 0 1600 900" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <pattern id="simulation-grid-small" width="24" height="24" patternUnits="userSpaceOnUse">
+                <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#27272a" strokeWidth="1" />
+              </pattern>
+              <pattern id="simulation-grid-large" width="120" height="120" patternUnits="userSpaceOnUse">
+                <rect width="120" height="120" fill="url(#simulation-grid-small)" />
+                <path d="M 120 0 L 0 0 0 120" fill="none" stroke="#3f3f46" strokeWidth="1" />
+              </pattern>
+            </defs>
+            <rect width="1600" height="900" fill="#09090b" />
+            <rect width="1600" height="900" fill="url(#simulation-grid-large)" />
+          </svg>
           <div ref={simulationHostRef} className="sim-canvas" />
           <div ref={simulationThreeHostRef} className="sim-canvas-3d-overlay" />
           <div className={mathOverlayLines.length > 0 ? "math-overlay visible" : "math-overlay"}>
@@ -2923,14 +2937,14 @@ export default function App(): JSX.Element {
                 </svg>
               )}
             </button>
-            <div className="subtitle-bar">
+          </div>
+          <div className="subtitle-bar">
               {subtitlesEnabled
                 ? (typeof subtitle === "string" && subtitle.length > 0
                     ? subtitle
                     : "Simulation subtitles will appear here.")
                 : "Subtitles are muted."}
             </div>
-          </div>
         </SpotlightCard>
 
         <aside className={toolsPanelOpen ? "controls-drawer open" : "controls-drawer"}>
@@ -3007,18 +3021,39 @@ export default function App(): JSX.Element {
       </main>
 
       {chatPanelOpen ? (
-        <aside className="interaction-panel">
-          <section className="panel-section chat-panel-section">
+        <aside className="interaction-panel chat-dashboard-drawer">
+          <section className="chat-panel-section">
             <header className="chat-panel-header">
-              <h3>Topic Chat</h3>
+              <div>
+                <span className="chat-panel-eyebrow">ACTIVE TOPIC</span>
+                <h3>Topic Chat</h3>
+              </div>
+              <button
+                className="chat-close-btn"
+                onClick={() => setChatPanelOpen(false)}
+                aria-label="Close topic chat"
+                title="Close topic chat"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 7 10 10M17 7 7 17" />
+                </svg>
+              </button>
             </header>
             <div className="chat-window">
               {messages.slice(-16).map((message, index) => (
-                <article key={`${message.role}-${index}`} className={`chat-bubble chat-${message.role}`}>
+                <article key={message.role + "-" + index} className={"chat-bubble chat-" + message.role}>
+                  <span className="chat-role">{message.role === "assistant" ? "TUTOR" : "YOU"}</span>
                   <p className="chat-text">{message.text}</p>
                   <span className="chat-time">{formatChatTimestamp(message.timestamp)}</span>
                 </article>
               ))}
+              {messages.length === 0 ? (
+                <div className="chat-empty-state">
+                  <span className="chat-empty-mark">/</span>
+                  <p>Ask anything about the current simulation.</p>
+                  <span>Responses stay focused on {selectedTopic?.title ?? "this topic"}.</span>
+                </div>
+              ) : null}
             </div>
             <div className="chat-input-bar">
               <button
@@ -3046,6 +3081,16 @@ export default function App(): JSX.Element {
                 placeholder="Ask about this topic..."
               />
               <button
+                className="chat-attachment-btn"
+                onClick={() => attachmentInputRef.current?.click()}
+                aria-label="Attach a file"
+                title="Attach a file"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m14.5 6.5-7.2 7.2a3.1 3.1 0 0 0 4.4 4.4l7.1-7.1a4.7 4.7 0 0 0-6.6-6.6l-7.2 7.2a6.2 6.2 0 1 0 8.8 8.8l6-6" />
+                </svg>
+              </button>
+              <button
                 className="chat-send-icon-btn"
                 onClick={() => void sendChat("text")}
                 aria-label="Send message"
@@ -3055,27 +3100,25 @@ export default function App(): JSX.Element {
                   <path d="M3.2 11.2 19.6 3.4a.9.9 0 0 1 1.26 1.08l-3.1 15.1a.9.9 0 0 1-1.54.45l-3.5-3.55-2.87 3.12a.9.9 0 0 1-1.56-.57v-5.06L3.5 12.9a.9.9 0 0 1-.3-1.7Zm4.9 1.58 2.02.58c.38.11.65.46.65.86v2.47l1.58-1.72a.9.9 0 0 1 1.3-.02l2.66 2.69 2.22-10.83-10.43 4.96Z" />
                 </svg>
               </button>
+              <input
+                ref={attachmentInputRef}
+                className="chat-attachment-input"
+                type="file"
+                accept="image/*,.pdf,.doc,.docx"
+                capture="environment"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void handleUpload(file);
+                  }
+                  event.target.value = "";
+                }}
+              />
             </div>
-          </section>
-
-          <section className="panel-section">
-            <h3>Visual Input</h3>
-            <input
-              type="file"
-              accept="image/*,.pdf,.doc,.docx"
-              capture="environment"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  void handleUpload(file);
-                }
-              }}
-            />
-            <p>{uploadFeedback || "Upload an image/document for analysis."}</p>
+            {uploadFeedback ? <p className="chat-attachment-status">{uploadFeedback}</p> : null}
           </section>
         </aside>
       ) : null}
     </div>
   );
 }
-
