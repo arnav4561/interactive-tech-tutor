@@ -6061,3 +6061,146 @@ body,
   padding: 0 16px 8px;
   border-bottom: 1px solid #27272a;
 }
+
+/* Timeline HUD and audio utility controls */
+.sim-bottom-bar {
+  position: absolute !important;
+  left: 16px !important;
+  right: auto !important;
+  bottom: 16px !important;
+  width: auto !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  display: flex !important;
+  align-items: center;
+  gap: 10px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  pointer-events: none;
+}
+
+.sim-play-toggle {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  min-height: 32px !important;
+  display: grid !important;
+  place-items: center;
+  padding: 0 !important;
+  border: 1px solid #52525b !important;
+  border-radius: 0 !important;
+  color: #e4e4e7 !important;
+  background: #09090b !important;
+  box-shadow: none !important;
+  pointer-events: auto;
+}
+
+.sim-play-toggle:hover {
+  border-color: #f0b44d !important;
+  color: #f0b44d !important;
+  background: #18181b !important;
+}
+
+.sim-play-toggle svg {
+  width: 13px !important;
+  height: 13px !important;
+  fill: currentColor !important;
+}
+
+.sim-step-tracker {
+  color: #a1a1aa;
+  font: 600 0.64rem/1 "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.nav-voice-wrap {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-mic-btn {
+  position: relative;
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  min-height: 32px !important;
+  display: grid !important;
+  place-items: center;
+  padding: 0 !important;
+  border: 1px solid #52525b !important;
+  border-radius: 0 !important;
+  color: #a1a1aa !important;
+  background: #09090b !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
+.nav-mic-btn:hover,
+.nav-mic-btn.state-listening,
+.nav-mic-btn.state-processing,
+.nav-mic-btn.state-speaking {
+  border-color: #71717a !important;
+  color: #f4f4f5 !important;
+  background: #18181b !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
+.nav-mic-btn svg {
+  width: 14px !important;
+  height: 14px !important;
+  fill: currentColor !important;
+}
+
+.nav-mic-live-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 4px;
+  height: 4px;
+  border: 0;
+  border-radius: 50% !important;
+  background: #52525b;
+  box-shadow: none !important;
+}
+
+.nav-mic-live-dot.active {
+  background: #86efac;
+  box-shadow: none !important;
+}
+
+.nav-voice-interim {
+  max-width: 260px;
+  overflow: hidden;
+  color: #a1a1aa !important;
+  font: 0.62rem/1 "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle-bar {
+  bottom: 16px !important;
+  min-height: 42px !important;
+  padding: 10px 16px !important;
+  border: 1px solid #27272a !important;
+  border-radius: 0 !important;
+  color: #d4d4d8 !important;
+  background: rgba(9, 9, 11, 0.9) !important;
+  box-shadow: none !important;
+  font-size: 0.78rem !important;
+}
+
+@media (max-width: 560px) {
+  .sim-step-tracker {
+    font-size: 0.58rem;
+    letter-spacing: 0.04em;
+  }
+
+  .nav-voice-interim {
+    max-width: 150px;
+  }
+}

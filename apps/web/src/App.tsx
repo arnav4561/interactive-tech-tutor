@@ -318,6 +318,7 @@ export default function App(): JSX.Element {
   const [voiceMicState, setVoiceMicState] = useState<"idle" | "listening" | "processing" | "speaking">("idle");
   const [voiceInterimText, setVoiceInterimText] = useState("");
   const [activeStepIndex, setActiveStepIndex] = useState(0);
+  const [stepElapsedDisplaySeconds, setStepElapsedDisplaySeconds] = useState(0);
 
   const simulationHostRef = useRef<HTMLDivElement | null>(null);
   const simulationThreeHostRef = useRef<HTMLDivElement | null>(null);
@@ -343,6 +344,7 @@ export default function App(): JSX.Element {
   const stepNarrationCompleteRef = useRef(true);
   const subtitleDisplayCompleteRef = useRef(true);
   const stepElapsedMsRef = useRef(0);
+  const stepElapsedDisplaySecondsRef = useRef(-1);
   const pausedAtElapsedMsRef = useRef(0);
   const pausedAtStepRef = useRef(0);
   const resumeNarrationRequestedRef = useRef(false);
@@ -2079,6 +2081,8 @@ export default function App(): JSX.Element {
       }
       const step = steps[index];
       const shouldNarrate = options?.narrate !== false;
+      stepElapsedDisplaySecondsRef.current = 0;
+      setStepElapsedDisplaySeconds(0);
       pausedAtStepRef.current = index;
       renderer.setStep(step as SimulationCanvasStepLike);
       console.log(`[Simulation] step=${index + 1} elementTypes=`, renderer.getElementTypes());
@@ -2148,6 +2152,11 @@ export default function App(): JSX.Element {
       const delta = Math.min(50, now - lastFrame);
       lastFrame = now;
       stepElapsedMs = stepElapsedMsRef.current;
+      const displaySeconds = Math.max(0, Math.floor(stepElapsedMs / 1000));
+      if (displaySeconds !== stepElapsedDisplaySecondsRef.current) {
+        stepElapsedDisplaySecondsRef.current = displaySeconds;
+        setStepElapsedDisplaySeconds(displaySeconds);
+      }
 
       const pendingCommand = pendingSimulationCommandRef.current;
       if (pendingCommand && pendingCommand.id > lastProcessedCommandId) {
@@ -2787,6 +2796,7 @@ export default function App(): JSX.Element {
                     <path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" />
                     <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
                   </svg>
+                  <span className={listening ? "nav-mic-live-dot active" : "nav-mic-live-dot"} aria-hidden="true" />
                 </button>
               </div>
             ) : null}
@@ -2937,6 +2947,9 @@ export default function App(): JSX.Element {
                 </svg>
               )}
             </button>
+            <span className="sim-step-tracker" aria-live="polite">
+              [{String(Math.floor(stepElapsedDisplaySeconds / 60)).padStart(2, "0")}:{String(stepElapsedDisplaySeconds % 60).padStart(2, "0")}] STEP {String(activeStepIndex + 1).padStart(2, "0")} / {String(selectedSimulation?.steps?.length ?? 0).padStart(2, "0")}
+            </span>
           </div>
           <div className="subtitle-bar">
               {subtitlesEnabled
@@ -3082,7 +3095,7 @@ export default function App(): JSX.Element {
                   placeholder=""
                   aria-label="Ask about this topic"
                 />
-                {!chatInput ? <span className="chat-assist-hint" aria-hidden="true">⌘ ↵ for Assist</span> : null}
+                {!chatInput ? <span className="chat-assist-hint" aria-hidden="true">âŒ˜ â†µ for Assist</span> : null}
               </div>
               <button
                 className="chat-attachment-btn"
