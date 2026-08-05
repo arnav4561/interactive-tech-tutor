@@ -3041,7 +3041,7 @@ export default function App(): JSX.Element {
             </header>
             <div className="chat-window">
               {messages.slice(-16).map((message, index) => (
-                <article key={message.role + "-" + index} className={"chat-bubble chat-" + message.role}>
+                <article key={message.role + "-" + index} className={"chat-message-row chat-" + message.role}>
                   <span className="chat-role">{message.role === "assistant" ? "TUTOR" : "YOU"}</span>
                   <p className="chat-text">{message.text}</p>
                   <span className="chat-time">{formatChatTimestamp(message.timestamp)}</span>
@@ -3067,19 +3067,23 @@ export default function App(): JSX.Element {
                   <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
                 </svg>
               </button>
-              <input
-                ref={chatInputRef}
-                className="chat-input-field"
-                value={chatInput}
-                onChange={(event) => setChatInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void sendChat("text");
-                  }
-                }}
-                placeholder="Ask about this topic..."
-              />
+              <div className="chat-input-slot">
+                <input
+                  ref={chatInputRef}
+                  className="chat-input-field"
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void sendChat("text");
+                    }
+                  }}
+                  placeholder=""
+                  aria-label="Ask about this topic"
+                />
+                {!chatInput ? <span className="chat-assist-hint" aria-hidden="true">⌘ ↵ for Assist</span> : null}
+              </div>
               <button
                 className="chat-attachment-btn"
                 onClick={() => attachmentInputRef.current?.click()}
