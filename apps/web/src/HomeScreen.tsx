@@ -74,14 +74,52 @@ export function HomeScreen({
           <span>BUILD A CLEARER MENTAL MODEL</span>
         </div>
 
-        <section className="home-screen-intro">
-          <p className="home-screen-greeting">Welcome back, {welcomeName}</p>
-          <h1>Understand the hard parts.</h1>
-          <p className="home-screen-description">
-            Explore technical topics through focused explanations and visual simulations that make complex systems easier to reason about.
-          </p>
-        </section>
+        <div className="home-screen-hero-grid">
+          <section className="home-screen-intro">
+            <p className="home-screen-greeting">Welcome back, {welcomeName}</p>
+            <h1>Make complex systems legible.</h1>
+            <p className="home-screen-description">
+              Turn difficult technical ideas into visual explanations you can inspect, pause, and understand at your own pace.
+            </p>
+          </section>
 
+          <aside className="home-screen-proof" aria-label="How Interactive Tech Tutor works">
+            <div className="home-screen-proof-head">
+              <span>SESSION ENGINE</span>
+              <strong>READY</strong>
+            </div>
+            <div className="home-screen-proof-diagram" aria-hidden="true">
+              <span className="proof-node proof-node-active" />
+              <span className="proof-line proof-line-a" />
+              <span className="proof-line proof-line-b" />
+              <span className="proof-node proof-node-mid" />
+              <span className="proof-node proof-node-end" />
+            </div>
+            <div className="home-screen-proof-list">
+              <div className="home-screen-proof-row">
+                <span>01</span>
+                <div>
+                  <strong>Define</strong>
+                  <p>Start with the vocabulary that makes the topic click.</p>
+                </div>
+              </div>
+              <div className="home-screen-proof-row">
+                <span>02</span>
+                <div>
+                  <strong>Visualize</strong>
+                  <p>Watch the underlying system change step by step.</p>
+                </div>
+              </div>
+              <div className="home-screen-proof-row">
+                <span>03</span>
+                <div>
+                  <strong>Explore</strong>
+                  <p>Pause, ask questions, and move through the model.</p>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
         <section className="home-topic-composer" aria-labelledby="home-topic-title">
           <div className="home-topic-header">
             <div>
