@@ -5544,3 +5544,329 @@ body,
     aspect-ratio: 4 / 3;
   }
 }
+
+/* Edge-to-edge development studio layout */
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden;
+  background: #050505 !important;
+}
+
+/* All product frames are deliberately square and flush. */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
+.home-screen,
+.auth-screen,
+.history-shell,
+.app-shell {
+  width: 100%;
+  min-width: 0;
+  min-height: 100dvh;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden;
+  background: #09090b !important;
+}
+
+.home-screen {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 0;
+}
+
+.home-screen-header {
+  width: 100%;
+  max-width: none;
+  min-height: 58px;
+  margin: 0 !important;
+  padding: 0 28px 0 78px;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 1px solid #27272a;
+  border-left: 0;
+}
+
+.home-screen-main {
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  margin: 0 !important;
+  padding: clamp(68px, 10vh, 118px) clamp(28px, 6vw, 112px) 42px;
+  overflow-y: auto;
+}
+
+.home-screen-hero-grid {
+  width: min(1400px, 100%);
+  margin: 0 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 390px);
+}
+
+.home-topic-composer {
+  width: min(1400px, 100%);
+  margin: clamp(54px, 9vh, 104px) auto 0 !important;
+}
+
+.home-screen .menu-toggle {
+  top: 11px !important;
+  left: 28px !important;
+  width: 36px;
+  height: 36px;
+  border-radius: 0 !important;
+}
+
+/* History and auth are full-frame studio views too. */
+.history-shell {
+  display: block;
+  overflow-y: auto;
+}
+
+.history-content {
+  width: 100%;
+  max-width: none;
+  min-height: 100dvh;
+  margin: 0 !important;
+  padding: 78px clamp(28px, 6vw, 112px) 48px;
+}
+
+.auth-screen {
+  display: grid;
+  place-items: center;
+}
+
+.auth-card {
+  width: min(460px, calc(100vw - 48px));
+  margin: 0 !important;
+}
+
+/* Simulation is a zero-gutter two-column grid: canvas | chat. */
+.app-shell {
+  display: grid !important;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0 !important;
+}
+
+.app-shell.chat-open {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 26vw) !important;
+}
+
+.app-shell.chat-closed {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+.simulation-area {
+  grid-column: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  margin: 0 !important;
+  padding: 72px 0 0 !important;
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0 !important;
+  overflow: hidden !important;
+  background-color: #050505 !important;
+  background-image:
+    linear-gradient(to right, rgba(39, 39, 42, 0.42) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(39, 39, 42, 0.42) 1px, transparent 1px);
+  background-position: 0 0, 0 0;
+  background-size: 32px 32px;
+}
+
+.main-navbar {
+  position: fixed !important;
+  top: 12px !important;
+  left: 16px !important;
+  right: 16px !important;
+  z-index: 1000 !important;
+  min-height: 48px;
+  border: 1px solid #27272a !important;
+  background: rgba(9, 9, 11, 0.96) !important;
+  box-shadow: none !important;
+}
+
+.topic-summary.compact {
+  width: 100%;
+  min-height: 58px;
+  margin: 0 !important;
+  padding: 12px 24px !important;
+  border-top: 1px solid #27272a !important;
+  border-right: 0 !important;
+  border-bottom: 1px solid #27272a !important;
+  border-left: 0 !important;
+  background: rgba(9, 9, 11, 0.88) !important;
+}
+
+.topic-summary.compact h2 {
+  margin: 0 0 5px !important;
+}
+
+.canvas-wrapper {
+  position: relative;
+  grid-row: 2;
+  width: 100%;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin: 0 !important;
+  align-self: start;
+  aspect-ratio: 16 / 9;
+  border-top: 0 !important;
+  border-right: 0 !important;
+  border-bottom: 1px solid #27272a !important;
+  border-left: 0 !important;
+  background-color: #050505 !important;
+  background-image:
+    linear-gradient(to right, rgba(39, 39, 42, 0.55) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(39, 39, 42, 0.55) 1px, transparent 1px);
+  background-size: 32px 32px;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+
+.simulation-blueprint-grid {
+  opacity: 0.5 !important;
+}
+
+.sim-canvas,
+.sim-canvas canvas {
+  width: 100% !important;
+  height: 100% !important;
+  background: transparent !important;
+}
+
+.sim-canvas {
+  position: absolute !important;
+  inset: 0;
+}
+
+.sim-canvas-3d-overlay {
+  position: absolute !important;
+  inset: 0;
+}
+
+/* Subtitle and playback controls sit directly on the canvas grid. */
+.subtitle-bar {
+  bottom: 16px !important;
+  width: min(720px, calc(100% - 152px)) !important;
+  border: 1px solid #3f3f46 !important;
+  background: rgba(9, 9, 11, 0.92) !important;
+  box-shadow: none !important;
+}
+
+.sim-bottom-bar {
+  bottom: 16px !important;
+}
+
+.controls-drawer {
+  border: 1px solid #3f3f46 !important;
+  background: #18181b !important;
+  box-shadow: none !important;
+}
+
+/* Chat remains a true adjacent column, never a floating card. */
+.chat-dashboard-drawer {
+  grid-column: 2;
+  grid-row: 1;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 72px 16px 16px !important;
+  border-top: 0 !important;
+  border-right: 0 !important;
+  border-bottom: 0 !important;
+  border-left: 1px solid #27272a !important;
+  background: #09090b !important;
+  box-shadow: none !important;
+}
+
+.chat-dashboard-drawer .chat-panel-section {
+  border: 0 !important;
+  margin: 0 !important;
+}
+
+/* Replace card-like list spacing with zero-margin blocks. */
+.chat-dashboard-drawer .chat-window {
+  margin: 0 !important;
+  padding: 16px 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.chat-dashboard-drawer .chat-bubble {
+  margin: 0 !important;
+  border-left: 2px solid #3f3f46 !important;
+  border-top: 0 !important;
+  border-right: 0 !important;
+  border-bottom: 0 !important;
+  background: rgba(39, 39, 42, 0.28) !important;
+}
+
+.chat-dashboard-drawer .chat-user {
+  border-left-color: #71717a !important;
+  background: rgba(63, 63, 70, 0.3) !important;
+}
+
+.chat-dashboard-drawer .chat-input-bar {
+  border: 1px solid #3f3f46 !important;
+  border-radius: 0 !important;
+  background: #18181b !important;
+}
+
+@media (max-width: 900px) {
+  .app-shell.chat-open {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .chat-dashboard-drawer {
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    padding: 72px 14px 14px !important;
+  }
+
+  .home-screen-main {
+    padding-inline: 20px;
+  }
+
+  .home-screen-hero-grid,
+  .home-topic-composer {
+    width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .home-screen-header {
+    padding-left: 68px;
+  }
+
+  .home-screen-main {
+    padding-top: 64px;
+  }
+
+  .topic-summary.compact {
+    padding-inline: 14px !important;
+  }
+
+  .canvas-wrapper {
+    aspect-ratio: 4 / 3;
+  }
+
+  .subtitle-bar {
+    left: 12px !important;
+    right: 12px !important;
+    width: auto !important;
+    transform: none;
+  }
+}
