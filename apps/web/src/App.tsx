@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FORCE_LOGOUT_EVENT, apiDelete, apiGet, apiPost, apiPut, prewarmApi } from "./api";
-import { HomeScreen } from "./HomeScreen";
-import { AuroraBackground } from "./components/ui/AuroraBackground";
-import { MovingBorderButton } from "./components/ui/MovingBorderButton";
-import { SpotlightCard } from "./components/ui/SpotlightCard";
 import { SimulationCanvasRenderer, SimulationCanvasStepLike } from "./SimulationCanvasRenderer";
 import {
   ChatMessage,
@@ -318,12 +314,11 @@ export default function App(): JSX.Element {
   const [voiceMicState, setVoiceMicState] = useState<"idle" | "listening" | "processing" | "speaking">("idle");
   const [voiceInterimText, setVoiceInterimText] = useState("");
   const [activeStepIndex, setActiveStepIndex] = useState(0);
-  const [stepElapsedDisplaySeconds, setStepElapsedDisplaySeconds] = useState(0);
 
   const simulationHostRef = useRef<HTMLDivElement | null>(null);
   const simulationThreeHostRef = useRef<HTMLDivElement | null>(null);
+  const homeMascotRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLInputElement | null>(null);
-  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const recognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionRef = useRef<InstanceType<RecognitionConstructor> | null>(null);
   const topicRecognitionActiveRef = useRef(false);
@@ -344,7 +339,6 @@ export default function App(): JSX.Element {
   const stepNarrationCompleteRef = useRef(true);
   const subtitleDisplayCompleteRef = useRef(true);
   const stepElapsedMsRef = useRef(0);
-  const stepElapsedDisplaySecondsRef = useRef(-1);
   const pausedAtElapsedMsRef = useRef(0);
   const pausedAtStepRef = useRef(0);
   const resumeNarrationRequestedRef = useRef(false);
@@ -2081,8 +2075,6 @@ export default function App(): JSX.Element {
       }
       const step = steps[index];
       const shouldNarrate = options?.narrate !== false;
-      stepElapsedDisplaySecondsRef.current = 0;
-      setStepElapsedDisplaySeconds(0);
       pausedAtStepRef.current = index;
       renderer.setStep(step as SimulationCanvasStepLike);
       console.log(`[Simulation] step=${index + 1} elementTypes=`, renderer.getElementTypes());
@@ -2152,11 +2144,6 @@ export default function App(): JSX.Element {
       const delta = Math.min(50, now - lastFrame);
       lastFrame = now;
       stepElapsedMs = stepElapsedMsRef.current;
-      const displaySeconds = Math.max(0, Math.floor(stepElapsedMs / 1000));
-      if (displaySeconds !== stepElapsedDisplaySecondsRef.current) {
-        stepElapsedDisplaySecondsRef.current = displaySeconds;
-        setStepElapsedDisplaySeconds(displaySeconds);
-      }
 
       const pendingCommand = pendingSimulationCommandRef.current;
       if (pendingCommand && pendingCommand.id > lastProcessedCommandId) {
@@ -2478,6 +2465,155 @@ export default function App(): JSX.Element {
     };
   }, [activeStepIndex, appView, selectedSimulation]);
 
+  useEffect(() => {
+    const host = homeMascotRef.current;
+    if (!host || appView !== "home") {
+      return;
+    }
+
+    let disposed = false;
+    let frameId = 0;
+    let cleanup = () => undefined;
+
+    const run = async () => {
+      const THREE = await loadThreeLib();
+      if (disposed) {
+        return;
+      }
+
+      host.innerHTML = "";
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 120);
+      camera.position.set(0, 1.9, 10);
+      camera.lookAt(0, 1.5, 0);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio || 1);
+      host.appendChild(renderer.domElement);
+
+      const ambient = new THREE.AmbientLight(0xffffff, 0.8);
+      const key = new THREE.DirectionalLight(0x9bb9ff, 1.1);
+      key.position.set(6, 8, 9);
+      const fill = new THREE.DirectionalLight(0xffd98a, 0.55);
+      fill.position.set(-5, 4, 6);
+      scene.add(ambient, key, fill);
+
+      const robot = new THREE.Group();
+      scene.add(robot);
+
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x6f7f93, metalness: 0.48, roughness: 0.34 });
+      const jointMat = new THREE.MeshStandardMaterial({ color: 0x2f3c4d, metalness: 0.7, roughness: 0.28 });
+      const glowMat = new THREE.MeshStandardMaterial({
+        color: 0x73ddff,
+        emissive: 0x2f7fa8,
+        emissiveIntensity: 1.6,
+        metalness: 0.3,
+        roughness: 0.2
+      });
+
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.9, 1.3), bodyMat);
+      torso.position.set(0, 1.55, 0);
+      robot.add(torso);
+
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.35, 16), jointMat);
+      neck.position.set(0, 3.15, 0);
+      robot.add(neck);
+
+      const head = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.4, 1.6), bodyMat);
+      head.position.set(0, 4.05, 0);
+      robot.add(head);
+
+      const eyeLeft = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 20), glowMat.clone());
+      const eyeRight = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 20), glowMat.clone());
+      eyeLeft.position.set(-0.42, 4.1, 0.85);
+      eyeRight.position.set(0.42, 4.1, 0.85);
+      robot.add(eyeLeft, eyeRight);
+
+      const shoulderLeft = new THREE.Mesh(new THREE.SphereGeometry(0.24, 16, 16), jointMat);
+      const shoulderRight = shoulderLeft.clone();
+      shoulderLeft.position.set(-1.42, 2.5, 0);
+      shoulderRight.position.set(1.42, 2.5, 0);
+      robot.add(shoulderLeft, shoulderRight);
+
+      const armGeo = new THREE.CylinderGeometry(0.19, 0.2, 1.75, 16);
+      const armLeft = new THREE.Mesh(armGeo, bodyMat);
+      const armRight = new THREE.Mesh(armGeo, bodyMat);
+      armLeft.position.set(-1.42, 1.55, 0);
+      armRight.position.set(1.42, 1.55, 0);
+      robot.add(armLeft, armRight);
+
+      const hip = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.55, 1.1), jointMat);
+      hip.position.set(0, -0.05, 0);
+      robot.add(hip);
+
+      const legGeo = new THREE.CylinderGeometry(0.24, 0.26, 2.2, 16);
+      const legLeft = new THREE.Mesh(legGeo, bodyMat);
+      const legRight = new THREE.Mesh(legGeo, bodyMat);
+      legLeft.position.set(-0.52, -1.35, 0);
+      legRight.position.set(0.52, -1.35, 0);
+      robot.add(legLeft, legRight);
+
+      const footGeo = new THREE.BoxGeometry(0.72, 0.28, 1.18);
+      const footLeft = new THREE.Mesh(footGeo, jointMat);
+      const footRight = new THREE.Mesh(footGeo, jointMat);
+      footLeft.position.set(-0.52, -2.56, 0.24);
+      footRight.position.set(0.52, -2.56, 0.24);
+      robot.add(footLeft, footRight);
+
+      const aura = new THREE.Mesh(
+        new THREE.TorusGeometry(2.8, 0.05, 18, 90),
+        new THREE.MeshBasicMaterial({ color: 0x7de3ff, transparent: true, opacity: 0.35 })
+      );
+      aura.rotation.x = Math.PI / 2;
+      aura.position.y = -2.1;
+      robot.add(aura);
+
+      const eyeLeftMat = eyeLeft.material as { emissiveIntensity: number };
+      const eyeRightMat = eyeRight.material as { emissiveIntensity: number };
+
+      const onResize = () => {
+        const width = host.clientWidth || 300;
+        const height = host.clientHeight || 260;
+        camera.aspect = width / Math.max(1, height);
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height, false);
+      };
+
+      onResize();
+      window.addEventListener("resize", onResize);
+
+      const tick = (now: number) => {
+        const t = now * 0.0011;
+        const speaking = topicListening;
+        torso.scale.y = 1 + Math.sin(t * 1.8) * 0.03;
+        robot.rotation.x = speaking ? -0.08 : 0;
+        robot.position.z = speaking ? 0.22 : 0;
+        head.rotation.y = speaking ? Math.sin(t * 1.4) * 0.28 : Math.sin(t * 0.65) * 0.12;
+        armLeft.rotation.z = -0.18 + Math.sin(t * 0.7) * 0.06;
+        armRight.rotation.z = 0.18 - Math.sin(t * 0.7) * 0.06;
+        aura.rotation.z += 0.0025;
+        eyeLeftMat.emissiveIntensity = speaking ? 3.9 : 1.6;
+        eyeRightMat.emissiveIntensity = speaking ? 3.9 : 1.6;
+
+        renderer.render(scene, camera);
+        frameId = window.requestAnimationFrame(tick);
+      };
+      frameId = window.requestAnimationFrame(tick);
+
+      cleanup = () => {
+        window.cancelAnimationFrame(frameId);
+        window.removeEventListener("resize", onResize);
+        renderer.dispose();
+        host.innerHTML = "";
+      };
+    };
+
+    void run();
+    return () => {
+      disposed = true;
+      cleanup();
+    };
+  }, [appView, token, topicListening]);
 
   useEffect(() => {
     return () => {
@@ -2559,17 +2695,14 @@ export default function App(): JSX.Element {
       onClick={() => setMenuOpen((value) => !value)}
       aria-label="Open menu"
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M4 6h16a1 1 0 1 1 0 2H4a1 1 0 1 1 0-2Zm0 5h16a1 1 0 1 1 0 2H4a1 1 0 1 1 0-2Zm0 5h16a1 1 1 0 0 2H4a1 1 0 1 1 0-2Z" />
-      </svg>
+      [=]
     </button>
   );
 
   if (!token) {
     return (
       <div className="auth-screen">
-        <AuroraBackground className="auth-aurora" />
-        <SpotlightCard className="auth-card">
+        <div className="auth-card">
           <h1>Interactive Tech Tutor</h1>
           <p>{registerMode ? "Create an account to start learning." : "Login to continue your learning session."}</p>
           {registerMode ? (
@@ -2613,25 +2746,83 @@ export default function App(): JSX.Element {
             </div>
           ) : null}
           <div className="status">{statusMessage}</div>
-        </SpotlightCard>
+        </div>
       </div>
     );
   }
 
   if (appView === "home") {
     return (
-      <HomeScreen
-        welcomeName={welcomeName}
-        topic={customTopicInput}
-        generatingTopic={generatingTopic}
-        topicListening={topicListening}
-        statusMessage={statusMessage}
-        menuButton={floatingMenuButton}
-        menuPanel={menuPanel}
-        onTopicChange={setCustomTopicInput}
-        onGenerate={() => void generateCustomSimulation()}
-        onToggleTopicListening={captureTopicFromVoice}
-      />
+      <div className="home-shell">
+        {floatingMenuButton}
+        {menuPanel}
+        <div className="home-ambient" aria-hidden="true">
+          <span className="ambient-icon i1">&lt;/&gt;</span>
+          <span className="ambient-icon i2">{"{}"}</span>
+          <span className="ambient-icon i3">API</span>
+          <span className="ambient-icon i4">NN</span>
+          <span className="ambient-icon i5">SQL</span>
+          <span className="ambient-icon i6">TS</span>
+          <span className="ambient-icon i7">GPU</span>
+          <span className="ambient-icon i8">ML</span>
+        </div>
+        <div className="home-content">
+          <div className="home-hero">
+            <div className="home-hero-copy">
+              <h1>Welcome, {welcomeName}</h1>
+              <p>Enter any technical topic and get a dynamic simulation with step-by-step visual flow.</p>
+            </div>
+            <div className="hero-character-wrap" aria-hidden="true">
+              <div ref={homeMascotRef} className="mentor-3d-stage" />
+            </div>
+          </div>
+          <div className="home-controls">
+            <div className="home-controls-row">
+              <input
+                className="topic-input"
+                value={customTopicInput}
+                onChange={(event) => setCustomTopicInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !generatingTopic && customTopicInput.trim()) {
+                    event.preventDefault();
+                    void generateCustomSimulation();
+                  }
+                }}
+                placeholder="e.g. Event sourcing, OAuth 2.0, CPU scheduling"
+              />
+              <div className="mic-wrap">
+                <button
+                  className={topicListening ? "mic-icon-btn listening" : "mic-icon-btn"}
+                  disabled={generatingTopic}
+                  onClick={captureTopicFromVoice}
+                  aria-label={topicListening ? "Stop microphone" : "Start microphone"}
+                  title={topicListening ? "Stop microphone" : "Start microphone"}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" />
+                    <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
+                  </svg>
+                </button>
+                {topicListening ? <span className="mic-listening-label">Listening...</span> : null}
+              </div>
+              <button
+                className="generate-btn"
+                disabled={generatingTopic || !customTopicInput.trim()}
+                onClick={() => void generateCustomSimulation()}
+              >
+                {generatingTopic ? "Generating Simulation..." : "Generate And Open Simulation"}
+              </button>
+            </div>
+          </div>
+          {generatingTopic ? (
+            <div className="inline-skeleton">
+              <div className="skeleton-line sm" />
+              <div className="skeleton-line md" />
+            </div>
+          ) : null}
+          <div className="status">{statusMessage}</div>
+        </div>
+      </div>
     );
   }
 
@@ -2796,7 +2987,6 @@ export default function App(): JSX.Element {
                     <path d="M12 3a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" />
                     <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
                   </svg>
-                  <span className={listening ? "nav-mic-live-dot active" : "nav-mic-live-dot"} aria-hidden="true" />
                 </button>
               </div>
             ) : null}
@@ -2840,20 +3030,7 @@ export default function App(): JSX.Element {
           </p>
         </section>
 
-        <SpotlightCard as="section" className="canvas-wrapper">
-          <svg className="simulation-blueprint-grid" viewBox="0 0 1600 900" preserveAspectRatio="none" aria-hidden="true">
-            <defs>
-              <pattern id="simulation-grid-small" width="24" height="24" patternUnits="userSpaceOnUse">
-                <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#27272a" strokeWidth="1" />
-              </pattern>
-              <pattern id="simulation-grid-large" width="120" height="120" patternUnits="userSpaceOnUse">
-                <rect width="120" height="120" fill="url(#simulation-grid-small)" />
-                <path d="M 120 0 L 0 0 0 120" fill="none" stroke="#3f3f46" strokeWidth="1" />
-              </pattern>
-            </defs>
-            <rect width="1600" height="900" fill="#09090b" />
-            <rect width="1600" height="900" fill="url(#simulation-grid-large)" />
-          </svg>
+        <section className="canvas-wrapper">
           <div ref={simulationHostRef} className="sim-canvas" />
           <div ref={simulationThreeHostRef} className="sim-canvas-3d-overlay" />
           <div className={mathOverlayLines.length > 0 ? "math-overlay visible" : "math-overlay"}>
@@ -2947,18 +3124,15 @@ export default function App(): JSX.Element {
                 </svg>
               )}
             </button>
-            <span className="sim-step-tracker" aria-live="polite">
-              [{String(Math.floor(stepElapsedDisplaySeconds / 60)).padStart(2, "0")}:{String(stepElapsedDisplaySeconds % 60).padStart(2, "0")}] STEP {String(activeStepIndex + 1).padStart(2, "0")} / {String(selectedSimulation?.steps?.length ?? 0).padStart(2, "0")}
-            </span>
-          </div>
-          <div className="subtitle-bar">
+            <div className="subtitle-bar">
               {subtitlesEnabled
                 ? (typeof subtitle === "string" && subtitle.length > 0
                     ? subtitle
                     : "Simulation subtitles will appear here.")
                 : "Subtitles are muted."}
             </div>
-        </SpotlightCard>
+          </div>
+        </section>
 
         <aside className={toolsPanelOpen ? "controls-drawer open" : "controls-drawer"}>
           <h3>Simulation Controls</h3>
@@ -3034,39 +3208,18 @@ export default function App(): JSX.Element {
       </main>
 
       {chatPanelOpen ? (
-        <aside className="interaction-panel chat-dashboard-drawer">
-          <section className="chat-panel-section">
+        <aside className="interaction-panel">
+          <section className="panel-section chat-panel-section">
             <header className="chat-panel-header">
-              <div>
-                <span className="chat-panel-eyebrow">ACTIVE TOPIC</span>
-                <h3>Topic Chat</h3>
-              </div>
-              <button
-                className="chat-close-btn"
-                onClick={() => setChatPanelOpen(false)}
-                aria-label="Close topic chat"
-                title="Close topic chat"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m7 7 10 10M17 7 7 17" />
-                </svg>
-              </button>
+              <h3>Topic Chat</h3>
             </header>
             <div className="chat-window">
               {messages.slice(-16).map((message, index) => (
-                <article key={message.role + "-" + index} className={"chat-message-row chat-" + message.role}>
-                  <span className="chat-role">{message.role === "assistant" ? "TUTOR" : "YOU"}</span>
+                <article key={`${message.role}-${index}`} className={`chat-bubble chat-${message.role}`}>
                   <p className="chat-text">{message.text}</p>
                   <span className="chat-time">{formatChatTimestamp(message.timestamp)}</span>
                 </article>
               ))}
-              {messages.length === 0 ? (
-                <div className="chat-empty-state">
-                  <span className="chat-empty-mark">/</span>
-                  <p>Ask anything about the current simulation.</p>
-                  <span>Responses stay focused on {selectedTopic?.title ?? "this topic"}.</span>
-                </div>
-              ) : null}
             </div>
             <div className="chat-input-bar">
               <button
@@ -3080,33 +3233,19 @@ export default function App(): JSX.Element {
                   <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
                 </svg>
               </button>
-              <div className="chat-input-slot">
-                <input
-                  ref={chatInputRef}
-                  className="chat-input-field"
-                  value={chatInput}
-                  onChange={(event) => setChatInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void sendChat("text");
-                    }
-                  }}
-                  placeholder=""
-                  aria-label="Ask about this topic"
-                />
-                {!chatInput ? <span className="chat-assist-hint" aria-hidden="true">âŒ˜ â†µ for Assist</span> : null}
-              </div>
-              <button
-                className="chat-attachment-btn"
-                onClick={() => attachmentInputRef.current?.click()}
-                aria-label="Attach a file"
-                title="Attach a file"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m14.5 6.5-7.2 7.2a3.1 3.1 0 0 0 4.4 4.4l7.1-7.1a4.7 4.7 0 0 0-6.6-6.6l-7.2 7.2a6.2 6.2 0 1 0 8.8 8.8l6-6" />
-                </svg>
-              </button>
+              <input
+                ref={chatInputRef}
+                className="chat-input-field"
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void sendChat("text");
+                  }
+                }}
+                placeholder="Ask about this topic..."
+              />
               <button
                 className="chat-send-icon-btn"
                 onClick={() => void sendChat("text")}
@@ -3117,25 +3256,27 @@ export default function App(): JSX.Element {
                   <path d="M3.2 11.2 19.6 3.4a.9.9 0 0 1 1.26 1.08l-3.1 15.1a.9.9 0 0 1-1.54.45l-3.5-3.55-2.87 3.12a.9.9 0 0 1-1.56-.57v-5.06L3.5 12.9a.9.9 0 0 1-.3-1.7Zm4.9 1.58 2.02.58c.38.11.65.46.65.86v2.47l1.58-1.72a.9.9 0 0 1 1.3-.02l2.66 2.69 2.22-10.83-10.43 4.96Z" />
                 </svg>
               </button>
-              <input
-                ref={attachmentInputRef}
-                className="chat-attachment-input"
-                type="file"
-                accept="image/*,.pdf,.doc,.docx"
-                capture="environment"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) {
-                    void handleUpload(file);
-                  }
-                  event.target.value = "";
-                }}
-              />
             </div>
-            {uploadFeedback ? <p className="chat-attachment-status">{uploadFeedback}</p> : null}
+          </section>
+
+          <section className="panel-section">
+            <h3>Visual Input</h3>
+            <input
+              type="file"
+              accept="image/*,.pdf,.doc,.docx"
+              capture="environment"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  void handleUpload(file);
+                }
+              }}
+            />
+            <p>{uploadFeedback || "Upload an image/document for analysis."}</p>
           </section>
         </aside>
       ) : null}
     </div>
   );
 }
+
