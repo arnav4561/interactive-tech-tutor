@@ -1771,6 +1771,510 @@ function applyTopicRepairs(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
   return repairMatrixGridSteps(axisPlotRepairedSteps);
 }
 
+function topicMatches(topic: string, pattern: RegExp): boolean {
+  return pattern.test(topic.toLowerCase());
+}
+
+function uniqueFiniteNumbers(values: number[], limit = 16): number[] {
+  return Array.from(
+    new Set(values.filter((value) => Number.isFinite(value)).map((value) => Number(value)))
+  ).slice(0, limit);
+}
+
+function numericValuesFromElements(elements: Record<string, unknown>[]): number[] {
+  return uniqueFiniteNumbers(
+    elements
+      .map((element) => parseNumericValueFromUnknown(element.value ?? element.label ?? element.text))
+      .filter((value): value is number => value !== null)
+  );
+}
+
+function numericValuesFromSteps(steps: GeminiCanvasStep[], type?: CanvasElementType): number[] {
+  return uniqueFiniteNumbers(
+    steps.flatMap((step) =>
+      (step.canvas_instructions?.elements ?? [])
+        .filter((element) => !type || normalizeElementType((element as Record<string, unknown>).type) === type)
+        .flatMap((element) => {
+          const raw = element as Record<string, unknown>;
+          const candidates = Array.isArray(raw.values)
+            ? raw.values
+            : [raw.value ?? raw.label ?? raw.text];
+          return candidates
+            .map((value) => parseNumericValueFromUnknown(value))
+            .filter((value): value is number => value !== null);
+        })
+    )
+  );
+}
+
+function numericValuesFromSubtitles(steps: GeminiCanvasStep[]): number[] {
+  return uniqueFiniteNumbers(
+    steps.flatMap((step) => extractSubtitleNumbers(step.subtitle).map((value) => Number.parseFloat(value)))
+  );
+}
+
+function extractOperationValue(subtitle: string): number | null {
+  const match = subtitle.match(
+    /\b(?:insert(?:ed|ing)?|add(?:ed|ing)?|push(?:ed|ing)?|enqueue(?:d|ing)?|dequeue(?:d|ing)?|search(?:ed|ing)?|find(?:ing)?|delete(?:d|ing)?|remove(?:d|ing)?)\b[^\d-]*(-?\d+(?:\.\d+)?)/i
+  );
+  if (!match) {
+    return null;
+  }
+  const value = Number.parseFloat(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function isNeuralNetworkTopic(topic: string): boolean {
+  return topicMatches(topic, /\b(neural network|neural networks|perceptron|backpropagation|multilayer perceptron|mlp|convolutional neural network|cnn)\b/);
+}
+
+function isSortingTopic(topic: string): boolean {
+  return topicMatches(topic, /\b(sort|sorting|bubble sort|selection sort|insertion sort|merge sort|quick sort|heap sort)\b/);
+}
+
+function isStackTopic(topic: string): boolean {
+  return topicMatches(topic, /\b(stack data structure|lifo|push operation|pop operation)\b/) ||
+    (topicMatches(topic, /\bstack\b/) && !topicMatches(topic, /full[- ]stack|stack trace|stack frame/));
+}
+
+function isQueueTopic(topic: string): boolean {
+  return topicMatches(topic, /\b(queue data structure|fifo|enqueue|dequeue|priority queue)\b/);
+}
+
+function isLinkedListTopic(topic: string): boolean {
+  return topicMatches(topic, /\b(linked list|linkedlist|singly linked|doubly linked)\b/);
+}
+
+function isGraphTopic(topic: string): boolean {
+  return topicMatches(topic, /\b(graph data structure|graph traversal|breadth[- ]first|depth[- ]first|\bbfs\b|\bdfs\b|adjacency list|adjacency matrix)\b/);
+}
+
+function buildBstElements(values: number[], highlightedValue: number | null, introducedValues: Set<number>): GeminiCanvasElement[] {
+  type Node = { value: number; parent: number | null; depth: number; slot: number };
+  const nodes: Node[] = [];
+  for (const value of uniqueFiniteNumbers(values)) {
+    if (nodes.length === 0) {
+      nodes.push({ value, parent: null, depth: 0, slot: 0 });
+      continue;
+    }
+    let parent: Node | null = null;
+    let depth = 0;
+    let slot = 0;
+    let current: Node | undefined = nodes[0];
+    while (current) {
+      parent = current;
+      depth = current.depth + 1;
+      if (value < current.value) {
+        slot = current.slot * 2;
+        const parentValue: number = current.value;
+        current = nodes.find((candidate) => candidate.parent === parentValue && candidate.value < parentValue && candidate.slot === slot);
+      } else {
+        slot = current.slot * 2 + 1;
+        const parentValue: number = current.value;
+        current = nodes.find((candidate) => candidate.parent === parentValue && candidate.value > parentValue && candidate.slot === slot);
+      }
+    }
+    nodes.push({ value, parent: parent?.value ?? null, depth, slot });
+  }
+
+  const xLayouts: Record<number, number[]> = {
+    0: [50],
+    1: [25, 75],
+    2: [12, 38, 62, 88],
+    3: [6, 19, 31, 44, 56, 69, 81, 94]
+  };
+  const yLayouts: Record<number, number> = { 0: 12, 1: 30, 2: 50, 3: 68 };
+
+  return nodes.map((node) => {
+    const level = xLayouts[node.depth];
+    const x = level
+      ? level[Math.min(level.length - 1, node.slot)]
+      : clamp(((node.slot + 1) / (Math.pow(2, node.depth) + 1)) * 100, 6, 94);
+    const y = yLayouts[node.depth] ?? clamp(68 + (node.depth - 3) * 14, 68, 88);
+    const isHighlighted = highlightedValue !== null && node.value === highlightedValue;
+    const isNew = introducedValues.has(node.value);
+    return {
+      type: "tree_node",
+      value: node.value,
+      parent_value: node.parent,
+      x,
+      y,
+      width: 10,
+      height: 10,
+      color: isHighlighted ? "#FF6B35" : "#4A90E2",
+      label: numericValueToLabel(node.value),
+      label_position: "below",
+      ...(isNew
+        ? {
+            animation: {
+              type: "scale_up",
+              duration: 850,
+              direction: "none",
+              represents: `inserts node ${numericValueToLabel(node.value)} into the BST`
+            }
+          }
+        : {})
+    } as GeminiCanvasElement;
+  });
+}
+
+function repairBstSimulationSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  const observedValues = numericValuesFromSteps(steps, "tree_node");
+  const subtitleValues = numericValuesFromSubtitles(steps);
+  const operationValues = uniqueFiniteNumbers(
+    steps
+      .map((step) => extractOperationValue(step.subtitle))
+      .filter((value): value is number => value !== null)
+  );
+  const fallbackValues = [50, 30, 70, 20, 40, 60, 80];
+  const insertionTopic = !topicMatches(topic, /\b(search|traversal|delete|deletion|remove)\b/);
+  const sequence = uniqueFiniteNumbers(
+    (operationValues.length >= 2 ? operationValues : observedValues.length >= 2 ? observedValues : subtitleValues).concat(fallbackValues)
+  );
+  const safeSequence = sequence.length > 0 ? sequence : fallbackValues;
+  const allValues = uniqueFiniteNumbers(observedValues.concat(subtitleValues, fallbackValues));
+  let previousValues = new Set<number>();
+
+  return steps.map((step, index) => {
+    const rawElements = (step.canvas_instructions?.elements ?? []).map((element) => ({ ...(element as Record<string, unknown>) }));
+    const currentValues = numericValuesFromElements(
+      rawElements.filter((element) => normalizeElementType(element.type) === "tree_node")
+    );
+    const values = insertionTopic
+      ? safeSequence.slice(0, Math.min(safeSequence.length, Math.max(1, index + 1)))
+      : currentValues.length > 0
+        ? currentValues
+        : allValues;
+    const highlightedValue = extractOperationValue(step.subtitle) ?? (insertionTopic ? values[values.length - 1] : null);
+    const introducedValues = new Set(values.filter((value) => !previousValues.has(value)));
+    previousValues = new Set(values);
+    return {
+      ...step,
+      concept: step.concept || `Binary search tree step ${index + 1}`,
+      canvas_instructions: {
+        elements: buildBstElements(values.length > 0 ? values : fallbackValues, highlightedValue, introducedValues)
+      }
+    };
+  });
+}
+
+function layerCountsFromElement(element: Record<string, unknown>): number[] {
+  const candidates = [element.layers, element.layer_sizes, element.layerSizes, element.counts];
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate)) {
+      continue;
+    }
+    const layers = candidate
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .map((value) => Math.max(1, Math.round(value)));
+    if (layers.length >= 2) {
+      return layers.slice(0, 8);
+    }
+  }
+  const count = Number(element.count ?? element.neurons);
+  return Number.isFinite(count) && count > 0 ? [Math.max(1, Math.round(count))] : [];
+}
+
+function repairNeuralNetworkSimulationSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  const discoveredLayers = steps.flatMap((step) =>
+    (step.canvas_instructions?.elements ?? [])
+      .map((element) => layerCountsFromElement(element as Record<string, unknown>))
+      .filter((layers) => layers.length >= 2)
+  );
+  const layers = (discoveredLayers.sort((a, b) => b.length - a.length)[0] ?? [3, 4, 2]).slice(0, 8);
+  return steps.map((step, index) => {
+    const text = `${step.concept} ${step.subtitle}`.toLowerCase();
+    const outputLayer = layers.length - 1;
+    const activeLayer = /output|prediction|classif|result/.test(text)
+      ? outputLayer
+      : /hidden|weight|activation|backprop/.test(text)
+        ? Math.min(1, outputLayer)
+        : 0;
+    const network: GeminiCanvasElement = {
+      type: "neural_network",
+      x: 10,
+      y: 14,
+      width: 80,
+      height: 70,
+      color: index % 2 === 0 ? "#00D4FF" : "#8B5CF6",
+      label: "Neural network",
+      label_position: "above",
+      layers,
+      active_layers: [activeLayer],
+      animation: {
+        type: "highlight",
+        duration: 1200,
+        direction: "none",
+        represents: `activates the ${activeLayer === 0 ? "input" : activeLayer === outputLayer ? "output" : "hidden"} layer`
+      }
+    };
+    return {
+      ...step,
+      canvas_instructions: { elements: [network] }
+    };
+  });
+}
+
+type SortFrame = { values: number[]; compared: number[]; swapped: boolean };
+
+function buildBubbleSortFrames(values: number[]): SortFrame[] {
+  const current = [...values];
+  const frames: SortFrame[] = [{ values: [...current], compared: [], swapped: false }];
+  for (let end = current.length - 1; end > 0; end -= 1) {
+    for (let index = 0; index < end; index += 1) {
+      const compared = [index, index + 1];
+      if (current[index] > current[index + 1]) {
+        [current[index], current[index + 1]] = [current[index + 1], current[index]];
+        frames.push({ values: [...current], compared, swapped: true });
+      } else {
+        frames.push({ values: [...current], compared, swapped: false });
+      }
+    }
+  }
+  return frames;
+}
+
+function buildSelectionSortFrames(values: number[]): SortFrame[] {
+  const current = [...values];
+  const frames: SortFrame[] = [{ values: [...current], compared: [], swapped: false }];
+  for (let start = 0; start < current.length - 1; start += 1) {
+    let minimum = start;
+    for (let index = start + 1; index < current.length; index += 1) {
+      frames.push({ values: [...current], compared: [minimum, index], swapped: false });
+      if (current[index] < current[minimum]) {
+        minimum = index;
+      }
+    }
+    if (minimum !== start) {
+      [current[start], current[minimum]] = [current[minimum], current[start]];
+      frames.push({ values: [...current], compared: [start, minimum], swapped: true });
+    }
+  }
+  return frames;
+}
+
+function buildInsertionSortFrames(values: number[]): SortFrame[] {
+  const current = [...values];
+  const frames: SortFrame[] = [{ values: [...current], compared: [], swapped: false }];
+  for (let index = 1; index < current.length; index += 1) {
+    let cursor = index;
+    while (cursor > 0) {
+      frames.push({ values: [...current], compared: [cursor - 1, cursor], swapped: false });
+      if (current[cursor - 1] <= current[cursor]) {
+        break;
+      }
+      [current[cursor - 1], current[cursor]] = [current[cursor], current[cursor - 1]];
+      frames.push({ values: [...current], compared: [cursor - 1, cursor], swapped: true });
+      cursor -= 1;
+    }
+  }
+  return frames;
+}
+
+function buildSortFrames(topic: string, values: number[]): SortFrame[] | null {
+  const normalized = topic.toLowerCase();
+  if (/\bbubble sort\b/.test(normalized)) {
+    return buildBubbleSortFrames(values);
+  }
+  if (/\bselection sort\b/.test(normalized)) {
+    return buildSelectionSortFrames(values);
+  }
+  if (/\binsertion sort\b/.test(normalized)) {
+    return buildInsertionSortFrames(values);
+  }
+  return null;
+}
+
+function valuesFromOneStep(step: GeminiCanvasStep): number[] {
+  return numericValuesFromSteps([step], "bar");
+}
+
+function repairSortingSimulationSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  const discovered = numericValuesFromSteps(steps, "bar");
+  const subtitleValues = numericValuesFromSubtitles(steps);
+  const values = (discovered.length >= 3 ? discovered : subtitleValues.length >= 3 ? subtitleValues : [5, 3, 8, 1, 4]).slice(0, 7);
+  const frames = buildSortFrames(topic, values);
+  const modelValues = steps.map(valuesFromOneStep);
+  return steps.map((step, index) => {
+    const frame = frames
+      ? frames[Math.min(index, frames.length - 1)] ?? frames[0]
+      : {
+          values: modelValues[index].length >= 2 ? modelValues[index] : values,
+          compared: [],
+          swapped: false
+        };
+    const spacing = 80 / Math.max(1, frame.values.length - 1);
+    const maxValue = Math.max(...frame.values.map((value) => Math.abs(value)), 1);
+    const sortedValues = [...frame.values].sort((a, b) => a - b);
+    const isSorted = frame.values.every((value, valueIndex) => value === sortedValues[valueIndex]);
+    const elements = frame.values.map((value, valueIndex) => {
+      const compared = frame.compared.includes(valueIndex);
+      return {
+        type: "bar",
+        x: 10 + spacing * valueIndex,
+        y: 85,
+        width: Math.min(9, spacing * 0.6),
+        height: Math.max(8, (Math.abs(value) / maxValue) * 60),
+        color: compared ? (valueIndex === frame.compared[0] ? "#FF6B35" : "#00D4FF") : isSorted ? "#4CAF50" : "#4A90E2",
+        label: numericValueToLabel(value),
+        value,
+        label_position: "above",
+        animation: {
+          type: compared ? "highlight" : "fade_in",
+          duration: compared ? 900 : 650,
+          direction: "none",
+          represents: compared ? "compares adjacent values" : "shows the current array value"
+        }
+      } as GeminiCanvasElement;
+    });
+    return { ...step, canvas_instructions: { elements } };
+  });
+}
+
+function valuesForLinearStructure(steps: GeminiCanvasStep[], type: CanvasElementType, fallback: number[]): number[] {
+  const discovered = numericValuesFromSteps(steps, type);
+  const subtitleValues = numericValuesFromSubtitles(steps);
+  return (discovered.length >= 2 ? discovered : subtitleValues.length >= 2 ? subtitleValues : fallback).slice(0, 8);
+}
+
+function repairStackOrQueueSimulationSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  const stack = isStackTopic(topic);
+  const type: CanvasElementType = stack ? "stack" : "queue";
+  const values = valuesForLinearStructure(steps, type, stack ? [10, 20, 30, 40] : [10, 20, 30, 40, 50]);
+  return steps.map((step, index) => {
+    const count = Math.max(1, Math.min(values.length, stack ? Math.min(values.length, index + 2) : values.length));
+    const visibleValues = values.slice(0, count).map((value) => numericValueToLabel(value));
+    return {
+      ...step,
+      canvas_instructions: {
+        elements: [{
+          type,
+          x: 16,
+          y: 22,
+          width: 68,
+          height: 54,
+          color: stack ? "#8B5CF6" : "#00D4FF",
+          label: stack ? "LIFO stack" : "FIFO queue",
+          label_position: "above",
+          values: visibleValues,
+          animation: {
+            type: "highlight",
+            duration: 900,
+            direction: "none",
+            represents: stack ? "updates the top of the stack" : "updates the front and rear of the queue"
+          }
+        } as GeminiCanvasElement]
+      }
+    };
+  });
+}
+
+function repairLinkedListSimulationSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  const values = valuesForLinearStructure(steps, "circle", [10, 20, 30, 40]);
+  return steps.map((step, index) => {
+    const visibleValues = values.slice(0, Math.max(2, Math.min(values.length, index + 2)));
+    const elements: GeminiCanvasElement[] = [];
+    visibleValues.forEach((value, valueIndex) => {
+      elements.push({
+        type: "circle",
+        x: 16 + valueIndex * (68 / Math.max(1, visibleValues.length - 1)),
+        y: 48,
+        width: 8,
+        height: 8,
+        color: valueIndex === Math.min(index, visibleValues.length - 1) ? "#FF6B35" : "#4A90E2",
+        label: numericValueToLabel(value),
+        label_position: "below",
+        animation: { type: "fade_in", duration: 700, direction: "none", represents: "shows a linked-list node" }
+      });
+    });
+    for (let valueIndex = 0; valueIndex < visibleValues.length - 1; valueIndex += 1) {
+      const x1 = 20 + valueIndex * (68 / Math.max(1, visibleValues.length - 1));
+      const x2 = 12 + (valueIndex + 1) * (68 / Math.max(1, visibleValues.length - 1));
+      elements.push({
+        type: "arrow",
+        x1,
+        y1: 48,
+        x2,
+        y2: 48,
+        width: 1,
+        height: 1,
+        color: "#9DC3FF",
+        label: "",
+        label_position: "above",
+        animation: { type: "draw", duration: 750, direction: "left_to_right", represents: "points to the next node" }
+      });
+    }
+    return { ...step, canvas_instructions: { elements } };
+  });
+}
+
+function repairGraphSimulationSteps(steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  const labels = Array.from(new Set(
+    steps.flatMap((step) => (step.canvas_instructions?.elements ?? [])
+      .filter((element) => normalizeElementType((element as Record<string, unknown>).type) === "circle")
+      .map((element) => asText((element as Record<string, unknown>).label)))
+      .filter(Boolean)
+  )).slice(0, 6);
+  const nodeLabels = labels.length >= 3 ? labels : ["A", "B", "C", "D"];
+  return steps.map((step, index) => {
+    const elements: GeminiCanvasElement[] = nodeLabels.map((label, nodeIndex) => ({
+      type: "circle",
+      x: nodeIndex % 2 === 0 ? 30 : 70,
+      y: nodeIndex < 2 ? 30 : 64,
+      width: 9,
+      height: 9,
+      color: nodeIndex === index % nodeLabels.length ? "#FF6B35" : "#4A90E2",
+      label,
+      label_position: "below",
+      animation: { type: "highlight", duration: 900, direction: "none", represents: "visits a graph node" }
+    }));
+    const edges: Array<[number, number]> = [[0, 1], [0, 2], [1, 3], [2, 3]];
+    edges.forEach(([from, to]) => {
+      const fromX = from % 2 === 0 ? 34 : 74;
+      const fromY = from < 2 ? 30 : 64;
+      const toX = to % 2 === 0 ? 26 : 66;
+      const toY = to < 2 ? 30 : 64;
+      elements.push({
+        type: "arrow",
+        x1: fromX,
+        y1: fromY,
+        x2: toX,
+        y2: toY,
+        width: 1,
+        height: 1,
+        color: "#9DC3FF",
+        label: "",
+        label_position: "above",
+        animation: { type: "draw", duration: 800, direction: "none", represents: "connects graph nodes" }
+      });
+    });
+    return { ...step, canvas_instructions: { elements } };
+  });
+}
+
+function repairSemanticSimulationSteps(topic: string, steps: GeminiCanvasStep[]): GeminiCanvasStep[] {
+  if (isBstTopic(topic)) {
+    return repairBstSimulationSteps(topic, steps);
+  }
+  if (isNeuralNetworkTopic(topic)) {
+    return repairNeuralNetworkSimulationSteps(steps);
+  }
+  if (isSortingTopic(topic)) {
+    return repairSortingSimulationSteps(topic, steps);
+  }
+  if (isStackTopic(topic) || isQueueTopic(topic)) {
+    return repairStackOrQueueSimulationSteps(topic, steps);
+  }
+  if (isLinkedListTopic(topic)) {
+    return repairLinkedListSimulationSteps(steps);
+  }
+  if (isGraphTopic(topic)) {
+    return repairGraphSimulationSteps(steps);
+  }
+  return steps;
+}
+
 const SUBTITLE_ALIGNMENT_STOP_WORDS = new Set([
   "the",
   "a",
@@ -3286,13 +3790,20 @@ Required per step:
 
 Global quality rules:
 - Generate 6-8 steps unless the topic is extremely simple; never fewer than 5.
-- Every step must contain 6-10 elements.
+- Every step must contain enough meaningful visual structure to explain its subtitle. Composite semantic elements such as neural_network, stack, queue, matrix, and tree_node may be used instead of padding the step with filler shapes.
 - Every non-connector element must have a meaningful label from the topic (real term, value, or symbol).
 - Never use placeholder labels such as "text 1", "rectangle 2", "circle 3", "element 1", "tree_node 1", "bar 2".
 - Non-text labels must be concise (max 4 words). Never place full sentence fragments inside rectangle/circle/bar labels.
 - Layout must be clean and readable; no random filler.
-- Use ONLY these element types: tree_node, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, flowchart_diamond.
+- Use ONLY these element types: tree_node, neural_network, bar, text, arrow, line, rectangle, circle, matrix, axis, plot_point, stack, queue, flowchart_diamond.
 - Do not output markdown or prose outside JSON.
+
+Topic-specific semantic contracts:
+- Binary search tree/BST: use only tree_node elements. Each node must include a numeric value, numeric label, x, y, color, and parent_value. The root has parent_value null; values smaller than a parent are its left child and values larger are its right child. Show only the nodes inserted or visited so far and never add standalone lines, arrows, subtree labels, or generic boxes.
+- Neural networks, perceptrons, and backpropagation: include one neural_network element per step with a layers array of 2-8 positive integers in input-to-output order. Use active_layers to identify the layer described by the subtitle. Do not represent a complete network as disconnected generic circles.
+- Sorting algorithms: use bar elements with numeric labels equal to the array values. Keep the same array length across steps, show the actual comparison or swap described by the subtitle, and use color contrast for compared values and green for values already in their final position.
+- Stack topics: use one stack element with a values array in bottom-to-top order. Queue topics: use one queue element with a values array in front-to-rear order. Do not replace these structures with unrelated rectangles.
+- Linked lists: use circle nodes with numeric or meaningful labels and arrow elements between consecutive nodes. Graph algorithms: use labeled circle nodes with arrow connections that match the traversal or edge relationship in the subtitle.
 
 Visual strategy rules (topic-agnostic):
 - First infer the concept family for the topic (data structure, algorithm, system design, networking, ML, math/stats, hardware, security, cloud, etc.).
@@ -3318,7 +3829,7 @@ Fidelity rules:
 - If subtitle references direction (left/right/up/down), data flow, insertion, comparison, swap, transition, or hierarchy, the canvas must show that exact behavior.
 - Do not reuse the same layout across steps; each step layout must reflect that step subtitle specifically.
 - Do not dump the full subtitle as one giant text element; split information into diagram elements with short labels.
-- Every step must include at least 2 non-text visual elements that directly represent the subtitle concept.
+- Every step must include at least 2 non-text visual elements that directly represent the subtitle concept, except when one composite semantic element such as neural_network, stack, queue, or matrix accurately represents the complete structure.
 `.trim();
 
   const payload = await requestBedrockJson(simulationFormatPrompt, {
@@ -3359,7 +3870,8 @@ Fidelity rules:
   const finalLabeledSteps = enforceMeaningfulElementLabels(topic, qualityImprovedSteps);
   const finalRepairedSteps = applyTopicRepairs(finalLabeledSteps);
   const finalAlignedSteps = finalRepairedSteps.map((step) => enforceSubtitleVisualAlignment(step));
-  const finalRenderableSteps = ensureRenderableElementsFromSubtitle(topic, finalAlignedSteps);
+  const renderableSteps = ensureRenderableElementsFromSubtitle(topic, finalAlignedSteps);
+  const finalRenderableSteps = repairSemanticSimulationSteps(topic, renderableSteps);
 
   try {
     await saveSimulationS3Cache(topic, { steps: finalRenderableSteps });
@@ -4092,6 +4604,7 @@ app.post(
       ? `Generated with template fallback because Gemini failed: ${geminiError.slice(0, 120)}`
       : `Generated with template fallback for ${topic.title}.`;
   }
+  simulationSteps = repairSemanticSimulationSteps(requestedTopic, simulationSteps);
   const narration = normalizeNarration(simulationSteps.map((step) => step.subtitle));
   if (narration.length > 0) {
     topic.narration = narration;
